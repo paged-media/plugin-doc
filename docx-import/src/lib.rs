@@ -198,10 +198,8 @@ fn map_body(body: &wml::Body, numbering: &NumberingTable) -> (Vec<Block>, Vec<Se
             wml::BodyChoice::Paragraph(p) => {
                 blocks.push(Block::Paragraph(map_paragraph(p, numbering)))
             }
-            wml::BodyChoice::Table(_) => {
-                // Tables are a Tier-2 construct; carry an empty stub so
-                // docx-lower can emit an honest diagnostic without losing order.
-                blocks.push(Block::Table(docx_core::Table::default()));
+            wml::BodyChoice::Table(t) => {
+                blocks.push(Block::Table(map_table(t, numbering)));
             }
             _ => {}
         }
@@ -265,6 +263,68 @@ fn map_paragraph(p: &wml::Paragraph, numbering: &NumberingTable) -> Paragraph {
         props,
         runs,
         list,
+    }
+}
+
+fn map_table(t: &wml::Table, numbering: &NumberingTable) -> docx_core::Table {
+    let column_widths = t
+        .table_grid
+        .as_deref()
+        .map(|g| {
+            g.grid_column
+                .iter()
+                .filter_map(|c| c.width.as_ref().and_then(twips_u))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut rows = Vec::new();
+    for tc in &t.table_choice2 {
+        if let wml::TableChoice2::TableRow(tr) = tc {
+            let cells = tr
+                .table_row_choice
+                .iter()
+                .filter_map(|rc| match rc {
+                    wml::TableRowChoice::TableCell(c) => Some(map_cell(c, numbering)),
+                    _ => None,
+                })
+                .collect();
+            rows.push(docx_core::TableRow { cells });
+        }
+    }
+    docx_core::Table {
+        column_widths,
+        rows,
+    }
+}
+
+fn map_cell(c: &wml::TableCell, numbering: &NumberingTable) -> docx_core::TableCell {
+    let props = c.table_cell_properties.as_deref();
+    let grid_span = props
+        .and_then(|p| p.grid_span.as_ref())
+        .map(|g| g.val.max(1) as u32)
+        .unwrap_or(1);
+    let v_merge = match props.and_then(|p| p.vertical_merge.as_ref()) {
+        None => docx_core::VMerge::None,
+        // A `w:vMerge` with `val="restart"` starts a span; anything else
+        // (`val="continue"` or an absent val) continues it.
+        Some(vm) => match vm.val {
+            Some(wml::MergedCellValues::Restart) => docx_core::VMerge::Restart,
+            _ => docx_core::VMerge::Continue,
+        },
+    };
+    let paragraphs = c
+        .table_cell_choice
+        .iter()
+        .filter_map(|cc| match cc {
+            wml::TableCellChoice::Paragraph(p) => Some(map_paragraph(p, numbering)),
+            _ => None,
+        })
+        .collect();
+    docx_core::TableCell {
+        paragraphs,
+        grid_span,
+        v_merge,
     }
 }
 

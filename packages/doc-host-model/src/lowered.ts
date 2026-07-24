@@ -62,7 +62,29 @@ export interface LoweredParagraph {
   sourceIndex: number;
 }
 
+/** The body as a sequence of blocks (paragraphs + tables) in document order. */
 export interface LoweredStory {
+  blocks: LoweredBlock[];
+}
+
+export type LoweredBlock =
+  | ({ kind: "paragraph" } & LoweredParagraph)
+  | { kind: "table"; rows: number; cols: number; columnWidthsPt: number[]; cells: LoweredCell[] };
+
+/** A native table to build via insertTable + per-cell insertText + setCellSpan. */
+export interface LoweredTable {
+  rows: number;
+  cols: number;
+  columnWidthsPt: number[];
+  cells: LoweredCell[];
+}
+
+/** One table cell, addressed by its resolved grid position. */
+export interface LoweredCell {
+  row: number;
+  col: number;
+  rowSpan: number;
+  colSpan: number;
   paragraphs: LoweredParagraph[];
 }
 

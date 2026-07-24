@@ -20,11 +20,13 @@
 //! import → lower, plus the byte-identical zero-edit round-trip that proves the
 //! preservation invariant.
 
-use docx_conformance::{list_docx, memo_docx, one_paragraph_docx, tier1_docx, zip_parts};
-use docx_core::{Block, ListKind, StyleKind};
+use docx_conformance::{
+    list_docx, memo_docx, one_paragraph_docx, table_docx, tier1_docx, zip_parts,
+};
+use docx_core::{Block, ListKind, StyleKind, VMerge};
 use docx_import::import_docx;
 use docx_js::DocSession;
-use docx_lower::ir::{PropValue, StyleCollection};
+use docx_lower::ir::{LoweredBlock, PropValue, StyleCollection};
 use docx_lower::lower;
 use paged_ooxml::OpcPackage;
 
@@ -127,7 +129,7 @@ fn lowers_to_native_ir_with_synthesized_style_and_swatch() {
             && p.value == PropValue::Text("CenterAlign".into())));
 
     // The heading paragraph applies the Heading1 style.
-    let heading_para = &ir.story.paragraphs[1];
+    let heading_para = &ir.story.paragraphs()[1];
     assert!(heading_para
         .para_style_id
         .as_deref()
@@ -135,7 +137,7 @@ fn lowers_to_native_ir_with_synthesized_style_and_swatch() {
         .ends_with("docx-Heading1"));
 
     // The bold-red run got a synthesized character style referencing the swatch.
-    let mixed = &ir.story.paragraphs[2];
+    let mixed = &ir.story.paragraphs()[2];
     let synth_id = mixed.runs[1].char_style_id.as_deref().unwrap();
     let synth = ir.styles.iter().find(|s| s.id == synth_id).unwrap();
     assert!(synth
@@ -163,7 +165,7 @@ fn smallest_document_without_styles_part() {
     assert_eq!(doc.body.len(), 1);
     assert!(doc.styles.styles.is_empty());
     let ir = lower(&doc);
-    assert_eq!(ir.story.paragraphs[0].runs[0].text, "Hello, world.");
+    assert_eq!(ir.story.paragraphs()[0].runs[0].text, "Hello, world.");
 }
 
 #[test]
@@ -208,7 +210,7 @@ fn tier1_doc_defaults_tabs_keeps_and_underline() {
     assert_eq!(normal.based_on.as_deref(), Some(default.id.as_str()));
 
     // The paragraph synthesized a style carrying keepWithNext + the tab stops.
-    let pstyle_id = ir.story.paragraphs[0].para_style_id.as_deref().unwrap();
+    let pstyle_id = ir.story.paragraphs()[0].para_style_id.as_deref().unwrap();
     let pstyle = ir.styles.iter().find(|s| s.id == pstyle_id).unwrap();
     assert!(pstyle
         .props
@@ -259,7 +261,7 @@ fn lists_resolve_through_numbering_and_lower_to_native_markers() {
 
     // The bullet paragraph applies a synthesized style setting the native list
     // type + bullet glyph (the field the renderer gates markers on).
-    let bstyle_id = ir.story.paragraphs[0].para_style_id.as_deref().unwrap();
+    let bstyle_id = ir.story.paragraphs()[0].para_style_id.as_deref().unwrap();
     let bstyle = ir.styles.iter().find(|s| s.id == bstyle_id).unwrap();
     assert!(bstyle
         .props
@@ -273,7 +275,7 @@ fn lists_resolve_through_numbering_and_lower_to_native_markers() {
 
     // The numbered paragraph applies NumberedList + the IDML numbering-format
     // sample; the engine auto-counts NumberedList paragraphs.
-    let nstyle_id = ir.story.paragraphs[2].para_style_id.as_deref().unwrap();
+    let nstyle_id = ir.story.paragraphs()[2].para_style_id.as_deref().unwrap();
     let nstyle = ir.styles.iter().find(|s| s.id == nstyle_id).unwrap();
     assert!(nstyle.props.iter().any(
         |p| p.path == "paragraphListType" && p.value == PropValue::Text("NumberedList".into())
@@ -285,9 +287,50 @@ fn lists_resolve_through_numbering_and_lower_to_native_markers() {
 
     // The two identical bullet paragraphs share ONE synthesized list style.
     assert_eq!(
-        ir.story.paragraphs[0].para_style_id,
-        ir.story.paragraphs[1].para_style_id
+        ir.story.paragraphs()[0].para_style_id,
+        ir.story.paragraphs()[1].para_style_id
     );
+}
+
+#[test]
+fn tables_parse_grid_spans_merges_and_lower_to_native_cells() {
+    let doc = import_docx(&table_docx()).unwrap();
+
+    // Body order: paragraph, table, paragraph.
+    assert!(matches!(doc.body[0], Block::Paragraph(_)));
+    let table = match &doc.body[1] {
+        Block::Table(t) => t,
+        _ => panic!("expected a table at body[1]"),
+    };
+    assert!(matches!(doc.body[2], Block::Paragraph(_)));
+
+    assert_eq!(table.column_widths, vec![2000, 3000]);
+    assert_eq!(table.rows.len(), 3);
+    // Row 0: one cell spanning both columns.
+    assert_eq!(table.rows[0].cells[0].grid_span, 2);
+    // Row 1 col 0 starts a vertical merge; row 2 col 0 continues it.
+    assert_eq!(table.rows[1].cells[0].v_merge, VMerge::Restart);
+    assert_eq!(table.rows[2].cells[0].v_merge, VMerge::Continue);
+
+    let ir = lower(&doc);
+    let lt = match &ir.story.blocks[1] {
+        LoweredBlock::Table(t) => t,
+        _ => panic!("expected a lowered table at block[1]"),
+    };
+    assert_eq!(lt.rows, 3);
+    assert_eq!(lt.cols, 2);
+    assert_eq!(lt.column_widths_pt, vec![100.0, 150.0]); // 2000/3000 twips -> pt
+
+    // The spanning header cell: (0,0) with colSpan 2.
+    let header = lt.cells.iter().find(|c| c.row == 0 && c.col == 0).unwrap();
+    assert_eq!(header.col_span, 2);
+    // The merged cell: (1,0) absorbs the continue below -> rowSpan 2, and the
+    // continue cell itself is NOT emitted.
+    let merged = lt.cells.iter().find(|c| c.row == 1 && c.col == 0).unwrap();
+    assert_eq!(merged.row_span, 2);
+    assert!(!lt.cells.iter().any(|c| c.row == 2 && c.col == 0));
+    // Emitted cells: header(0,0) + (1,0) + (1,1) + (2,1) = 4.
+    assert_eq!(lt.cells.len(), 4);
 }
 
 #[test]

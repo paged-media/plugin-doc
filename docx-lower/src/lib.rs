@@ -41,8 +41,9 @@ use docx_core::{
 pub mod ir;
 
 use ir::{
-    Diagnostic, LoweredDoc, LoweredParagraph, LoweredRun, LoweredSection, LoweredStory,
-    LoweredStyle, LoweredSwatch, LoweredTabStop, PropValue, StyleCollection, StyleProp,
+    Diagnostic, LoweredBlock, LoweredCell, LoweredDoc, LoweredParagraph, LoweredRun,
+    LoweredSection, LoweredStory, LoweredStyle, LoweredSwatch, LoweredTabStop, LoweredTable,
+    PropValue, StyleCollection, StyleProp,
 };
 
 const PARA_PREFIX: &str = "ParagraphStyle/docx-";
@@ -81,18 +82,16 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
     // 1. The Word style catalog -> native styles (topologically ordered).
     ctx.lower_style_catalog(&doc.styles.styles);
 
-    // 2. The body -> a native story, synthesizing styles for direct formatting.
-    let mut paragraphs = Vec::new();
+    // 2. The body -> a native story of blocks (paragraphs + tables) in order,
+    //    synthesizing styles for direct formatting.
+    let mut blocks = Vec::new();
     for (idx, block) in doc.body.iter().enumerate() {
         match block {
             Block::Paragraph(p) => {
-                paragraphs.push(ctx.lower_paragraph(p, idx as u32));
+                blocks.push(LoweredBlock::Paragraph(ctx.lower_paragraph(p, idx as u32)));
             }
-            Block::Table(_) => {
-                ctx.diagnostics.push(Diagnostic::info(
-                    "table found; tables are a Tier-2 construct and are not lowered yet",
-                    2,
-                ));
+            Block::Table(t) => {
+                blocks.push(LoweredBlock::Table(ctx.lower_table(t)));
             }
         }
     }
@@ -103,7 +102,7 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
     LoweredDoc {
         swatches: ctx.swatches,
         styles,
-        story: LoweredStory { paragraphs },
+        story: LoweredStory { blocks },
         section,
         diagnostics: ctx.diagnostics,
     }
@@ -304,6 +303,67 @@ impl Lowering {
         LoweredRun {
             text: r.text.clone(),
             char_style_id,
+        }
+    }
+
+    /// Lower a table: resolve the grid (gridSpan widens a cell across columns,
+    /// vMerge merges cells down rows) into positioned cells with spans. A
+    /// vMerge-continue cell is absorbed into its restart cell above (not emitted).
+    fn lower_table(&mut self, t: &docx_core::Table) -> LoweredTable {
+        let cols = if !t.column_widths.is_empty() {
+            t.column_widths.len() as u32
+        } else {
+            t.rows
+                .iter()
+                .map(|r| r.cells.iter().map(|c| c.grid_span.max(1)).sum::<u32>())
+                .max()
+                .unwrap_or(1)
+        };
+        let column_widths_pt = t.column_widths.iter().map(|w| twip_to_pt(*w)).collect();
+
+        let mut cells: Vec<LoweredCell> = Vec::new();
+        // column index -> index into `cells` of the active vMerge restart cell.
+        let mut vmerge_anchor: HashMap<u32, usize> = HashMap::new();
+        for (r, row) in t.rows.iter().enumerate() {
+            let mut col = 0u32;
+            for cell in &row.cells {
+                let span = cell.grid_span.max(1);
+                match cell.v_merge {
+                    docx_core::VMerge::Continue => {
+                        if let Some(&idx) = vmerge_anchor.get(&col) {
+                            cells[idx].row_span += 1;
+                        }
+                    }
+                    _ => {
+                        let paragraphs = cell
+                            .paragraphs
+                            .iter()
+                            .map(|p| self.lower_paragraph(p, 0))
+                            .collect();
+                        let idx = cells.len();
+                        cells.push(LoweredCell {
+                            row: r as u32,
+                            col,
+                            row_span: 1,
+                            col_span: span,
+                            paragraphs,
+                        });
+                        if cell.v_merge == docx_core::VMerge::Restart {
+                            vmerge_anchor.insert(col, idx);
+                        } else {
+                            vmerge_anchor.remove(&col);
+                        }
+                    }
+                }
+                col += span;
+            }
+        }
+
+        LoweredTable {
+            rows: t.rows.len() as u32,
+            cols,
+            column_widths_pt,
+            cells,
         }
     }
 
@@ -620,7 +680,7 @@ mod tests {
         // The bold+red run synthesized a character style and a swatch.
         assert_eq!(lowered.swatches.len(), 1);
         assert_eq!(lowered.swatches[0].value, vec![255.0, 0.0, 0.0]);
-        let para = &lowered.story.paragraphs[0];
+        let para = &lowered.story.paragraphs()[0];
         assert!(para
             .para_style_id
             .as_deref()
@@ -649,8 +709,8 @@ mod tests {
             ..Default::default()
         }));
         let lowered = lower(&doc);
-        let s0 = lowered.story.paragraphs[0].runs[0].char_style_id.clone();
-        let s1 = lowered.story.paragraphs[0].runs[1].char_style_id.clone();
+        let s0 = lowered.story.paragraphs()[0].runs[0].char_style_id.clone();
+        let s1 = lowered.story.paragraphs()[0].runs[1].char_style_id.clone();
         assert_eq!(s0, s1, "identical direct formatting reuses one synth style");
         let synth_count = lowered
             .styles

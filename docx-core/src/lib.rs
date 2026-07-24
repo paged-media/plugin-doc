@@ -217,9 +217,11 @@ pub enum StyleKind {
     Numbering,
 }
 
-/// A table (`w:tbl`) — Tier-2 stub. Rows of cells, each cell holding paragraphs.
+/// A table (`w:tbl`): a column grid + rows of cells.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Table {
+    /// `w:tblGrid/w:gridCol/@w:w` — column widths in twips (defines column count).
+    pub column_widths: Vec<i32>,
     pub rows: Vec<TableRow>,
 }
 
@@ -229,10 +231,27 @@ pub struct TableRow {
     pub cells: Vec<TableCell>,
 }
 
-/// A table cell (`w:tc`) — holds block content (paragraphs).
+/// A table cell (`w:tc`) — block content (paragraphs) plus merge spans.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TableCell {
     pub paragraphs: Vec<Paragraph>,
+    /// `w:tcPr/w:gridSpan/@w:val` — horizontal span (default 1).
+    pub grid_span: u32,
+    /// `w:tcPr/w:vMerge` — vertical merge role.
+    pub v_merge: VMerge,
+}
+
+/// A cell's vertical-merge role (`w:vMerge`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum VMerge {
+    /// Not vertically merged.
+    #[default]
+    None,
+    /// `w:vMerge w:val="restart"` — the top cell of a vertical span.
+    Restart,
+    /// `w:vMerge` (or `val="continue"`) — a continuation cell absorbed by the
+    /// restart cell above it.
+    Continue,
 }
 
 /// Section page geometry (`w:sectPr`). Lengths in twips.

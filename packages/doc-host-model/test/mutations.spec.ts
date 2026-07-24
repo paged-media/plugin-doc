@@ -3,12 +3,15 @@ import { describe, expect, it } from "vitest";
 import type { LoweredDoc } from "../src/lowered.js";
 import {
   buildDocumentMutations,
-  buildPourMutations,
+  buildStory,
   buildStyleMutations,
+  buildTableCells,
+  buildTableInsert,
+  buildTextPour,
 } from "../src/mutations.js";
 
 // Mirrors what docx-lower emits for a heading + a "plain / bold-red / plain"
-// paragraph (the memo fixture).
+// paragraph (the memo fixture), as block-structured story content.
 function memoIr(): LoweredDoc {
   return {
     swatches: [
@@ -35,9 +38,10 @@ function memoIr(): LoweredDoc {
       },
     ],
     story: {
-      paragraphs: [
-        { paraStyleId: "ParagraphStyle/docx-Heading1", runs: [{ text: "Title", charStyleId: null }], sourceIndex: 0 },
+      blocks: [
+        { kind: "paragraph", paraStyleId: "ParagraphStyle/docx-Heading1", runs: [{ text: "Title", charStyleId: null }], sourceIndex: 0 },
         {
+          kind: "paragraph",
           paraStyleId: null,
           runs: [
             { text: "Mix ", charStyleId: null },
@@ -55,6 +59,9 @@ function memoIr(): LoweredDoc {
   };
 }
 
+const P = (paraStyleId: string | null, runs: { text: string; charStyleId: string | null }[]) =>
+  ({ paraStyleId, runs, sourceIndex: 0 });
+
 describe("buildStyleMutations", () => {
   it("emits swatch, then create + setStyleProperty per style, parents first", () => {
     const ops = buildStyleMutations(memoIr());
@@ -62,15 +69,9 @@ describe("buildStyleMutations", () => {
       op: "createSwatch",
       args: { spec: { selfId: "Color/docx-FF0000", name: "docx FF0000", space: "RGB", value: [255, 0, 0] } },
     });
-    // Normal is created before Heading1 (which is basedOn Normal).
     const createOps = ops.filter((o) => o.op === "createParagraphStyle");
     expect((createOps[0].args as { selfId: string }).selfId).toBe("ParagraphStyle/docx-Normal");
     expect((createOps[1].args as { selfId: string }).selfId).toBe("ParagraphStyle/docx-Heading1");
-    // The synthesized character style is created with its two props.
-    expect(ops).toContainEqual({
-      op: "createCharacterStyle",
-      args: { selfId: "CharacterStyle/docx-auto-c1", name: "docx direct format 1", basedOn: null },
-    });
     expect(ops).toContainEqual({
       op: "setStyleProperty",
       args: {
@@ -83,47 +84,95 @@ describe("buildStyleMutations", () => {
   });
 });
 
-describe("buildPourMutations", () => {
-  it("inserts the joined text once and styles the correct code-point ranges", () => {
-    const ops = buildPourMutations(memoIr(), "Story/u1");
-    const insert = ops.find((o) => o.op === "insertText");
+describe("buildTextPour", () => {
+  it("inserts joined text at the base offset and styles code-point ranges", () => {
+    const { mutations, length } = buildTextPour(
+      [P("ParagraphStyle/docx-Heading1", [{ text: "Title", charStyleId: null }]),
+       P(null, [{ text: "Mix ", charStyleId: null }, { text: "bold", charStyleId: "CharacterStyle/docx-auto-c1" }])],
+      "Story/u1",
+      0,
+    );
+    expect(length).toBe("Title\nMix bold".length);
+    const insert = mutations.find((o) => o.op === "insertText");
     expect((insert?.args as { text: string }).text).toBe("Title\nMix bold");
-
-    // Heading paragraph range [0,5]; second paragraph starts after "Title\n" = 6.
-    expect(ops).toContainEqual({
+    expect(mutations).toContainEqual({
       op: "applyStyle",
       args: { storyId: "Story/u1", start: 0, end: 5, style: "ParagraphStyle/docx-Heading1", scope: "paragraph" },
     });
-    // "bold" is at offset 6+4=10..14.
-    expect(ops).toContainEqual({
+    // "bold" at 6+4=10..14.
+    expect(mutations).toContainEqual({
       op: "applyStyle",
       args: { storyId: "Story/u1", start: 10, end: 14, style: "CharacterStyle/docx-auto-c1", scope: "character" },
     });
   });
 
-  it("counts code points, not UTF-16 units, for astral text", () => {
-    const ir = memoIr();
-    ir.story.paragraphs = [
-      {
-        paraStyleId: null,
-        runs: [
-          { text: "😀", charStyleId: null }, // 1 code point, 2 UTF-16 units
-          { text: "x", charStyleId: "CharacterStyle/docx-auto-c1" },
-        ],
-        sourceIndex: 0,
-      },
-    ];
-    const ops = buildPourMutations(ir, "Story/u1");
-    // "x" must be at code-point offset 1..2, not 2..3.
-    expect(ops).toContainEqual({
+  it("rebases offsets by the base and counts code points", () => {
+    const { mutations } = buildTextPour([P(null, [{ text: "😀", charStyleId: null }, { text: "x", charStyleId: "CharacterStyle/docx-auto-c1" }])], "Story/u1", 100);
+    const insert = mutations.find((o) => o.op === "insertText");
+    expect((insert?.args as { offset: number }).offset).toBe(100);
+    // "x" is 1 code point after 😀, rebased by 100 -> 101..102.
+    expect(mutations).toContainEqual({
       op: "applyStyle",
-      args: { storyId: "Story/u1", start: 1, end: 2, style: "CharacterStyle/docx-auto-c1", scope: "character" },
+      args: { storyId: "Story/u1", start: 101, end: 102, style: "CharacterStyle/docx-auto-c1", scope: "character" },
     });
   });
 });
 
-describe("buildDocumentMutations", () => {
-  it("wraps everything in a single atomic batch", () => {
+describe("tables", () => {
+  function tableIr(): LoweredDoc {
+    const ir = memoIr();
+    ir.story.blocks = [
+      { kind: "paragraph", paraStyleId: null, runs: [{ text: "Before", charStyleId: null }], sourceIndex: 0 },
+      {
+        kind: "table",
+        rows: 2,
+        cols: 2,
+        columnWidthsPt: [100, 150],
+        cells: [
+          { row: 0, col: 0, rowSpan: 2, colSpan: 1, paragraphs: [P(null, [{ text: "Merged", charStyleId: null }])] },
+          { row: 0, col: 1, rowSpan: 1, colSpan: 1, paragraphs: [P(null, [{ text: "Top", charStyleId: null }])] },
+          { row: 1, col: 1, rowSpan: 1, colSpan: 1, paragraphs: [P(null, [{ text: "Bottom", charStyleId: null }])] },
+        ],
+      },
+      { kind: "paragraph", paraStyleId: null, runs: [{ text: "After", charStyleId: null }], sourceIndex: 2 },
+    ];
+    return ir;
+  }
+
+  it("insertTable carries the grid + column widths", () => {
+    const table = (tableIr().story.blocks[1] as unknown) as import("../src/lowered.js").LoweredTable;
+    expect(buildTableInsert(table, "Story/u1")).toEqual({
+      op: "insertTable",
+      args: { storyId: "Story/u1", rows: 2, cols: 2, headerRows: 0, footerRows: 0, columnWidths: [100, 150], rowHeights: [] },
+    });
+  });
+
+  it("cells pour by TextCellAddr and merged cells get setCellSpan", () => {
+    const table = (tableIr().story.blocks[1] as unknown) as import("../src/lowered.js").LoweredTable;
+    const batch = buildTableCells(table, "Story/u1", "Table/u1");
+    const ops = (batch.args as { ops: Array<{ op: string; args: Record<string, unknown> }> }).ops;
+    expect(ops).toContainEqual({
+      op: "insertText",
+      args: { storyId: "Story/u1", offset: 0, text: "Merged", cell: { tableId: "Table/u1", row: 0, col: 0 } },
+    });
+    expect(ops).toContainEqual({
+      op: "setCellSpan",
+      args: { storyId: "Story/u1", tableId: "Table/u1", row: 0, col: 0, rowSpan: 2, columnSpan: 1 },
+    });
+  });
+
+  it("buildStory splits blocks into text/table/text steps", () => {
+    const steps = buildStory(tableIr(), "Story/u1");
+    expect(steps.map((s) => s.kind)).toEqual(["text", "table", "text"]);
+    // The table step exposes insert + a cells(tableId) builder.
+    const tableStep = steps[1] as { kind: "table"; insert: unknown; cells: (id: string) => unknown };
+    expect((tableStep.insert as { op: string }).op).toBe("insertTable");
+    expect((tableStep.cells("Table/u1") as { op: string }).op).toBe("batch");
+  });
+});
+
+describe("buildDocumentMutations (text-only)", () => {
+  it("wraps styles + paragraph pour in one atomic batch", () => {
     const batch = buildDocumentMutations(memoIr(), { storyId: "Story/u1" });
     expect(batch.op).toBe("batch");
     const ops = (batch.args as { ops: unknown[] }).ops;

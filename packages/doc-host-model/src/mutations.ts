@@ -7,12 +7,17 @@
 
 import type { Mutation } from "@paged-media/plugin-api";
 
-import type { LoweredDoc, LoweredStyle } from "./lowered.js";
+import type {
+  LoweredCell,
+  LoweredDoc,
+  LoweredParagraph,
+  LoweredStyle,
+  LoweredTable,
+} from "./lowered.js";
 
 /**
  * Count a string's length in Unicode scalar values (code points), matching the
- * `char`-offset convention of the engine's `InsertText`/`ApplyStyle` ops
- * (`Array.from` iterates code points, so astral characters count as one).
+ * `char`-offset convention of the engine's `InsertText`/`ApplyStyle` ops.
  */
 function codePointLen(s: string): number {
   return Array.from(s).length;
@@ -21,83 +26,49 @@ function codePointLen(s: string): number {
 /**
  * Swatch + style-catalog mutations. Emitted before any pour so `applyStyle`
  * references resolve. Swatches precede styles (a style's `characterFillColor`
- * references a swatch); styles are already topologically ordered by `docx-lower`
- * so every `basedOn` parent precedes its child.
+ * references a swatch); styles are already topologically ordered by `docx-lower`.
  */
 export function buildStyleMutations(ir: LoweredDoc): Mutation[] {
   const ops: Mutation[] = [];
-
   for (const sw of ir.swatches) {
     ops.push({
       op: "createSwatch",
-      args: {
-        spec: {
-          selfId: sw.id,
-          name: sw.name,
-          space: sw.space,
-          value: sw.value,
-        },
-      },
+      args: { spec: { selfId: sw.id, name: sw.name, space: sw.space, value: sw.value } },
     } as Mutation);
   }
-
   for (const style of ir.styles) {
     ops.push(createStyleOp(style));
     for (const prop of style.props) {
       ops.push({
         op: "setStyleProperty",
-        args: {
-          collection: style.collection,
-          styleId: style.id,
-          path: prop.path,
-          value: prop.value,
-        },
+        args: { collection: style.collection, styleId: style.id, path: prop.path, value: prop.value },
       } as Mutation);
     }
   }
-
   return ops;
 }
 
 function createStyleOp(style: LoweredStyle): Mutation {
-  const op =
-    style.collection === "paragraph"
-      ? "createParagraphStyle"
-      : "createCharacterStyle";
-  return {
-    op,
-    args: {
-      selfId: style.id,
-      name: style.name,
-      basedOn: style.basedOn ?? null,
-    },
-  } as Mutation;
+  const op = style.collection === "paragraph" ? "createParagraphStyle" : "createCharacterStyle";
+  return { op, args: { selfId: style.id, name: style.name, basedOn: style.basedOn ?? null } } as Mutation;
 }
 
-/**
- * Pour the story into the frame chain rooted at `storyId`: one `insertText` of
- * the whole body (paragraphs joined by `\n`), then `applyStyle` over each
- * paragraph range and each run range. Offsets are tracked in code points.
- *
- * `applyStyle` needs its target style to already exist, so the caller must apply
- * {@link buildStyleMutations} first (or bundle both via
- * {@link buildDocumentMutations}).
- */
-export function buildPourMutations(ir: LoweredDoc, storyId: string): Mutation[] {
-  const ops: Mutation[] = [];
-  const paragraphs = ir.story.paragraphs;
+// ---------------------------------------------------------------------------
+// Text pour (a contiguous run of paragraph blocks)
 
-  // 1. Assemble the full text and remember each paragraph/run range.
-  interface Range {
-    start: number;
-    end: number;
-    style: string;
-    scope: "paragraph" | "character";
-  }
+interface Range {
+  start: number;
+  end: number;
+  style: string;
+  scope: "paragraph" | "character";
+}
+
+/** The joined text of a paragraph run + the style ranges over it, offsets
+ *  relative to `base`. */
+function poured(paragraphs: LoweredParagraph[], base: number): { text: string; ranges: Range[] } {
   const ranges: Range[] = [];
   let text = "";
-  let offset = 0;
-
+  let offset = base;
   paragraphs.forEach((para, pIdx) => {
     const paraStart = offset;
     for (const run of para.runs) {
@@ -105,47 +76,38 @@ export function buildPourMutations(ir: LoweredDoc, storyId: string): Mutation[] 
       text += run.text;
       offset += codePointLen(run.text);
       if (run.charStyleId) {
-        ranges.push({
-          start: runStart,
-          end: offset,
-          style: run.charStyleId,
-          scope: "character",
-        });
+        ranges.push({ start: runStart, end: offset, style: run.charStyleId, scope: "character" });
       }
     }
-    const paraEnd = offset;
     if (para.paraStyleId) {
-      ranges.push({
-        start: paraStart,
-        end: paraEnd,
-        style: para.paraStyleId,
-        scope: "paragraph",
-      });
+      ranges.push({ start: paraStart, end: offset, style: para.paraStyleId, scope: "paragraph" });
     }
-    // Paragraph separator (not after the final paragraph).
     if (pIdx < paragraphs.length - 1) {
       text += "\n";
       offset += 1;
     }
   });
+  return { text, ranges };
+}
 
+/** insertText + applyStyle for a contiguous paragraph run, offsets from `base`. */
+export function buildTextPour(
+  paragraphs: LoweredParagraph[],
+  storyId: string,
+  base: number,
+): { mutations: Mutation[]; length: number } {
+  const { text, ranges } = poured(paragraphs, base);
+  const ops: Mutation[] = [];
   if (text.length > 0) {
-    ops.push({
-      op: "insertText",
-      args: { storyId, offset: 0, text, cell: null },
-    } as Mutation);
+    ops.push({ op: "insertText", args: { storyId, offset: base, text, cell: null } } as Mutation);
   }
-
-  // 2. Apply paragraph styles first, then character styles (so a run's direct
-  //    formatting wins over its paragraph's).
   for (const r of ranges.filter((r) => r.scope === "paragraph")) {
     ops.push(applyStyleOp(storyId, r.start, r.end, r.style, "paragraph"));
   }
   for (const r of ranges.filter((r) => r.scope === "character")) {
     ops.push(applyStyleOp(storyId, r.start, r.end, r.style, "character"));
   }
-
-  return ops;
+  return { mutations: ops, length: codePointLen(text) };
 }
 
 function applyStyleOp(
@@ -155,23 +117,117 @@ function applyStyleOp(
   style: string,
   scope: "paragraph" | "character",
 ): Mutation {
+  return { op: "applyStyle", args: { storyId, start, end, style, scope } } as Mutation;
+}
+
+// ---------------------------------------------------------------------------
+// Tables
+
+/** The `insertTable` op (its outcome mints the tableId). */
+export function buildTableInsert(table: LoweredTable, storyId: string): Mutation {
   return {
-    op: "applyStyle",
-    args: { storyId, start, end, style, scope },
+    op: "insertTable",
+    args: {
+      storyId,
+      rows: table.rows,
+      cols: table.cols,
+      headerRows: 0,
+      footerRows: 0,
+      columnWidths: table.columnWidthsPt,
+      rowHeights: [],
+    },
   } as Mutation;
 }
 
+/** One flattened cell's text (paragraphs joined by newline). NOTE: cell-internal
+ *  paragraph/character styling is not applied — `applyStyle` carries no cell
+ *  qualifier, so ranged styling can't reach cell interiors (a Tier-2 limitation);
+ *  cell text is poured at the cell's default formatting. */
+function cellText(cell: LoweredCell): string {
+  return cell.paragraphs.map((p) => p.runs.map((r) => r.text).join("")).join("\n");
+}
+
+/** The cell-pour + merge batch for a resolved `tableId`: `insertText` per cell
+ *  (addressed by TextCellAddr) + `setCellSpan` per merged cell. */
+export function buildTableCells(table: LoweredTable, storyId: string, tableId: string): Mutation {
+  const ops: Mutation[] = [];
+  for (const cell of table.cells) {
+    const text = cellText(cell);
+    if (text.length > 0) {
+      ops.push({
+        op: "insertText",
+        args: { storyId, offset: 0, text, cell: { tableId, row: cell.row, col: cell.col } },
+      } as Mutation);
+    }
+    if (cell.rowSpan > 1 || cell.colSpan > 1) {
+      ops.push({
+        op: "setCellSpan",
+        args: {
+          storyId,
+          tableId,
+          row: cell.row,
+          col: cell.col,
+          rowSpan: cell.rowSpan,
+          columnSpan: cell.colSpan,
+        },
+      } as Mutation);
+    }
+  }
+  return { op: "batch", args: { ops } } as Mutation;
+}
+
+// ---------------------------------------------------------------------------
+// The story plan (block-aware; tables need mid-execution tableId resolution)
+
+/** One step the bundle executes in order against a resolved `storyId`. A text
+ *  step builds its ops given the running story offset (advancing it by `length`);
+ *  a table step inserts the table (its outcome mints the id), then pours cells. */
+export type StoryStep =
+  | { kind: "text"; length: number; mutations: (baseOffset: number) => Mutation[] }
+  | { kind: "table"; insert: Mutation; cells: (tableId: string) => Mutation };
+
+/** Split the story's blocks into executable steps: consecutive paragraph blocks
+ *  coalesce into one text step; each table becomes a table step. */
+export function buildStory(ir: LoweredDoc, storyId: string): StoryStep[] {
+  const steps: StoryStep[] = [];
+  let pending: LoweredParagraph[] = [];
+  const flush = () => {
+    if (pending.length === 0) return;
+    const paras = pending;
+    pending = [];
+    steps.push({
+      kind: "text",
+      length: buildTextPour(paras, storyId, 0).length,
+      mutations: (base) => buildTextPour(paras, storyId, base).mutations,
+    });
+  };
+  for (const block of ir.story.blocks) {
+    if (block.kind === "table") {
+      flush();
+      const table: LoweredTable = block;
+      steps.push({
+        kind: "table",
+        insert: buildTableInsert(table, storyId),
+        cells: (tableId) => buildTableCells(table, storyId, tableId),
+      });
+    } else {
+      pending.push(block);
+    }
+  }
+  flush();
+  return steps;
+}
+
 /**
- * Everything needed to realize the lowering into the story `storyId`, as one
- * atomic `batch` (a single undo step): style catalog + swatches, then the pour.
+ * Everything needed to realize a TEXT-ONLY lowering into `storyId`, as one atomic
+ * `batch`: style catalog + swatches, then the paragraph pour. For documents with
+ * tables use {@link buildStory} (tables need mid-execution id resolution).
  */
-export function buildDocumentMutations(
-  ir: LoweredDoc,
-  opts: { storyId: string },
-): Mutation {
+export function buildDocumentMutations(ir: LoweredDoc, opts: { storyId: string }): Mutation {
+  const paragraphs = ir.story.blocks.filter((b) => b.kind === "paragraph") as LoweredParagraph[];
   const ops: Mutation[] = [
     ...buildStyleMutations(ir),
-    ...buildPourMutations(ir, opts.storyId),
+    ...buildTextPour(paragraphs, opts.storyId, 0).mutations,
   ];
   return { op: "batch", args: { ops } } as Mutation;
 }

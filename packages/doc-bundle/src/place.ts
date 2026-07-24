@@ -24,8 +24,19 @@
 // written to the shipped contract and degrades honestly at each read door.
 
 import type { LoweredDoc } from "@paged-media/doc-host-model";
-import { buildDocumentMutations } from "@paged-media/doc-host-model";
+import { buildStory, buildStyleMutations } from "@paged-media/doc-host-model";
 import type { BundleHost, Diagnostic, ElementId, PageId } from "@paged-media/plugin-api";
+
+/** A conservative story-offset advance past a table paragraph. The exact
+ *  footprint is refined during editor integration (a table occupies one
+ *  paragraph position in the story). */
+const TABLE_FOOTPRINT = 1;
+
+/** Extract the bare table id string from an `insertTable` outcome's createdId. */
+function tableIdOf(id: ElementId | null): string | null {
+  if (id && id.kind === "table") return id.id.table_id;
+  return null;
+}
 
 /** The diagnostics key this plugin publishes under. */
 export const DIAGNOSTICS_KEY = "media.paged.doc";
@@ -92,8 +103,28 @@ export async function placeEmbedded(
     return frameId;
   }
 
-  // Style catalog + swatches + the pour, as one undo step.
-  await host.document.mutate(buildDocumentMutations(ir, { storyId }));
+  // 1. Style catalog + swatches (must exist before applyStyle references them).
+  const styleOps = buildStyleMutations(ir);
+  if (styleOps.length > 0) {
+    await host.document.mutate({ op: "batch", args: { ops: styleOps } });
+  }
+
+  // 2. Walk the story plan in order: text runs pour at the running offset;
+  //    tables insert (the outcome mints the id) then pour their cells.
+  let offset = 0;
+  for (const step of buildStory(ir, storyId)) {
+    if (step.kind === "text") {
+      await host.document.mutate({ op: "batch", args: { ops: step.mutations(offset) } });
+      offset += step.length;
+    } else {
+      const outcome = await host.document.mutate(step.insert);
+      const tableId = outcome.applied ? tableIdOf(outcome.createdId) : null;
+      if (tableId) {
+        await host.document.mutate(step.cells(tableId));
+      }
+      offset += TABLE_FOOTPRINT;
+    }
+  }
 
   // Persist the source package (travels with the .paged file) + the binding.
   const partPath = `paged/media.paged.doc/${storyId}/source.docx`;
@@ -101,7 +132,7 @@ export async function placeEmbedded(
     await host.parts.write(partPath, source);
     await host.document.setMetadata(frameId, {
       v: 1,
-      data: { part: partPath, blocks: ir.story.paragraphs.length },
+      data: { part: partPath, blocks: ir.story.blocks.length },
     });
   } catch (err) {
     host.log.warn(`paged.doc: could not persist source part: ${String(err)}`);

@@ -59,6 +59,27 @@ conformance fixture).
   18 pt/level default is used), list continuation/restart nuances, and bullet
   leader/suffix text.
 
+## Tier-2 — tables
+
+- **`w:tbl` → native tables.** The grid (`w:tblGrid/w:gridCol` widths), rows, and
+  cells are parsed; `gridSpan` (horizontal) and `vMerge` (vertical) are resolved
+  into positioned cells with row/col spans (a `vMerge`-continue cell is absorbed
+  into its restart cell above and not emitted). The story IR is now
+  **block-structured** (`LoweredBlock` = paragraph | table) so tables interleave
+  with body paragraphs in document order.
+- **Lowering → mutations.** `doc-host-model` emits `insertTable` (grid + column
+  widths), then per cell an `insertText` addressed by `TextCellAddr{tableId,row,
+  col}` and a `setCellSpan` for merged cells — mirroring the proven `sheet`
+  table lane. Because `insertTable`'s outcome mints the table id, the host-model
+  exposes a **phased story plan** (`buildStory`): text steps + table steps
+  (`{insert, cells(tableId)}`), which the bundle executes in order.
+- Verified end-to-end through the real wasm artifact (`table_docx`): block order,
+  grid, widths, gridSpan, and vMerge all lower correctly.
+- **Honest limitations:** cell-internal paragraph/character *styling* is not
+  applied (`applyStyle` carries no cell qualifier — cell text pours at the
+  default); and the exact story offset past a table (`TABLE_FOOTPRINT`) is a
+  conservative constant refined during editor integration.
+
 ## Deferred (labelled, never faked)
 
 - **Edited save-back** (native → WordprocessingML projection, targeted patch) —

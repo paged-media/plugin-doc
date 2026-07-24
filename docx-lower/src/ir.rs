@@ -119,11 +119,59 @@ pub struct LoweredTabStop {
     pub leader: Option<String>,
 }
 
-/// The body as one native story.
+/// The body as one native story: a sequence of blocks (paragraphs + tables) in
+/// document order.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoweredStory {
+    pub blocks: Vec<LoweredBlock>,
+}
+
+/// One top-level story block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LoweredBlock {
+    Paragraph(LoweredParagraph),
+    Table(LoweredTable),
+}
+
+/// A native table to build via `insertTable` + per-cell `insertText` +
+/// `setCellSpan`. `rows`/`cols` size the grid; `cells` are the non-absorbed
+/// (non-`vMerge`-continue) cells with their resolved grid position + spans.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoweredTable {
+    pub rows: u32,
+    pub cols: u32,
+    /// Column widths in points (may be empty ⇒ let the engine auto-size).
+    pub column_widths_pt: Vec<f32>,
+    pub cells: Vec<LoweredCell>,
+}
+
+/// One table cell, addressed by its resolved grid position.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoweredCell {
+    pub row: u32,
+    pub col: u32,
+    pub row_span: u32,
+    pub col_span: u32,
+    /// The cell's block content, lowered as paragraphs.
     pub paragraphs: Vec<LoweredParagraph>,
+}
+
+impl LoweredStory {
+    /// Just the paragraph blocks, in order (convenience for tests/consumers that
+    /// only care about body text; skips table blocks).
+    pub fn paragraphs(&self) -> Vec<&LoweredParagraph> {
+        self.blocks
+            .iter()
+            .filter_map(|b| match b {
+                LoweredBlock::Paragraph(p) => Some(p),
+                LoweredBlock::Table(_) => None,
+            })
+            .collect()
+    }
 }
 
 /// A paragraph: an effective (Word or synthesized) paragraph style applied over

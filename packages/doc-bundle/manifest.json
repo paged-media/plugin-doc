@@ -1,0 +1,37 @@
+{
+  "id": "media.paged.doc",
+  "name": "paged.doc",
+  "version": "0.1.0",
+  "apiVersion": "^0.2",
+  "publisher": "paged.media",
+  "capabilities": {
+    "document": {
+      "read": "broad",
+      "write": "scoped",
+      "readNative": true,
+      "openNative": true
+    },
+    "editContext": ["wordDocument"],
+    "clipboard": "none",
+    "wasm": [
+      {
+        "name": "docx-engine",
+        "path": "bin/docx_js_bg.wasm",
+        "purpose": "compute",
+        "maxBytes": 8388608
+      }
+    ]
+  },
+  "contributes": {
+    "panels": ["media.paged.doc.panel.outline"],
+    "commands": ["media.paged.doc.command.placeDoc"],
+    "importers": ["media.paged.doc.importer.docx"],
+    "exporters": ["media.paged.doc.exporter.docx"],
+    "editContexts": [{ "type": "wordDocument", "entry": "doubleClick" }],
+    "objectTypes": [{ "type": "wordDocument", "bakedFallback": "group" }],
+    "partTypes": [
+      { "type": "docx", "role": "source", "format": "opc", "linkable": true },
+      { "type": "docLowered", "role": "derived", "format": "json" }
+    ]
+  }
+}

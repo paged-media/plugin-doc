@@ -1,0 +1,26 @@
+[package]
+name = "docx-js"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "paged.doc single wasm-bindgen surface: import + Tier-0 lowering behind a DocSession. Two layers — a plain-Rust core (native-testable) and a thin wasm shim (nothing computes there)."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+docx-core.workspace = true
+docx-import.workspace = true
+docx-lower.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen.workspace = true
+serde-wasm-bindgen.workspace = true
+console_error_panic_hook.workspace = true

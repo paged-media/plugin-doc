@@ -1,0 +1,7 @@
+# Pinned for reproducible local + CI builds. 1.93.0 matches the sibling
+# plugin repos (plugin-sheets/plugin-image) and the CI toolchain. ooxmlsdk
+# 0.12 is edition-2024, which needs rustc >= 1.85 — 1.93.0 satisfies it.
+[toolchain]
+channel = "1.93.0"
+targets = ["wasm32-unknown-unknown"]
+components = ["rustfmt", "clippy"]

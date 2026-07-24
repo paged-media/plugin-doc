@@ -1,0 +1,21 @@
+[package]
+name = "paged-ooxml"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# License OVERRIDE: paged-ooxml is the shared embeddable OOXML foundation, so it
+# is MPL-2.0 (like plugin-sdk / the viewer), NOT the AGPL workspace default.
+license = "MPL-2.0 OR LicenseRef-PMEL"
+publish = false
+description = "Shared ECMA-376 (OOXML) foundation for paged.doc/sheet/slide: OPC container, _rels graph, content-types, mc:AlternateContent resolution, and verbatim carry-through preservation over a vendored ooxmlsdk typed part DOM."
+
+[lints]
+workspace = true
+
+[dependencies]
+ooxmlsdk.workspace = true
+zip.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+compact_str.workspace = true

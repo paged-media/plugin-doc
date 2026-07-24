@@ -1,0 +1,24 @@
+{
+  "name": "@paged-media/doc-host-model",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only OR LicenseRef-PMEL",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsup src/index.ts --format esm --dts"
+  },
+  "dependencies": {
+    "@paged-media/plugin-api": "canary"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8",
+    "tsup": "^8.3.5"
+  }
+}

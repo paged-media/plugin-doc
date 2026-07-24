@@ -1,0 +1,15 @@
+[package]
+name = "docx-lower"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "paged.doc Tier-0 lowering: pure docx-core -> a plugin-local Lowered IR (native stories + synthesized style catalog + swatches + section geometry), the contract the TS doc-host-model turns into host mutations. No SDK, no core dependency."
+
+[lints]
+workspace = true
+
+[dependencies]
+docx-core.workspace = true
+serde.workspace = true

@@ -1,0 +1,5 @@
+# The TS side of paged.doc — thin glue ONLY. ALL DOCX semantics (OPC parse,
+# WordprocessingML -> native lowering, preservation) are the Rust workspace
+# compiled to one wasm module (docx-js). Layout follows plugin-sheets.
+packages:
+  - "packages/*"

@@ -1,0 +1,21 @@
+[package]
+name = "docx-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "paged.doc TEST-ONLY: minimal .docx fixture builders + the byte-identical zero-edit round-trip harness and Tier-0 lowering assertions."
+
+[lints]
+workspace = true
+
+[dependencies]
+docx-core.workspace = true
+docx-import.workspace = true
+docx-lower.workspace = true
+paged-ooxml.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+docx-js.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "docx-import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "paged.doc Tier-0 importer: an OPC package (via paged-ooxml) + the ooxmlsdk WordprocessingML typed DOM -> the docx-core semantic model. A scanner, not a validator: malformed input yields a partial model + an error, never a panic."
+
+[lints]
+workspace = true
+
+[dependencies]
+paged-ooxml.workspace = true
+docx-core.workspace = true

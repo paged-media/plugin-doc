@@ -1,0 +1,57 @@
+# paged.doc — Cargo workspace.
+#
+# Crates live at REPO TOP LEVEL (mirrors plugin-sheets §4 layout), not under
+# crates/. `paged-ooxml` is the shared MPL-2.0 OOXML foundation; every `docx-*`
+# crate is AGPL-3.0 OR PMEL (the workspace default below). paged-ooxml overrides
+# its own `license` field to MPL.
+[workspace]
+resolver = "2"
+# DOC-02 wasm go/no-go spike PASSED 2026-07-23 (ooxmlsdk 0.12 builds for wasm32);
+# full member set restored.
+members = [
+    "paged-ooxml",
+    "docx-core",
+    "docx-import",
+    "docx-lower",
+    "docx-js",
+    "docx-conformance",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.93"
+license = "AGPL-3.0-only OR LicenseRef-PMEL"
+publish = false
+
+[workspace.dependencies]
+# OOXML typed part DOM (DOC-02: committed as the semantic-parse foundation).
+ooxmlsdk = { version = "0.12", features = ["mce"] }
+# OPC container + preservation carry-through (proven wasm in sheet-xlsx).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.41"
+# Shared data plumbing.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+compact_str = { version = "0.8", features = ["serde"] }
+# wasm boundary (docx-js only).
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"
+
+# Intra-workspace crates.
+paged-ooxml = { path = "paged-ooxml" }
+docx-core = { path = "docx-core" }
+docx-import = { path = "docx-import" }
+docx-lower = { path = "docx-lower" }
+docx-js = { path = "docx-js" }
+
+[workspace.lints.clippy]
+all = "warn"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1

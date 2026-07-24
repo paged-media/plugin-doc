@@ -1,0 +1,33 @@
+{
+  "name": "@paged-media/doc",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "AGPL-3.0-only OR LicenseRef-PMEL",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest.json": "./manifest.json"
+  },
+  "files": ["dist", "bin", "manifest.json"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "build": "tsup src/index.ts --format esm --dts"
+  },
+  "dependencies": {
+    "@paged-media/plugin-api": "canary",
+    "@paged-media/plugin-sdk": "canary"
+  },
+  "peerDependencies": {
+    "react": "^18.3.0"
+  },
+  "devDependencies": {
+    "@paged-media/doc-host-model": "workspace:*",
+    "@types/node": "^20.19.0",
+    "@types/react": "^18.3.0",
+    "react": "^18.3.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8",
+    "tsup": "^8.3.5"
+  }
+}

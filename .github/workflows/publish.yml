@@ -1,0 +1,55 @@
+name: publish
+
+# Publish @paged-media/doc to npm via OIDC TRUSTED PUBLISHING (tokenless).
+# Requires a Trusted Publisher on npm: org paged-media, this repo, workflow
+# publish.yml. Pre-1.0 -canary.N under the `canary` dist-tag; unchanged skip.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC token for trusted publishing
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93.0
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: install pinned wasm-bindgen-cli (Cargo.lock version)
+        run: |
+          V=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep version | head -1 | cut -d'"' -f2)
+          cargo install wasm-bindgen-cli --version "$V" --locked
+      - name: binaryen (prebuilt wasm-opt; pinned — old apt binaryen breaks externref)
+        run: |
+          curl -fsSL https://github.com/WebAssembly/binaryen/releases/download/version_119/binaryen-version_119-x86_64-linux.tar.gz | tar xz
+          echo "$PWD/binaryen-version_119/bin" >> "$GITHUB_PATH"
+      - name: build wasm
+        run: bash scripts/build-wasm.sh
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # >= 22.14 for OIDC trusted publishing
+      - name: upgrade npm (OIDC needs >= 11.5.1)
+        run: npm install -g npm@latest
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - name: publish via OIDC (canary)
+        run: |
+          set -e
+          for dir in packages/doc-bundle; do
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "skip $name@$version (already published)"; continue
+            fi
+            (cd "$dir" && npm publish --provenance --tag canary --access public)
+          done

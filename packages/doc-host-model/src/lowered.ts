@@ -54,6 +54,10 @@ export interface LoweredSwatch {
 export interface LoweredRun {
   text: string;
   charStyleId?: string | null;
+  /** When the run is a hyperlink, its external target URL — the host-model emits
+   *  an `insertHyperlink` over the run range so it becomes natively clickable.
+   *  (The blue+underline look still rides on `charStyleId`.) Absent otherwise. */
+  hyperlinkUrl?: string | null;
 }
 
 export interface LoweredParagraph {

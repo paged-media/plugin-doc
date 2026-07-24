@@ -210,6 +210,12 @@ pub struct LoweredRun {
     pub text: String,
     /// Full `CharacterStyle/…` token to `applyStyle` over the run, or `None`.
     pub char_style_id: Option<String>,
+    /// When the run is a hyperlink, its resolved target URL. The host-model
+    /// emits an `insertHyperlink` over the run range so it becomes a native
+    /// clickable link (the blue+underline look still comes from `char_style_id`;
+    /// this only carries the click target). `None` for ordinary runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyperlink_url: Option<String>,
 }
 
 /// Page geometry for the first section, in points.

@@ -71,6 +71,13 @@ interface ImageAt {
   uri: string;
 }
 
+/** A hyperlink span: the `[start, end)` story offsets of a linked run + target. */
+interface LinkAt {
+  start: number;
+  end: number;
+  url: string;
+}
+
 /** The joined text of a paragraph run + the style ranges over it + image
  *  placements, offsets relative to `base`.
  *
@@ -82,9 +89,10 @@ interface ImageAt {
 function poured(
   paragraphs: LoweredParagraph[],
   base: number,
-): { text: string; ranges: Range[]; images: ImageAt[]; length: number } {
+): { text: string; ranges: Range[]; images: ImageAt[]; links: LinkAt[]; length: number } {
   const ranges: Range[] = [];
   const images: ImageAt[] = [];
+  const links: LinkAt[] = [];
   let text = "";
   let offset = base;
   paragraphs.forEach((para, pIdx) => {
@@ -95,6 +103,9 @@ function poured(
       offset += codePointLen(run.text);
       if (run.charStyleId) {
         ranges.push({ start: runStart, end: offset, style: run.charStyleId, scope: "character" });
+      }
+      if (run.hyperlinkUrl && offset > runStart) {
+        links.push({ start: runStart, end: offset, url: run.hyperlinkUrl });
       }
     }
     if (para.paraStyleId) {
@@ -110,7 +121,7 @@ function poured(
       text += "\n";
     }
   });
-  return { text, ranges, images, length: offset - base };
+  return { text, ranges, images, links, length: offset - base };
 }
 
 /** insertText + applyStyle + insertAnchoredFrame (inline images) for a
@@ -120,7 +131,7 @@ export function buildTextPour(
   storyId: string,
   base: number,
 ): { mutations: Mutation[]; length: number } {
-  const { text, ranges, images, length } = poured(paragraphs, base);
+  const { text, ranges, images, links, length } = poured(paragraphs, base);
   const ops: Mutation[] = [];
   if (text.length > 0) {
     ops.push({ op: "insertText", args: { storyId, offset: base, text, cell: null } } as Mutation);
@@ -144,6 +155,16 @@ export function buildTextPour(
         height: img.heightPt,
         imageUri: img.uri,
       },
+    } as unknown as Mutation);
+  }
+  for (const link of links) {
+    // `insertHyperlink` is a v53 wire op (core protocol 53) — like
+    // insertAnchoredFrame it postdates the published Mutation union, so cast via
+    // `unknown`. The engine mints the source/destination/hyperlink ids and makes
+    // the span clickable; older hosts reject it (the blue+underline still shows).
+    ops.push({
+      op: "insertHyperlink",
+      args: { storyId, start: link.start, end: link.end, url: link.url },
     } as unknown as Mutation);
   }
   return { mutations: ops, length };

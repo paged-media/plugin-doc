@@ -116,14 +116,19 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
     }
 
     if ctx.hyperlinks > 0 {
-        ctx.diagnostics.push(Diagnostic::info(
-            format!(
-                "{} hyperlink run(s) styled (blue + underline); the clickable link is \
-                 preserved in the source .docx but not yet a native clickable link",
-                ctx.hyperlinks
-            ),
-            3,
-        ));
+        let styled_only = ctx.hyperlinks - ctx.clickable_links;
+        let mut msg = format!(
+            "{} hyperlink run(s) styled (blue + underline); {} became native \
+             clickable link(s)",
+            ctx.hyperlinks, ctx.clickable_links
+        );
+        if styled_only > 0 {
+            msg.push_str(&format!(
+                ", {styled_only} internal #anchor target(s) stay styled-only \
+                 (native URL destinations only for now)"
+            ));
+        }
+        ctx.diagnostics.push(Diagnostic::info(msg, 3));
     }
 
     let section = lower_section(doc.sections.first());
@@ -152,8 +157,11 @@ struct Lowering {
     /// The docDefaults base style id, if docDefaults carried any properties.
     /// Un-based Word styles + un-styled paragraphs fall back to it.
     default_base: Option<String>,
-    /// Count of hyperlink runs styled (for the clickable-link diagnostic).
+    /// Count of hyperlink runs styled (blue + underline).
     hyperlinks: u32,
+    /// Of those, how many carry an EXTERNAL target that becomes a native
+    /// clickable link (internal `#anchor` targets stay styled-only for now).
+    clickable_links: u32,
 }
 
 impl Lowering {
@@ -334,11 +342,21 @@ impl Lowering {
         let mut props = self.run_props(&r.props);
 
         // A hyperlink run gets the conventional look — blue + underline — unless
-        // the run already sets those directly. (The clickable link itself is
-        // preserved in the source .docx; a native clickable-hyperlink door is
-        // future work.)
+        // the run already sets those directly. The blue/underline is the
+        // APPEARANCE; the CLICKABILITY comes from a native `insertHyperlink`
+        // over the run range (emitted by the host-model from `hyperlink_url`).
+        // Internal `#anchor` targets keep the look but no native link yet (the
+        // core door registers URL destinations, not text anchors).
+        let external_url = r
+            .hyperlink
+            .as_deref()
+            .filter(|t| !t.starts_with('#'))
+            .map(str::to_string);
         if r.hyperlink.is_some() {
             self.hyperlinks += 1;
+            if external_url.is_some() {
+                self.clickable_links += 1;
+            }
             if !props.iter().any(|p| p.path == "characterFillColor") {
                 let swatch = self.swatch_for("0000FF");
                 props.push(StyleProp {
@@ -359,6 +377,7 @@ impl Lowering {
         LoweredRun {
             text: r.text.clone(),
             char_style_id,
+            hyperlink_url: external_url,
         }
     }
 

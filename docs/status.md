@@ -103,19 +103,44 @@ conformance fixture).
   the later refinement); anchored frames position at the paragraph level (not a
   precise intra-paragraph offset — the renderer's own current behavior).
 
-## Tier-3 — hyperlinks
+## Tier-3 — hyperlinks (now native clickable, with a core door)
 
-- **`w:hyperlink` → styled + preserved.** A hyperlink's `r:id` is resolved through
-  the document rels to its external URL (or `#anchor` for an internal bookmark),
-  carried on the run, and lowered with the conventional hyperlink look — blue
-  (`0000FF`) + underline — via a synthesized character style (unless the run sets
-  those directly). No core door + no TS change (standard character props).
-  Verified end-to-end through the real wasm artifact (`hyperlink_docx`).
-- **Honest limitation (diagnosed):** the run is styled and the target is preserved
-  in the source `.docx`, but it is not yet a *native clickable* link — the native
-  hyperlink model is multi-part (a source span + a designmap `Hyperlink` + a
-  `HyperlinkDestination`) with no create-mutation, a larger core door than the
-  inline-image one. An ADR-007 diagnostic surfaces this on every hyperlinked doc.
+- **`w:hyperlink` → native clickable link.** A hyperlink's `r:id` is resolved
+  through the document rels to its external URL (or `#anchor` for an internal
+  bookmark) and carried on the run. Two things happen at lowering: (1) the
+  conventional *look* — blue (`0000FF`) + underline — rides on a synthesized
+  character style (unless the run sets those directly); (2) the external URL is
+  carried on `LoweredRun.hyperlink_url`, and `doc-host-model` emits an
+  **`insertHyperlink`** over the run's story range so the span is genuinely
+  clickable. Verified end-to-end through the real wasm artifact (`hyperlink_docx`:
+  the linked run carries the URL + the diagnostic reports it became a native link).
+- **This required a core door (opened): `InsertHyperlink`.** The IDML hyperlink
+  model — a `HyperlinkTextSource` run tag + a designmap `Hyperlink{source,
+  destination}` + a `HyperlinkURLDestination` — parsed and rendered
+  (`links.rs`), but had no *create* mutation. Added `InsertHyperlink` /
+  `RemoveHyperlink` (paged-mutate + wire + protocol **52 → 53**): it splits runs
+  over `[start, end)`, tags the middle `hyperlink_source`, and registers the two
+  designmap resources; the engine mints the three cross-referencing ids so the
+  wire stays `{storyId, start, end, url}`. (Cross-repo, like the anchored-frame
+  door: `plugin-doc` stays isolation-clean, `core` carries the door.)
+- **Honest limitations:** internal `#anchor` targets keep the blue+underline look
+  but are not yet native links (the core door registers URL destinations, not text
+  anchors — a later refinement); the diagnostic reports how many became clickable
+  vs styled-only.
+
+## Offset convention (correctness note)
+
+Story character offsets in `doc-host-model` are **contiguous** across paragraphs:
+the engine consumes the paragraph-break `\n` on `insertText` split — it is not a
+stored character — so `applyStyle` / `insertAnchoredFrame` / `insertHyperlink`
+ranges must NOT count it. (Fixed a latent off-by-one where the pour advanced the
+offset past the separator; it was invisible in IR/wasm tests and would only have
+bitten a live multi-paragraph apply.) NB: this matches core's range-styling apply
+ops (`apply::character`/`paragraph`/`hyperlink`, all char-contiguous); it is
+deliberately NOT the `mutate::locate`/`InsertText` byte+`\n` address space — those
+two conventions diverge inside core today (a pre-existing split worth an RFI note).
+paged.doc issues a single `insertText` at the base offset then contiguous-char
+range ops, so it sits entirely on the contiguous side.
 
 ## Deferred (labelled, never faked)
 

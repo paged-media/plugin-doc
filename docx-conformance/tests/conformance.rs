@@ -391,11 +391,19 @@ fn hyperlink_resolves_target_and_styles_run_blue_underline() {
         .any(|p| p.path == "characterUnderline" && p.value == PropValue::Bool(true)));
     assert!(style.props.iter().any(|p| p.path == "characterFillColor"));
     assert!(ir.swatches.iter().any(|s| s.value == vec![0.0, 0.0, 255.0]));
-    // An honest diagnostic notes the clickable-link limitation.
+    // The run also carries the external URL so the host-model emits a native
+    // clickable `insertHyperlink` over its range (not just the blue-underline look).
+    assert_eq!(
+        link_run.hyperlink_url.as_deref(),
+        Some("https://paged.media/")
+    );
+    // The other runs are not links.
+    assert_eq!(ir.story.paragraphs()[0].runs[0].hyperlink_url, None);
+    // The diagnostic now reports how many became native clickable links.
     assert!(ir
         .diagnostics
         .iter()
-        .any(|d| d.message.contains("hyperlink")));
+        .any(|d| d.message.contains("native clickable link")));
 }
 
 #[test]

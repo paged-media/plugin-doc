@@ -198,6 +198,41 @@ describe("inline images", () => {
   });
 });
 
+describe("hyperlinks", () => {
+  it("emits insertHyperlink over the linked run's contiguous range", () => {
+    const { mutations } = buildTextPour(
+      [
+        {
+          paraStyleId: null,
+          runs: [
+            { text: "Visit ", charStyleId: null },
+            { text: "Paged", charStyleId: "CharacterStyle/docx-link", hyperlinkUrl: "https://paged.media/" },
+            { text: " today.", charStyleId: null },
+          ],
+          sourceIndex: 0,
+        },
+      ],
+      "Story/u1",
+      0,
+    );
+    // "Visit "=[0,6), "Paged"=[6,11) — the clickable link spans [6,11).
+    expect(mutations).toContainEqual({
+      op: "insertHyperlink",
+      args: { storyId: "Story/u1", start: 6, end: 11, url: "https://paged.media/" },
+    });
+    // The blue+underline look still rides on the run's character style.
+    expect(mutations).toContainEqual({
+      op: "applyStyle",
+      args: { storyId: "Story/u1", start: 6, end: 11, style: "CharacterStyle/docx-link", scope: "character" },
+    });
+  });
+
+  it("emits no insertHyperlink for ordinary runs", () => {
+    const { mutations } = buildTextPour([P(null, [{ text: "plain", charStyleId: null }])], "Story/u1", 0);
+    expect(mutations.some((o) => (o.op as string) === "insertHyperlink")).toBe(false);
+  });
+});
+
 describe("buildDocumentMutations (text-only)", () => {
   it("wraps styles + paragraph pour in one atomic batch", () => {
     const batch = buildDocumentMutations(memoIr(), { storyId: "Story/u1" });

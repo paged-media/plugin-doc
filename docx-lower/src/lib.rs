@@ -41,7 +41,7 @@ use docx_core::{
 pub mod ir;
 
 use ir::{
-    Diagnostic, LoweredBlock, LoweredCell, LoweredDoc, LoweredParagraph, LoweredRun,
+    Diagnostic, LoweredBlock, LoweredCell, LoweredDoc, LoweredImage, LoweredParagraph, LoweredRun,
     LoweredSection, LoweredStory, LoweredStyle, LoweredSwatch, LoweredTabStop, LoweredTable,
     PropValue, StyleCollection, StyleProp,
 };
@@ -57,6 +57,25 @@ fn twip_to_pt(twips: i32) -> f32 {
 /// Half-points -> points.
 fn half_pt_to_pt(half: u32) -> f32 {
     half as f32 / 2.0
+}
+
+/// EMU (English Metric Units) -> points. 914400 EMU/inch, 72 pt/inch ⇒ 12700
+/// EMU/pt.
+fn emu_to_pt(emu: i64) -> f32 {
+    emu as f32 / 12700.0
+}
+
+/// Lower an image to an anchored-frame placement, embedding the media bytes as a
+/// self-contained `data:` URI (Tier-2 v1; large images should later use a part
+/// reference instead of an inline base64 payload).
+fn lower_image(img: &docx_core::Image) -> LoweredImage {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&img.bytes);
+    LoweredImage {
+        width_pt: emu_to_pt(img.width_emu),
+        height_pt: emu_to_pt(img.height_emu),
+        uri: format!("data:{};base64,{}", img.mime, b64),
+    }
 }
 
 /// Word `w:jc` -> the IDML justification string paged expects
@@ -278,9 +297,18 @@ impl Lowering {
             .map(|r| self.lower_run(r))
             .collect();
 
+        // Inline images ride on their own (empty-text) runs; collect them as
+        // anchored-frame placements for this paragraph.
+        let images = p
+            .runs
+            .iter()
+            .filter_map(|r| r.image.as_ref().map(lower_image))
+            .collect();
+
         LoweredParagraph {
             para_style_id,
             runs,
+            images,
             source_index,
         }
     }
@@ -619,6 +647,7 @@ mod tests {
         Run {
             style_id: None,
             props,
+            image: None,
             text: text.into(),
         }
     }

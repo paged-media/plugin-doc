@@ -175,7 +175,7 @@ impl LoweredStory {
 }
 
 /// A paragraph: an effective (Word or synthesized) paragraph style applied over
-/// the paragraph range, plus its runs.
+/// the paragraph range, plus its runs and any inline images.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoweredParagraph {
@@ -183,9 +183,23 @@ pub struct LoweredParagraph {
     /// `None` to leave the default.
     pub para_style_id: Option<String>,
     pub runs: Vec<LoweredRun>,
+    /// Inline images anchored to this paragraph (rendered via
+    /// `insertAnchoredFrame` at the paragraph's story offset).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<LoweredImage>,
     /// Provenance: the index of the source body block, kept for future
     /// targeted save-back (M2). Not used for rendering.
     pub source_index: u32,
+}
+
+/// An inline image lowered to an anchored-frame placement.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoweredImage {
+    pub width_pt: f32,
+    pub height_pt: f32,
+    /// A self-contained `data:<mime>;base64,…` URI the anchored frame links to.
+    pub uri: String,
 }
 
 /// A run: its text and an effective (Word or synthesized) character style

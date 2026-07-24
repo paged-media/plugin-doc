@@ -63,10 +63,22 @@ interface Range {
   scope: "paragraph" | "character";
 }
 
-/** The joined text of a paragraph run + the style ranges over it, offsets
- *  relative to `base`. */
-function poured(paragraphs: LoweredParagraph[], base: number): { text: string; ranges: Range[] } {
+/** An inline image + the story offset of its anchoring paragraph. */
+interface ImageAt {
+  offset: number;
+  widthPt: number;
+  heightPt: number;
+  uri: string;
+}
+
+/** The joined text of a paragraph run + the style ranges over it + image
+ *  placements, offsets relative to `base`. */
+function poured(
+  paragraphs: LoweredParagraph[],
+  base: number,
+): { text: string; ranges: Range[]; images: ImageAt[] } {
   const ranges: Range[] = [];
+  const images: ImageAt[] = [];
   let text = "";
   let offset = base;
   paragraphs.forEach((para, pIdx) => {
@@ -82,21 +94,27 @@ function poured(paragraphs: LoweredParagraph[], base: number): { text: string; r
     if (para.paraStyleId) {
       ranges.push({ start: paraStart, end: offset, style: para.paraStyleId, scope: "paragraph" });
     }
+    // Images anchor at the paragraph level (paged anchors a frame to a
+    // paragraph), so any offset within the paragraph resolves to it.
+    for (const img of para.images ?? []) {
+      images.push({ offset: paraStart, widthPt: img.widthPt, heightPt: img.heightPt, uri: img.uri });
+    }
     if (pIdx < paragraphs.length - 1) {
       text += "\n";
       offset += 1;
     }
   });
-  return { text, ranges };
+  return { text, ranges, images };
 }
 
-/** insertText + applyStyle for a contiguous paragraph run, offsets from `base`. */
+/** insertText + applyStyle + insertAnchoredFrame (inline images) for a
+ *  contiguous paragraph run, offsets from `base`. */
 export function buildTextPour(
   paragraphs: LoweredParagraph[],
   storyId: string,
   base: number,
 ): { mutations: Mutation[]; length: number } {
-  const { text, ranges } = poured(paragraphs, base);
+  const { text, ranges, images } = poured(paragraphs, base);
   const ops: Mutation[] = [];
   if (text.length > 0) {
     ops.push({ op: "insertText", args: { storyId, offset: base, text, cell: null } } as Mutation);
@@ -106,6 +124,21 @@ export function buildTextPour(
   }
   for (const r of ranges.filter((r) => r.scope === "character")) {
     ops.push(applyStyleOp(storyId, r.start, r.end, r.style, "character"));
+  }
+  for (const img of images) {
+    // `insertAnchoredFrame` is a v52 wire op (core protocol 52); it postdates the
+    // published plugin-api Mutation union, so cast via `unknown`. The host applies
+    // it once running the v52+ canvas-wasm; older hosts reject it (honest degrade).
+    ops.push({
+      op: "insertAnchoredFrame",
+      args: {
+        storyId,
+        offset: img.offset,
+        width: img.widthPt,
+        height: img.heightPt,
+        imageUri: img.uri,
+      },
+    } as unknown as Mutation);
   }
   return { mutations: ops, length: codePointLen(text) };
 }

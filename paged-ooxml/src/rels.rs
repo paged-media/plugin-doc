@@ -90,6 +90,11 @@ impl Relationships {
         Relationships { items }
     }
 
+    /// The relationship with the given `Id` (e.g. an `r:embed` image ref).
+    pub fn by_id(&self, id: &str) -> Option<&Relationship> {
+        self.items.iter().find(|r| r.id == id)
+    }
+
     /// The first relationship whose `Type` ends with `suffix`
     /// (e.g. `"/officeDocument"`, `"/styles"`, `"/numbering"`).
     pub fn by_type_suffix(&self, suffix: &str) -> Option<&Relationship> {

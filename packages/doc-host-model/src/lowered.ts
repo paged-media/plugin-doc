@@ -59,7 +59,17 @@ export interface LoweredRun {
 export interface LoweredParagraph {
   paraStyleId?: string | null;
   runs: LoweredRun[];
+  /** Inline images anchored to this paragraph (placed via insertAnchoredFrame). */
+  images?: LoweredImage[];
   sourceIndex: number;
+}
+
+/** An inline image lowered to an anchored-frame placement. */
+export interface LoweredImage {
+  widthPt: number;
+  heightPt: number;
+  /** A self-contained `data:<mime>;base64,…` URI. */
+  uri: string;
 }
 
 /** The body as a sequence of blocks (paragraphs + tables) in document order. */

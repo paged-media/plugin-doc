@@ -104,6 +104,22 @@ pub struct Run {
     /// The concatenated text of the run's `w:t` children (tabs/breaks preserved
     /// as `\t` / `\n`).
     pub text: String,
+    /// A `w:drawing` image carried on this run (`text` is empty for such a run).
+    pub image: Option<Image>,
+}
+
+/// An inline image (`w:drawing` → `wp:inline`/`wp:anchor` → a picture blip),
+/// resolved to its media bytes + intrinsic size at import time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Image {
+    /// The raw media bytes (PNG/JPEG/…) from `word/media/…`.
+    pub bytes: Vec<u8>,
+    /// The image MIME type (from the media part extension).
+    pub mime: String,
+    /// Intrinsic width in EMU (`wp:extent/@cx`; 914400 EMU/inch, 12700 EMU/pt).
+    pub width_emu: i64,
+    /// Intrinsic height in EMU (`wp:extent/@cy`).
+    pub height_emu: i64,
 }
 
 /// Direct paragraph formatting. `None` means "inherit"; all lengths in twips.

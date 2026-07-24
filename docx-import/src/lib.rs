@@ -26,14 +26,67 @@
 //! an unparseable main document part is a hard error.
 
 use docx_core::{
-    Block, DocxDocument, Justification, ListKind, ListMarker, ParaProps, Paragraph, Run, RunProps,
-    Section, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
+    Block, DocxDocument, Image, Justification, ListKind, ListMarker, ParaProps, Paragraph, Run,
+    RunProps, Section, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
 };
+use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
 use paged_ooxml::ooxmlsdk::simple_type::{
     HpsMeasureValue, OnOffValue, SignedTwipsMeasureValue, TwipsMeasureValue,
 };
 use paged_ooxml::{parse_root, part_dir, rels, resolve_target, OoxmlError, OpcPackage};
+
+/// Import context threaded through the body mapping: the numbering resolver and
+/// the image (media-part) resolver.
+struct ImportCtx<'a> {
+    numbering: NumberingTable,
+    images: ImageResolver<'a>,
+}
+
+/// Resolves a drawing's `r:embed` rel id to its media bytes + MIME type.
+struct ImageResolver<'a> {
+    /// The main document part's relationships (where `r:embed` ids resolve).
+    rels: rels::Relationships,
+    /// The OPC package (holds the `word/media/…` byte parts).
+    package: &'a OpcPackage,
+    /// The directory of the main document part (for resolving media targets).
+    base_dir: String,
+}
+
+impl ImageResolver<'_> {
+    fn resolve(&self, embed_id: &str) -> Option<(Vec<u8>, String)> {
+        let rel = self.rels.by_id(embed_id)?;
+        if rel
+            .target_mode
+            .as_deref()
+            .is_some_and(|m| m.eq_ignore_ascii_case("External"))
+        {
+            return None; // external (linked) images aren't embedded bytes
+        }
+        let target = resolve_target(&self.base_dir, &rel.target);
+        let bytes = self.package.part(&target)?.to_vec();
+        Some((bytes, mime_for(&target)))
+    }
+}
+
+/// A media part name -> MIME type (by extension).
+fn mime_for(part_name: &str) -> String {
+    let ext = part_name
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
 
 /// Import a `.docx`/`.dotx` package into the semantic model.
 pub fn import_docx(bytes: &[u8]) -> Result<DocxDocument, OoxmlError> {
@@ -58,10 +111,24 @@ pub fn import_docx(bytes: &[u8]) -> Result<DocxDocument, OoxmlError> {
         .map(|n| NumberingTable::from_numbering(&n))
         .unwrap_or_default();
 
+    // The main document's rels resolve `r:embed` image refs to media parts.
+    let doc_rels = pkg
+        .part(&rels::rels_part_name(&main_part))
+        .map(rels::Relationships::parse)
+        .unwrap_or_default();
+    let ctx = ImportCtx {
+        numbering,
+        images: ImageResolver {
+            rels: doc_rels,
+            package: &pkg,
+            base_dir: part_dir(&main_part).to_string(),
+        },
+    };
+
     let (body, sections) = wml_doc
         .body
         .as_deref()
-        .map(|b| map_body(b, &numbering))
+        .map(|b| map_body(b, &ctx))
         .unwrap_or_else(|| (Vec::new(), Vec::new()));
 
     Ok(DocxDocument {
@@ -191,15 +258,13 @@ fn numbering_sample(fmt: &wml::NumberFormatValues) -> &'static str {
     }
 }
 
-fn map_body(body: &wml::Body, numbering: &NumberingTable) -> (Vec<Block>, Vec<Section>) {
+fn map_body(body: &wml::Body, ctx: &ImportCtx) -> (Vec<Block>, Vec<Section>) {
     let mut blocks = Vec::new();
     for choice in &body.body_choice {
         match choice {
-            wml::BodyChoice::Paragraph(p) => {
-                blocks.push(Block::Paragraph(map_paragraph(p, numbering)))
-            }
+            wml::BodyChoice::Paragraph(p) => blocks.push(Block::Paragraph(map_paragraph(p, ctx))),
             wml::BodyChoice::Table(t) => {
-                blocks.push(Block::Table(map_table(t, numbering)));
+                blocks.push(Block::Table(map_table(t, ctx)));
             }
             _ => {}
         }
@@ -212,7 +277,7 @@ fn map_body(body: &wml::Body, numbering: &NumberingTable) -> (Vec<Block>, Vec<Se
     (blocks, sections)
 }
 
-fn map_paragraph(p: &wml::Paragraph, numbering: &NumberingTable) -> Paragraph {
+fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx) -> Paragraph {
     let (style_id, props) = match p.paragraph_properties.as_deref() {
         Some(pp) => (
             pp.paragraph_style_id.as_ref().map(|s| s.val.clone()),
@@ -240,17 +305,17 @@ fn map_paragraph(p: &wml::Paragraph, numbering: &NumberingTable) -> Paragraph {
                 .as_ref()
                 .map(|l| l.val as u8)
                 .unwrap_or(0);
-            numbering.resolve(num_id, level)
+            ctx.numbering.resolve(num_id, level)
         });
 
     let mut runs = Vec::new();
     for choice in &p.paragraph_choice {
         match choice {
-            wml::ParagraphChoice::WRun(r) => runs.push(map_run(r)),
+            wml::ParagraphChoice::WRun(r) => runs.push(map_run(r, ctx)),
             wml::ParagraphChoice::Hyperlink(h) => {
                 for hc in &h.hyperlink_choice {
                     if let wml::HyperlinkChoice::WRun(r) = hc {
-                        runs.push(map_run(r));
+                        runs.push(map_run(r, ctx));
                     }
                 }
             }
@@ -266,7 +331,7 @@ fn map_paragraph(p: &wml::Paragraph, numbering: &NumberingTable) -> Paragraph {
     }
 }
 
-fn map_table(t: &wml::Table, numbering: &NumberingTable) -> docx_core::Table {
+fn map_table(t: &wml::Table, ctx: &ImportCtx) -> docx_core::Table {
     let column_widths = t
         .table_grid
         .as_deref()
@@ -285,7 +350,7 @@ fn map_table(t: &wml::Table, numbering: &NumberingTable) -> docx_core::Table {
                 .table_row_choice
                 .iter()
                 .filter_map(|rc| match rc {
-                    wml::TableRowChoice::TableCell(c) => Some(map_cell(c, numbering)),
+                    wml::TableRowChoice::TableCell(c) => Some(map_cell(c, ctx)),
                     _ => None,
                 })
                 .collect();
@@ -298,7 +363,7 @@ fn map_table(t: &wml::Table, numbering: &NumberingTable) -> docx_core::Table {
     }
 }
 
-fn map_cell(c: &wml::TableCell, numbering: &NumberingTable) -> docx_core::TableCell {
+fn map_cell(c: &wml::TableCell, ctx: &ImportCtx) -> docx_core::TableCell {
     let props = c.table_cell_properties.as_deref();
     let grid_span = props
         .and_then(|p| p.grid_span.as_ref())
@@ -317,7 +382,7 @@ fn map_cell(c: &wml::TableCell, numbering: &NumberingTable) -> docx_core::TableC
         .table_cell_choice
         .iter()
         .filter_map(|cc| match cc {
-            wml::TableCellChoice::Paragraph(p) => Some(map_paragraph(p, numbering)),
+            wml::TableCellChoice::Paragraph(p) => Some(map_paragraph(p, ctx)),
             _ => None,
         })
         .collect();
@@ -328,7 +393,7 @@ fn map_cell(c: &wml::TableCell, numbering: &NumberingTable) -> docx_core::TableC
     }
 }
 
-fn map_run(r: &wml::Run) -> Run {
+fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
     let mut props = RunProps::default();
     let mut style_id = None;
     if let Some(rpr) = r.run_properties.as_deref() {
@@ -337,6 +402,7 @@ fn map_run(r: &wml::Run) -> Run {
         }
     }
     let mut text = String::new();
+    let mut image = None;
     for c in &r.run_choice {
         match c {
             wml::RunChoice::Text(t) => {
@@ -347,6 +413,11 @@ fn map_run(r: &wml::Run) -> Run {
             wml::RunChoice::TabChar => text.push('\t'),
             wml::RunChoice::Break(_) | wml::RunChoice::CarriageReturn => text.push('\n'),
             wml::RunChoice::NoBreakHyphen => text.push('\u{2011}'),
+            wml::RunChoice::Drawing(d) => {
+                if image.is_none() {
+                    image = map_drawing(d, ctx);
+                }
+            }
             _ => {}
         }
     }
@@ -354,7 +425,39 @@ fn map_run(r: &wml::Run) -> Run {
         style_id,
         props,
         text,
+        image,
     }
+}
+
+/// Extract an [`Image`] from a `w:drawing`: the intrinsic extent + the picture
+/// blip's `r:embed` rel id, walked typed (Inline/Anchor → a:graphic →
+/// graphicData → pic:pic → blipFill → blip@embed), resolved to media bytes.
+/// (Typed navigation avoids linking `ooxmlsdk`'s serializer, keeping the wasm
+/// lean — `to_xml()` would pull in the whole schema's `write_to` codegen.)
+fn map_drawing(d: &wml::Drawing, ctx: &ImportCtx) -> Option<Image> {
+    let (width_emu, height_emu, graphic) = match d.drawing_choice.as_ref()? {
+        wml::DrawingChoice::Inline(i) => (i.extent.cx, i.extent.cy, &i.graphic),
+        wml::DrawingChoice::Anchor(a) => (a.extent.cx, a.extent.cy, &a.graphic),
+    };
+    let embed_id = blip_embed(graphic)?;
+    let (bytes, mime) = ctx.images.resolve(embed_id)?;
+    Some(Image {
+        bytes,
+        mime,
+        width_emu,
+        height_emu,
+    })
+}
+
+/// The `r:embed` rel id of the first picture blip in a DrawingML graphic.
+fn blip_embed(graphic: &aml::Graphic) -> Option<&str> {
+    for choice in &graphic.graphic_data.graphic_data_choice {
+        if let aml::GraphicDataChoice::Picture(pic) = choice {
+            let blip = pic.blip_fill.as_deref()?.blip.as_deref()?;
+            return blip.embed.as_deref();
+        }
+    }
+    None
 }
 
 /// Apply one `w:rPr` child (the run's choice-vector form) to [`RunProps`].

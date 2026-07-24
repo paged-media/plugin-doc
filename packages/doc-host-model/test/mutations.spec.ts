@@ -171,6 +171,29 @@ describe("tables", () => {
   });
 });
 
+describe("inline images", () => {
+  it("emits insertAnchoredFrame at the paragraph offset with a data URI", () => {
+    const { mutations } = buildTextPour(
+      [
+        P(null, [{ text: "Above", charStyleId: null }]),
+        {
+          paraStyleId: null,
+          runs: [],
+          images: [{ widthPt: 72, heightPt: 54, uri: "data:image/png;base64,AAAA" }],
+          sourceIndex: 1,
+        },
+      ],
+      "Story/u1",
+      0,
+    );
+    // "Above\n" = 6 code points, so the image paragraph starts at offset 6.
+    expect(mutations).toContainEqual({
+      op: "insertAnchoredFrame",
+      args: { storyId: "Story/u1", offset: 6, width: 72, height: 54, imageUri: "data:image/png;base64,AAAA" },
+    });
+  });
+});
+
 describe("buildDocumentMutations (text-only)", () => {
   it("wraps styles + paragraph pour in one atomic batch", () => {
     const batch = buildDocumentMutations(memoIr(), { storyId: "Story/u1" });

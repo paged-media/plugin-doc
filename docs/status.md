@@ -80,6 +80,29 @@ conformance fixture).
   default); and the exact story offset past a table (`TABLE_FOOTPRINT`) is a
   conservative constant refined during editor integration.
 
+## Tier-2 — inline images (with a core door)
+
+- **`w:drawing` inline images → native anchored frames.** A drawing run is parsed
+  (typed: `wp:inline`/`wp:anchor` → `a:graphic` → `graphicData` → `pic:pic` →
+  `blipFill` → `blip@r:embed`), the `r:embed` rel resolved to its `word/media/…`
+  bytes, and the intrinsic `wp:extent` (EMU) converted to points. `docx-lower`
+  emits a per-paragraph image placement with a self-contained `data:<mime>;base64`
+  URI; `doc-host-model` turns each into an **`insertAnchoredFrame`** at the
+  paragraph's story offset. Verified end-to-end through the real wasm artifact
+  (`image_docx`).
+- **This required a core door (opened): `InsertAnchoredFrame`.** The anchored-image
+  model, inline render path (`paged-renderer` `anchored.rs`), and property edits
+  already existed, but there was no *mutation to create* an anchored frame —
+  `InsertFrame` is page-positioned only. Added `InsertAnchoredFrame` /
+  `RemoveAnchoredFrame` (paged-mutate + wire + protocol **51 → 52**): it pushes an
+  image-bearing anchored Rectangle onto the paragraph at a story offset
+  (`setting: None` ⇒ the renderer's default `InlinePosition`), so the frame draws
+  inline via the existing path — no renderer change. (This is a cross-repo change;
+  `plugin-doc` stays isolation-clean, `core` carries the door.)
+- **Honest limitations:** large images embed as inline base64 (a part reference is
+  the later refinement); anchored frames position at the paragraph level (not a
+  precise intra-paragraph offset — the renderer's own current behavior).
+
 ## Deferred (labelled, never faked)
 
 - **Edited save-back** (native → WordprocessingML projection, targeted patch) —

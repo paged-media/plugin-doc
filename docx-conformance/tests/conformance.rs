@@ -21,7 +21,7 @@
 //! preservation invariant.
 
 use docx_conformance::{
-    list_docx, memo_docx, one_paragraph_docx, table_docx, tier1_docx, zip_parts,
+    image_docx, list_docx, memo_docx, one_paragraph_docx, table_docx, tier1_docx, zip_parts,
 };
 use docx_core::{Block, ListKind, StyleKind, VMerge};
 use docx_import::import_docx;
@@ -331,6 +331,34 @@ fn tables_parse_grid_spans_merges_and_lower_to_native_cells() {
     assert!(!lt.cells.iter().any(|c| c.row == 2 && c.col == 0));
     // Emitted cells: header(0,0) + (1,0) + (1,1) + (2,1) = 4.
     assert_eq!(lt.cells.len(), 4);
+}
+
+#[test]
+fn inline_image_resolves_media_and_lowers_to_anchored_frame() {
+    let doc = import_docx(&image_docx()).unwrap();
+
+    // The drawing run carries the resolved image (bytes + intrinsic EMU size).
+    let img_para = match &doc.body[1] {
+        Block::Paragraph(p) => p,
+        _ => panic!("expected the image paragraph"),
+    };
+    let img = img_para
+        .runs
+        .iter()
+        .find_map(|r| r.image.as_ref())
+        .expect("the drawing run resolved an image");
+    assert!(img.bytes.starts_with(b"\x89PNG"));
+    assert_eq!(img.mime, "image/png");
+    assert_eq!((img.width_emu, img.height_emu), (914400, 685800));
+
+    let ir = lower(&doc);
+    // Lowered: the image paragraph carries an anchored-frame placement sized in
+    // points (914400 EMU = 72 pt, 685800 EMU = 54 pt) with a data: URI.
+    let lp = ir.story.paragraphs()[1];
+    assert_eq!(lp.images.len(), 1);
+    assert_eq!(lp.images[0].width_pt, 72.0);
+    assert_eq!(lp.images[0].height_pt, 54.0);
+    assert!(lp.images[0].uri.starts_with("data:image/png;base64,"));
 }
 
 #[test]

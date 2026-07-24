@@ -43,6 +43,19 @@ struct ImportCtx<'a> {
     images: ImageResolver<'a>,
 }
 
+impl ImportCtx<'_> {
+    /// A `w:hyperlink`'s target: the external URL its `r:id` resolves to, or
+    /// `#anchor` for an internal bookmark.
+    fn hyperlink_target(&self, h: &wml::Hyperlink) -> Option<String> {
+        if let Some(id) = &h.id {
+            if let Some(rel) = self.images.rels.by_id(id) {
+                return Some(rel.target.clone());
+            }
+        }
+        h.anchor.as_ref().map(|a| format!("#{a}"))
+    }
+}
+
 /// Resolves a drawing's `r:embed` rel id to its media bytes + MIME type.
 struct ImageResolver<'a> {
     /// The main document part's relationships (where `r:embed` ids resolve).
@@ -313,9 +326,12 @@ fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx) -> Paragraph {
         match choice {
             wml::ParagraphChoice::WRun(r) => runs.push(map_run(r, ctx)),
             wml::ParagraphChoice::Hyperlink(h) => {
+                let target = ctx.hyperlink_target(h);
                 for hc in &h.hyperlink_choice {
                     if let wml::HyperlinkChoice::WRun(r) = hc {
-                        runs.push(map_run(r, ctx));
+                        let mut run = map_run(r, ctx);
+                        run.hyperlink = target.clone();
+                        runs.push(run);
                     }
                 }
             }
@@ -426,6 +442,7 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
         props,
         text,
         image,
+        hyperlink: None,
     }
 }
 

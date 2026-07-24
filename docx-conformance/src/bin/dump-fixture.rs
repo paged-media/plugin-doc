@@ -29,6 +29,7 @@ fn main() {
         "tier1" => docx_conformance::tier1_docx(),
         "list" => docx_conformance::list_docx(),
         "image" => docx_conformance::image_docx(),
+        "hyperlink" => docx_conformance::hyperlink_docx(),
         "table" => docx_conformance::table_docx(),
         "one" => docx_conformance::one_paragraph_docx(),
         _ => docx_conformance::memo_docx(),

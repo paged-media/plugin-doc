@@ -103,6 +103,20 @@ conformance fixture).
   the later refinement); anchored frames position at the paragraph level (not a
   precise intra-paragraph offset — the renderer's own current behavior).
 
+## Tier-3 — hyperlinks
+
+- **`w:hyperlink` → styled + preserved.** A hyperlink's `r:id` is resolved through
+  the document rels to its external URL (or `#anchor` for an internal bookmark),
+  carried on the run, and lowered with the conventional hyperlink look — blue
+  (`0000FF`) + underline — via a synthesized character style (unless the run sets
+  those directly). No core door + no TS change (standard character props).
+  Verified end-to-end through the real wasm artifact (`hyperlink_docx`).
+- **Honest limitation (diagnosed):** the run is styled and the target is preserved
+  in the source `.docx`, but it is not yet a *native clickable* link — the native
+  hyperlink model is multi-part (a source span + a designmap `Hyperlink` + a
+  `HyperlinkDestination`) with no create-mutation, a larger core door than the
+  inline-image one. An ADR-007 diagnostic surfaces this on every hyperlinked doc.
+
 ## Deferred (labelled, never faked)
 
 - **Edited save-back** (native → WordprocessingML projection, targeted patch) —

@@ -115,6 +115,17 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
         }
     }
 
+    if ctx.hyperlinks > 0 {
+        ctx.diagnostics.push(Diagnostic::info(
+            format!(
+                "{} hyperlink run(s) styled (blue + underline); the clickable link is \
+                 preserved in the source .docx but not yet a native clickable link",
+                ctx.hyperlinks
+            ),
+            3,
+        ));
+    }
+
     let section = lower_section(doc.sections.first());
     let styles = ctx.ordered_styles();
 
@@ -141,6 +152,8 @@ struct Lowering {
     /// The docDefaults base style id, if docDefaults carried any properties.
     /// Un-based Word styles + un-styled paragraphs fall back to it.
     default_base: Option<String>,
+    /// Count of hyperlink runs styled (for the clickable-link diagnostic).
+    hyperlinks: u32,
 }
 
 impl Lowering {
@@ -318,15 +331,30 @@ impl Lowering {
             .style_id
             .as_ref()
             .map(|id| format!("{CHAR_PREFIX}{}", sanitize(id)));
-        let char_style_id = if r.props == RunProps::default() {
+        let mut props = self.run_props(&r.props);
+
+        // A hyperlink run gets the conventional look — blue + underline — unless
+        // the run already sets those directly. (The clickable link itself is
+        // preserved in the source .docx; a native clickable-hyperlink door is
+        // future work.)
+        if r.hyperlink.is_some() {
+            self.hyperlinks += 1;
+            if !props.iter().any(|p| p.path == "characterFillColor") {
+                let swatch = self.swatch_for("0000FF");
+                props.push(StyleProp {
+                    path: "characterFillColor".into(),
+                    value: PropValue::ColorRef(swatch),
+                });
+            }
+            if !props.iter().any(|p| p.path == "characterUnderline") {
+                props.push(boolean("characterUnderline", true));
+            }
+        }
+
+        let char_style_id = if props.is_empty() {
             base
         } else {
-            let props = self.run_props(&r.props);
-            if props.is_empty() {
-                base
-            } else {
-                Some(self.synthesize(StyleCollection::Character, base, props))
-            }
+            Some(self.synthesize(StyleCollection::Character, base, props))
         };
         LoweredRun {
             text: r.text.clone(),
@@ -648,6 +676,7 @@ mod tests {
             style_id: None,
             props,
             image: None,
+            hyperlink: None,
             text: text.into(),
         }
     }

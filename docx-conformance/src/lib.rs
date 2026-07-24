@@ -281,6 +281,37 @@ pub fn image_docx() -> Vec<u8> {
     ])
 }
 
+/// A document with an external hyperlink (`w:hyperlink r:id=…` → an
+/// `TargetMode="External"` relationship).
+pub fn hyperlink_docx() -> Vec<u8> {
+    let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#;
+    let doc_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId50" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://paged.media/" TargetMode="External"/>
+</Relationships>"#;
+    let document = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">Visit </w:t></w:r>
+      <w:hyperlink r:id="rId50"><w:r><w:t>Paged Media</w:t></w:r></w:hyperlink>
+      <w:r><w:t xml:space="preserve"> today.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+    zip_parts(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", doc_rels.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+    ])
+}
+
 /// The smallest well-formed document: one paragraph, one run, no styles part.
 pub fn one_paragraph_docx() -> Vec<u8> {
     let document = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

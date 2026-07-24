@@ -106,6 +106,11 @@ pub struct Run {
     pub text: String,
     /// A `w:drawing` image carried on this run (`text` is empty for such a run).
     pub image: Option<Image>,
+    /// When this run sits inside a `w:hyperlink`, its resolved target (an
+    /// external URL, or `#anchor` for an internal bookmark). Styled blue +
+    /// underline on lowering; the clickable link itself is preserved in the
+    /// source `.docx` (a native clickable-hyperlink door is future work).
+    pub hyperlink: Option<String>,
 }
 
 /// An inline image (`w:drawing` → `wp:inline`/`wp:anchor` → a picture blip),

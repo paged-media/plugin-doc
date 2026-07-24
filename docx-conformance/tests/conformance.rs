@@ -21,7 +21,8 @@
 //! preservation invariant.
 
 use docx_conformance::{
-    image_docx, list_docx, memo_docx, one_paragraph_docx, table_docx, tier1_docx, zip_parts,
+    hyperlink_docx, image_docx, list_docx, memo_docx, one_paragraph_docx, table_docx, tier1_docx,
+    zip_parts,
 };
 use docx_core::{Block, ListKind, StyleKind, VMerge};
 use docx_import::import_docx;
@@ -359,6 +360,42 @@ fn inline_image_resolves_media_and_lowers_to_anchored_frame() {
     assert_eq!(lp.images[0].width_pt, 72.0);
     assert_eq!(lp.images[0].height_pt, 54.0);
     assert!(lp.images[0].uri.starts_with("data:image/png;base64,"));
+}
+
+#[test]
+fn hyperlink_resolves_target_and_styles_run_blue_underline() {
+    let doc = import_docx(&hyperlink_docx()).unwrap();
+    let para = match &doc.body[0] {
+        Block::Paragraph(p) => p,
+        _ => panic!("expected a paragraph"),
+    };
+    // 3 runs: "Visit ", the hyperlink "Paged Media", " today." — the middle run
+    // carries the resolved external URL.
+    assert_eq!(para.runs.len(), 3);
+    assert_eq!(para.runs[0].hyperlink, None);
+    assert_eq!(
+        para.runs[1].hyperlink.as_deref(),
+        Some("https://paged.media/")
+    );
+    assert_eq!(para.runs[2].hyperlink, None);
+
+    let ir = lower(&doc);
+    // The hyperlink run got a synthesized character style with blue fill +
+    // underline; a swatch was minted for the link blue.
+    let link_run = &ir.story.paragraphs()[0].runs[1];
+    let style_id = link_run.char_style_id.as_deref().unwrap();
+    let style = ir.styles.iter().find(|s| s.id == style_id).unwrap();
+    assert!(style
+        .props
+        .iter()
+        .any(|p| p.path == "characterUnderline" && p.value == PropValue::Bool(true)));
+    assert!(style.props.iter().any(|p| p.path == "characterFillColor"));
+    assert!(ir.swatches.iter().any(|s| s.value == vec![0.0, 0.0, 255.0]));
+    // An honest diagnostic notes the clickable-link limitation.
+    assert!(ir
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("hyperlink")));
 }
 
 #[test]

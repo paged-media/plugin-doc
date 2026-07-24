@@ -68,6 +68,30 @@ pub struct Paragraph {
     /// The runs (`w:r`) in order. Non-run inline content (hyperlinks, fields) is
     /// flattened to its runs for Tier-0.
     pub runs: Vec<Run>,
+    /// `w:pPr/w:numPr` resolved through `numbering.xml` — the list marker this
+    /// paragraph belongs to, if any.
+    pub list: Option<ListMarker>,
+}
+
+/// A list marker, resolved from `w:numPr` + `numbering.xml` at import time so the
+/// lowering stays pure (no `numbering.xml` access downstream).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListMarker {
+    pub kind: ListKind,
+    /// The zero-based indent level (`w:ilvl`).
+    pub level: u8,
+    /// For bullets: the glyph from `w:lvlText` (e.g. `"•"`).
+    pub bullet_char: Option<String>,
+    /// For numbered lists: the IDML numbering-format sample (e.g. `"1, 2, 3, 4..."`,
+    /// `"I, II, III, IV..."`), matching what the engine's `format_number` reads.
+    pub number_format: Option<String>,
+}
+
+/// Whether a list paragraph is bulleted or numbered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ListKind {
+    Bullet,
+    Numbered,
 }
 
 /// A Word run (`w:r`): direct character formatting plus its text.

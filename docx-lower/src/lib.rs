@@ -34,8 +34,8 @@
 use std::collections::HashMap;
 
 use docx_core::{
-    Block, DocxDocument, Justification, ParaProps, Run, RunProps, Section, Style, StyleKind,
-    VertAlign,
+    Block, DocxDocument, Justification, ListKind, ListMarker, ParaProps, Run, RunProps, Section,
+    Style, StyleKind, VertAlign,
 };
 
 pub mod ir;
@@ -259,12 +259,15 @@ impl Lowering {
             .style_id
             .as_ref()
             .map(|id| format!("{PARA_PREFIX}{}", sanitize(id)));
-        let para_style_id = if p.props == ParaProps::default() {
-            // No direct formatting: apply the paragraph's style, or the
+        let mut props = self.para_props(&p.props);
+        if let Some(list) = &p.list {
+            props.extend(list_props(list));
+        }
+        let para_style_id = if props.is_empty() {
+            // No direct formatting or list: apply the paragraph's style, or the
             // docDefaults base when the paragraph carries no style at all.
             self.para_base(explicit)
         } else {
-            let props = self.para_props(&p.props);
             let base = self.para_base(explicit);
             Some(self.synthesize(StyleCollection::Paragraph, base, props))
         };
@@ -452,6 +455,38 @@ fn boolean(path: &str, v: bool) -> StyleProp {
     }
 }
 
+/// The style props that turn a paragraph into a native list item: the list type
+/// (which the engine's renderer gates marker emission + auto-numbering on), the
+/// bullet glyph or numbering format, and a per-level left indent. Emitted after
+/// the direct paragraph props so the list indent wins over an inherited one.
+fn list_props(list: &ListMarker) -> Vec<StyleProp> {
+    let mut out = Vec::new();
+    let list_type = match list.kind {
+        ListKind::Bullet => "BulletList",
+        ListKind::Numbered => "NumberedList",
+    };
+    out.push(StyleProp {
+        path: "paragraphListType".into(),
+        value: PropValue::Text(list_type.into()),
+    });
+    if let Some(ch) = &list.bullet_char {
+        out.push(StyleProp {
+            path: "paragraphBulletCharacter".into(),
+            value: PropValue::Text(ch.clone()),
+        });
+    }
+    if let Some(fmt) = &list.number_format {
+        out.push(StyleProp {
+            path: "paragraphNumberingFormat".into(),
+            value: PropValue::Text(fmt.clone()),
+        });
+    }
+    // Each level indents by 18 pt (¼ inch) — a reasonable default when the list
+    // definition's own indent metrics are not (yet) carried.
+    out.push(len("paragraphLeftIndent", (list.level as f32 + 1.0) * 18.0));
+    out
+}
+
 fn lower_section(section: Option<&Section>) -> LoweredSection {
     let s = section.cloned().unwrap_or_default();
     LoweredSection {
@@ -568,6 +603,7 @@ mod tests {
                     },
                 ),
             ],
+            list: None,
         }));
 
         let lowered = lower(&doc);

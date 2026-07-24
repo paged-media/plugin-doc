@@ -27,6 +27,7 @@ fn main() {
     let which = std::env::args().nth(2).unwrap_or_else(|| "memo".into());
     let bytes = match which.as_str() {
         "tier1" => docx_conformance::tier1_docx(),
+        "list" => docx_conformance::list_docx(),
         "one" => docx_conformance::one_paragraph_docx(),
         _ => docx_conformance::memo_docx(),
     };

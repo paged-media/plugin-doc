@@ -41,6 +41,24 @@ build (7.5 MiB, under the 8 MiB budget — unoptimized; CI runs `wasm-opt -Oz`),
 All Tier-1a lowering is verified through the real wasm artifact (the `tier1_docx`
 conformance fixture).
 
+## Tier-1b — lists / numbering
+
+- **Bullet + numbered lists** — `w:numPr` (numId/ilvl) is resolved through
+  `numbering.xml` (numId → abstractNumId → level → numFmt/lvlText) at import, then
+  lowered to native list paragraphs: `paragraphListType` (`BulletList`/
+  `NumberedList` — the field the renderer gates marker emission + auto-numbering
+  on), `paragraphBulletCharacter` (Wingdings/Symbol glyphs normalized to Unicode,
+  e.g. F0B7 → •), `paragraphNumberingFormat` (Word `numFmt` → the IDML sample
+  string the engine's `format_number` reads: decimal/upper-lower Roman/alpha), and
+  a per-level left indent. Identical list paragraphs share one synthesized style.
+- **No core change was required** — the `paragraphListType` PropertyPath already
+  existed; the engine already renders bullets + auto-counts numbered lists. So
+  lists lower fully plugin-side (isolation-clean) and render through the existing
+  renderer. Verified end-to-end through the real wasm artifact (`list_docx`).
+- Not yet: multi-level list indent metrics from the list definition (a fixed
+  18 pt/level default is used), list continuation/restart nuances, and bullet
+  leader/suffix text.
+
 ## Deferred (labelled, never faked)
 
 - **Edited save-back** (native → WordprocessingML projection, targeted patch) —

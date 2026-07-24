@@ -20,8 +20,8 @@
 //! import → lower, plus the byte-identical zero-edit round-trip that proves the
 //! preservation invariant.
 
-use docx_conformance::{memo_docx, one_paragraph_docx, tier1_docx, zip_parts};
-use docx_core::{Block, StyleKind};
+use docx_conformance::{list_docx, memo_docx, one_paragraph_docx, tier1_docx, zip_parts};
+use docx_core::{Block, ListKind, StyleKind};
 use docx_import::import_docx;
 use docx_js::DocSession;
 use docx_lower::ir::{PropValue, StyleCollection};
@@ -229,6 +229,65 @@ fn tier1_doc_defaults_tabs_keeps_and_underline() {
     }
     // The synthesized paragraph style inherits the docDefaults base.
     assert_eq!(pstyle.based_on.as_deref(), Some(default.id.as_str()));
+}
+
+#[test]
+fn lists_resolve_through_numbering_and_lower_to_native_markers() {
+    let doc = import_docx(&list_docx()).unwrap();
+
+    let paras: Vec<_> = doc
+        .body
+        .iter()
+        .filter_map(|b| match b {
+            Block::Paragraph(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(paras.len(), 4);
+
+    // Bullet list: numId 1 -> abstractNum 0 -> numFmt=bullet, Wingdings F0B7 glyph
+    // normalized to U+2022.
+    let bullet = paras[0].list.as_ref().unwrap();
+    assert_eq!(bullet.kind, ListKind::Bullet);
+    assert_eq!(bullet.bullet_char.as_deref(), Some("\u{2022}"));
+    // Numbered list: numId 2 -> abstractNum 1 -> decimal.
+    let numbered = paras[2].list.as_ref().unwrap();
+    assert_eq!(numbered.kind, ListKind::Numbered);
+    assert_eq!(numbered.number_format.as_deref(), Some("1, 2, 3, 4..."));
+
+    let ir = lower(&doc);
+
+    // The bullet paragraph applies a synthesized style setting the native list
+    // type + bullet glyph (the field the renderer gates markers on).
+    let bstyle_id = ir.story.paragraphs[0].para_style_id.as_deref().unwrap();
+    let bstyle = ir.styles.iter().find(|s| s.id == bstyle_id).unwrap();
+    assert!(bstyle
+        .props
+        .iter()
+        .any(|p| p.path == "paragraphListType" && p.value == PropValue::Text("BulletList".into())));
+    assert!(bstyle
+        .props
+        .iter()
+        .any(|p| p.path == "paragraphBulletCharacter"
+            && p.value == PropValue::Text("\u{2022}".into())));
+
+    // The numbered paragraph applies NumberedList + the IDML numbering-format
+    // sample; the engine auto-counts NumberedList paragraphs.
+    let nstyle_id = ir.story.paragraphs[2].para_style_id.as_deref().unwrap();
+    let nstyle = ir.styles.iter().find(|s| s.id == nstyle_id).unwrap();
+    assert!(nstyle.props.iter().any(
+        |p| p.path == "paragraphListType" && p.value == PropValue::Text("NumberedList".into())
+    ));
+    assert!(nstyle
+        .props
+        .iter()
+        .any(|p| p.path == "paragraphNumberingFormat"));
+
+    // The two identical bullet paragraphs share ONE synthesized list style.
+    assert_eq!(
+        ir.story.paragraphs[0].para_style_id,
+        ir.story.paragraphs[1].para_style_id
+    );
 }
 
 #[test]

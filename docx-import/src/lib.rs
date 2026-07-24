@@ -26,8 +26,8 @@
 //! an unparseable main document part is a hard error.
 
 use docx_core::{
-    Block, DocxDocument, Justification, ParaProps, Paragraph, Run, RunProps, Section, Style,
-    StyleCatalog, StyleKind, TabStop, VertAlign,
+    Block, DocxDocument, Justification, ListKind, ListMarker, ParaProps, Paragraph, Run, RunProps,
+    Section, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
 use paged_ooxml::ooxmlsdk::simple_type::{
@@ -51,10 +51,17 @@ pub fn import_docx(bytes: &[u8]) -> Result<DocxDocument, OoxmlError> {
         .map(|s| map_styles(&s))
         .unwrap_or_default();
 
+    // numbering.xml (optional) -> a resolver from (numId, level) to a marker.
+    let numbering = numbering_part(&pkg, &main_part)
+        .and_then(|name| pkg.part(&name).map(|b| (name, b)))
+        .and_then(|(name, b)| parse_root::<wml::Numbering>(&name, b).ok())
+        .map(|n| NumberingTable::from_numbering(&n))
+        .unwrap_or_default();
+
     let (body, sections) = wml_doc
         .body
         .as_deref()
-        .map(map_body)
+        .map(|b| map_body(b, &numbering))
         .unwrap_or_else(|| (Vec::new(), Vec::new()));
 
     Ok(DocxDocument {
@@ -62,6 +69,14 @@ pub fn import_docx(bytes: &[u8]) -> Result<DocxDocument, OoxmlError> {
         styles,
         sections,
     })
+}
+
+/// The numbering part name (via the main document's `.rels`).
+fn numbering_part(pkg: &OpcPackage, main_part: &str) -> Option<String> {
+    let rels_bytes = pkg.part(&rels::rels_part_name(main_part))?;
+    let rels = rels::Relationships::parse(rels_bytes);
+    let r = rels.by_type_suffix("/numbering")?;
+    Some(resolve_target(part_dir(main_part), &r.target))
 }
 
 /// The main document part name (via `_rels/.rels` `officeDocument`).
@@ -84,11 +99,105 @@ fn styles_part(pkg: &OpcPackage, main_part: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 // Body
 
-fn map_body(body: &wml::Body) -> (Vec<Block>, Vec<Section>) {
+/// A resolver from a paragraph's `(numId, ilvl)` to a [`ListMarker`], built once
+/// from `numbering.xml`. `numId -> abstractNumId -> level -> (numFmt, lvlText)`.
+#[derive(Default)]
+struct NumberingTable {
+    /// numId -> abstractNumId.
+    num_to_abstract: std::collections::HashMap<i32, i32>,
+    /// abstractNumId -> (level -> (format, lvlText)).
+    abstract_levels: std::collections::HashMap<
+        i32,
+        std::collections::HashMap<u8, (wml::NumberFormatValues, Option<String>)>,
+    >,
+}
+
+impl NumberingTable {
+    fn from_numbering(n: &wml::Numbering) -> Self {
+        let mut t = NumberingTable::default();
+        for a in &n.abstract_num {
+            let mut levels = std::collections::HashMap::new();
+            for lvl in &a.level {
+                let ilvl = lvl.level_index as u8;
+                let fmt = lvl
+                    .numbering_format
+                    .as_ref()
+                    .map(|f| f.val)
+                    .unwrap_or(wml::NumberFormatValues::Decimal);
+                let text = lvl.level_text.as_ref().and_then(|t| t.val.clone());
+                levels.insert(ilvl, (fmt, text));
+            }
+            t.abstract_levels.insert(a.abstract_number_id, levels);
+        }
+        for inst in &n.numbering_instance {
+            t.num_to_abstract
+                .insert(inst.number_id, inst.abstract_num_id.val);
+        }
+        t
+    }
+
+    fn resolve(&self, num_id: i32, level: u8) -> Option<ListMarker> {
+        let abstract_id = self.num_to_abstract.get(&num_id)?;
+        let (fmt, text) = self.abstract_levels.get(abstract_id)?.get(&level)?;
+        Some(match fmt {
+            wml::NumberFormatValues::Bullet => ListMarker {
+                kind: ListKind::Bullet,
+                level,
+                bullet_char: Some(normalize_bullet(text.as_deref())),
+                number_format: None,
+            },
+            wml::NumberFormatValues::None => ListMarker {
+                kind: ListKind::Bullet,
+                level,
+                bullet_char: Some("\u{2022}".into()),
+                number_format: None,
+            },
+            other => ListMarker {
+                kind: ListKind::Numbered,
+                level,
+                bullet_char: None,
+                number_format: Some(numbering_sample(other).to_string()),
+            },
+        })
+    }
+}
+
+/// Normalize a `w:lvlText` bullet glyph to a renderable Unicode character.
+/// Word bullets are usually Symbol/Wingdings code points; map the common ones to
+/// their Unicode equivalents so they render in the paragraph font.
+fn normalize_bullet(text: Option<&str>) -> String {
+    let first = text.and_then(|s| s.chars().next());
+    match first {
+        Some('\u{F0B7}') | Some('\u{2022}') | None => "\u{2022}".into(), // •
+        Some('\u{F0A7}') | Some('\u{25AA}') => "\u{25AA}".into(),        // ▪
+        Some('\u{F06E}') | Some('\u{25A0}') => "\u{25A0}".into(),        // ■
+        Some('o') | Some('\u{25E6}') => "\u{25E6}".into(),               // ◦
+        Some('\u{F0D8}') | Some('\u{2023}') => "\u{2023}".into(),        // ‣
+        Some(c) if (c as u32) >= 0xF000 => "\u{2022}".into(),            // other symbol-font glyph
+        Some(c) => c.to_string(),
+    }
+}
+
+/// Word `w:numFmt` -> the IDML numbering-format sample the engine's
+/// `format_number` reads (it keys off the head before the first comma).
+fn numbering_sample(fmt: &wml::NumberFormatValues) -> &'static str {
+    use wml::NumberFormatValues as F;
+    match fmt {
+        F::UpperRoman => "I, II, III, IV...",
+        F::LowerRoman => "i, ii, iii, iv...",
+        F::UpperLetter => "A, B, C, D...",
+        F::LowerLetter => "a, b, c, d...",
+        _ => "1, 2, 3, 4...",
+    }
+}
+
+fn map_body(body: &wml::Body, numbering: &NumberingTable) -> (Vec<Block>, Vec<Section>) {
     let mut blocks = Vec::new();
     for choice in &body.body_choice {
         match choice {
-            wml::BodyChoice::Paragraph(p) => blocks.push(Block::Paragraph(map_paragraph(p))),
+            wml::BodyChoice::Paragraph(p) => {
+                blocks.push(Block::Paragraph(map_paragraph(p, numbering)))
+            }
             wml::BodyChoice::Table(_) => {
                 // Tables are a Tier-2 construct; carry an empty stub so
                 // docx-lower can emit an honest diagnostic without losing order.
@@ -105,7 +214,7 @@ fn map_body(body: &wml::Body) -> (Vec<Block>, Vec<Section>) {
     (blocks, sections)
 }
 
-fn map_paragraph(p: &wml::Paragraph) -> Paragraph {
+fn map_paragraph(p: &wml::Paragraph, numbering: &NumberingTable) -> Paragraph {
     let (style_id, props) = match p.paragraph_properties.as_deref() {
         Some(pp) => (
             pp.paragraph_style_id.as_ref().map(|s| s.val.clone()),
@@ -120,6 +229,21 @@ fn map_paragraph(p: &wml::Paragraph) -> Paragraph {
         ),
         None => (None, ParaProps::default()),
     };
+
+    // Resolve w:numPr -> a list marker through numbering.xml.
+    let list = p
+        .paragraph_properties
+        .as_deref()
+        .and_then(|pp| pp.numbering_properties.as_deref())
+        .and_then(|np| {
+            let num_id = np.numbering_id.as_ref()?.val;
+            let level = np
+                .numbering_level_reference
+                .as_ref()
+                .map(|l| l.val as u8)
+                .unwrap_or(0);
+            numbering.resolve(num_id, level)
+        });
 
     let mut runs = Vec::new();
     for choice in &p.paragraph_choice {
@@ -140,6 +264,7 @@ fn map_paragraph(p: &wml::Paragraph) -> Paragraph {
         style_id,
         props,
         runs,
+        list,
     }
 }
 

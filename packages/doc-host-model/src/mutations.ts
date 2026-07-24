@@ -72,11 +72,17 @@ interface ImageAt {
 }
 
 /** The joined text of a paragraph run + the style ranges over it + image
- *  placements, offsets relative to `base`. */
+ *  placements, offsets relative to `base`.
+ *
+ *  IMPORTANT — offset convention: the story's char-offset space is CONTIGUOUS
+ *  across paragraphs (the engine consumes the `\n` on paragraph split, it is not
+ *  a stored character). So the inserted `text` carries `\n` separators (to create
+ *  the paragraph breaks), but the style/image OFFSETS advance only by run text —
+ *  never by the separator. `length` is the resulting contiguous story growth. */
 function poured(
   paragraphs: LoweredParagraph[],
   base: number,
-): { text: string; ranges: Range[]; images: ImageAt[] } {
+): { text: string; ranges: Range[]; images: ImageAt[]; length: number } {
   const ranges: Range[] = [];
   const images: ImageAt[] = [];
   let text = "";
@@ -99,12 +105,12 @@ function poured(
     for (const img of para.images ?? []) {
       images.push({ offset: paraStart, widthPt: img.widthPt, heightPt: img.heightPt, uri: img.uri });
     }
+    // Separator text for insertText, but NOT an offset advance (contiguous).
     if (pIdx < paragraphs.length - 1) {
       text += "\n";
-      offset += 1;
     }
   });
-  return { text, ranges, images };
+  return { text, ranges, images, length: offset - base };
 }
 
 /** insertText + applyStyle + insertAnchoredFrame (inline images) for a
@@ -114,7 +120,7 @@ export function buildTextPour(
   storyId: string,
   base: number,
 ): { mutations: Mutation[]; length: number } {
-  const { text, ranges, images } = poured(paragraphs, base);
+  const { text, ranges, images, length } = poured(paragraphs, base);
   const ops: Mutation[] = [];
   if (text.length > 0) {
     ops.push({ op: "insertText", args: { storyId, offset: base, text, cell: null } } as Mutation);
@@ -140,7 +146,7 @@ export function buildTextPour(
       },
     } as unknown as Mutation);
   }
-  return { mutations: ops, length: codePointLen(text) };
+  return { mutations: ops, length };
 }
 
 function applyStyleOp(

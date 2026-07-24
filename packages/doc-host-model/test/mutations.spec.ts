@@ -92,17 +92,20 @@ describe("buildTextPour", () => {
       "Story/u1",
       0,
     );
-    expect(length).toBe("Title\nMix bold".length);
+    // Offsets are CONTIGUOUS — the engine consumes the paragraph-break `\n`, so it
+    // does not occupy a char position. Inserted text keeps the `\n` (to create the
+    // break); the returned length + style ranges do not count it.
+    expect(length).toBe("TitleMix bold".length); // 13, not 14
     const insert = mutations.find((o) => o.op === "insertText");
     expect((insert?.args as { text: string }).text).toBe("Title\nMix bold");
     expect(mutations).toContainEqual({
       op: "applyStyle",
       args: { storyId: "Story/u1", start: 0, end: 5, style: "ParagraphStyle/docx-Heading1", scope: "paragraph" },
     });
-    // "bold" at 6+4=10..14.
+    // Contiguous: "Title"=[0,5), "Mix "=[5,9), "bold"=[9,13) — no +1 for the break.
     expect(mutations).toContainEqual({
       op: "applyStyle",
-      args: { storyId: "Story/u1", start: 10, end: 14, style: "CharacterStyle/docx-auto-c1", scope: "character" },
+      args: { storyId: "Story/u1", start: 9, end: 13, style: "CharacterStyle/docx-auto-c1", scope: "character" },
     });
   });
 
@@ -186,10 +189,11 @@ describe("inline images", () => {
       "Story/u1",
       0,
     );
-    // "Above\n" = 6 code points, so the image paragraph starts at offset 6.
+    // "Above" = 5 code points and the break is not a char position, so the image
+    // paragraph anchors at contiguous offset 5.
     expect(mutations).toContainEqual({
       op: "insertAnchoredFrame",
-      args: { storyId: "Story/u1", offset: 6, width: 72, height: 54, imageUri: "data:image/png;base64,AAAA" },
+      args: { storyId: "Story/u1", offset: 5, width: 72, height: 54, imageUri: "data:image/png;base64,AAAA" },
     });
   });
 });

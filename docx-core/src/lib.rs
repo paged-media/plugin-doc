@@ -173,6 +173,9 @@ pub struct RunProps {
     /// `w:rFonts/@w:ascii` — the primary Latin font family.
     pub font: Option<String>,
     pub vert_align: Option<VertAlign>,
+    /// `w:position/@w:val` — baseline shift in half-points (signed; positive
+    /// raises).
+    pub baseline_half_pts: Option<i32>,
 }
 
 /// Paragraph alignment (`w:jc`).

@@ -553,6 +553,22 @@ impl Lowering {
             }),
             _ => {}
         }
+        // Capitalization: small caps wins over all caps when both are set.
+        if r.small_caps == Some(true) {
+            out.push(StyleProp {
+                path: "characterCase".into(),
+                value: PropValue::Text("SmallCaps".into()),
+            });
+        } else if r.caps == Some(true) {
+            out.push(StyleProp {
+                path: "characterCase".into(),
+                value: PropValue::Text("AllCaps".into()),
+            });
+        }
+        // Baseline shift: Word half-points (signed) -> points.
+        if let Some(half) = r.baseline_half_pts {
+            out.push(len("characterBaselineShift", half as f32 / 2.0));
+        }
         out
     }
 }
@@ -753,6 +769,36 @@ mod tests {
             .props
             .iter()
             .any(|p| p.path == "characterFontStyle" && p.value == PropValue::Text("Bold".into())));
+    }
+
+    #[test]
+    fn caps_and_baseline_shift_lower_to_character_props() {
+        let mut doc = DocxDocument::default();
+        doc.body.push(Block::Paragraph(Paragraph {
+            runs: vec![run(
+                "x",
+                RunProps {
+                    small_caps: Some(true),
+                    baseline_half_pts: Some(6), // 6 half-pt -> 3 pt
+                    ..Default::default()
+                },
+            )],
+            ..Default::default()
+        }));
+        let ir = lower(&doc);
+        let sid = ir.story.paragraphs()[0].runs[0]
+            .char_style_id
+            .clone()
+            .unwrap();
+        let style = ir.styles.iter().find(|s| s.id == sid).unwrap();
+        assert!(style
+            .props
+            .iter()
+            .any(|p| p.path == "characterCase" && p.value == PropValue::Text("SmallCaps".into())));
+        assert!(style
+            .props
+            .iter()
+            .any(|p| p.path == "characterBaselineShift" && p.value == PropValue::Length(3.0)));
     }
 
     #[test]

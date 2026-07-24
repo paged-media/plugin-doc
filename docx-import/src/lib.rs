@@ -32,7 +32,7 @@ use docx_core::{
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
 use paged_ooxml::ooxmlsdk::simple_type::{
-    HpsMeasureValue, OnOffValue, SignedTwipsMeasureValue, TwipsMeasureValue,
+    HpsMeasureValue, OnOffValue, SignedHpsMeasureValue, SignedTwipsMeasureValue, TwipsMeasureValue,
 };
 use paged_ooxml::{parse_root, part_dir, rels, resolve_target, OoxmlError, OpcPackage};
 
@@ -496,6 +496,7 @@ fn apply_run_property_choice(
         C::FontSize(sz) => props.size_half_pts = hps(&sz.val),
         C::Underline(u) => props.underline = Some(underline_on(u)),
         C::VerticalTextAlignment(v) => props.vert_align = Some(vert_align(&v.val)),
+        C::Position(p) => props.baseline_half_pts = signed_hps(&p.val),
         _ => {}
     }
 }
@@ -632,6 +633,9 @@ fn run_props_named(rpr: &wml::StyleRunProperties) -> RunProps {
     if let Some(v) = &rpr.vertical_text_alignment {
         props.vert_align = Some(vert_align(&v.val));
     }
+    if let Some(p) = &rpr.position {
+        props.baseline_half_pts = signed_hps(&p.val);
+    }
     props
 }
 
@@ -734,6 +738,14 @@ fn hps(v: &HpsMeasureValue) -> Option<u32> {
     match v {
         HpsMeasureValue::HalfPoints(n) => Some(*n as u32),
         HpsMeasureValue::UniversalMeasure(_) => None,
+    }
+}
+
+/// Signed half-points (`w:position`), or `None` for a universal measure.
+fn signed_hps(v: &SignedHpsMeasureValue) -> Option<i32> {
+    match v {
+        SignedHpsMeasureValue::HalfPoints(n) => Some(*n as i32),
+        SignedHpsMeasureValue::UniversalMeasure(_) => None,
     }
 }
 

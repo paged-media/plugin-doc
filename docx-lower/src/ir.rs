@@ -102,6 +102,21 @@ pub enum PropValue {
     Length(f32),
     Bool(bool),
     ColorRef(String),
+    /// `{ "type": "tabStops", "value": [TabStopSpec…] }`.
+    TabStops(Vec<LoweredTabStop>),
+}
+
+/// A tab stop, shaped as the host `TabStopSpec` (position in points).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoweredTabStop {
+    pub position: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alignment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alignment_character: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leader: Option<String>,
 }
 
 /// The body as one native story.

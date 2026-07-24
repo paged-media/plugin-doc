@@ -42,7 +42,7 @@ pub mod ir;
 
 use ir::{
     Diagnostic, LoweredDoc, LoweredParagraph, LoweredRun, LoweredSection, LoweredStory,
-    LoweredStyle, LoweredSwatch, PropValue, StyleCollection, StyleProp,
+    LoweredStyle, LoweredSwatch, LoweredTabStop, PropValue, StyleCollection, StyleProp,
 };
 
 const PARA_PREFIX: &str = "ParagraphStyle/docx-";
@@ -73,6 +73,10 @@ fn justification_idml(j: Justification) -> &'static str {
 /// Lower a whole Word document to the native IR.
 pub fn lower(doc: &DocxDocument) -> LoweredDoc {
     let mut ctx = Lowering::default();
+
+    // 0. docDefaults -> a base paragraph style every un-based style + un-styled
+    //    paragraph inherits from (Word's Normal defaults: font, size, spacing).
+    ctx.install_doc_defaults(&doc.styles.doc_defaults);
 
     // 1. The Word style catalog -> native styles (topologically ordered).
     ctx.lower_style_catalog(&doc.styles.styles);
@@ -116,9 +120,39 @@ struct Lowering {
     synth_cache: HashMap<String, String>,
     synth_counter: u32,
     diagnostics: Vec<Diagnostic>,
+    /// The docDefaults base style id, if docDefaults carried any properties.
+    /// Un-based Word styles + un-styled paragraphs fall back to it.
+    default_base: Option<String>,
 }
 
 impl Lowering {
+    /// Create the `docx-Default` base paragraph style from docDefaults (if it
+    /// carries anything), so every un-based style and un-styled paragraph
+    /// inherits Word's document defaults.
+    fn install_doc_defaults(&mut self, defaults: &docx_core::Defaults) {
+        let mut props = self.para_props(&defaults.para);
+        props.extend(self.run_props(&defaults.run));
+        if props.is_empty() {
+            return;
+        }
+        let id = format!("{PARA_PREFIX}Default");
+        self.record_style(LoweredStyle {
+            id: id.clone(),
+            name: "docx defaults".into(),
+            collection: StyleCollection::Paragraph,
+            based_on: None,
+            props,
+        });
+        self.default_base = Some(id);
+    }
+
+    /// A paragraph `basedOn` fallback: the explicit parent, else the docDefaults
+    /// base style. (The default style itself is created with `basedOn: None`
+    /// directly, so this never produces a self-reference.)
+    fn para_base(&self, explicit: Option<String>) -> Option<String> {
+        explicit.or_else(|| self.default_base.clone())
+    }
+
     fn record_style(&mut self, style: LoweredStyle) {
         if !self.styles.contains_key(&style.id) {
             self.style_order.push(style.id.clone());
@@ -186,10 +220,11 @@ impl Lowering {
                         id: format!("{PARA_PREFIX}{}", sanitize(&s.style_id)),
                         name: s.name.clone().unwrap_or_else(|| s.style_id.clone()),
                         collection: StyleCollection::Paragraph,
-                        based_on: s
-                            .based_on
-                            .as_ref()
-                            .map(|b| format!("{PARA_PREFIX}{}", sanitize(b))),
+                        based_on: self.para_base(
+                            s.based_on
+                                .as_ref()
+                                .map(|b| format!("{PARA_PREFIX}{}", sanitize(b))),
+                        ),
                         props,
                     });
                 }
@@ -220,14 +255,17 @@ impl Lowering {
     }
 
     fn lower_paragraph(&mut self, p: &docx_core::Paragraph, source_index: u32) -> LoweredParagraph {
-        let base = p
+        let explicit = p
             .style_id
             .as_ref()
             .map(|id| format!("{PARA_PREFIX}{}", sanitize(id)));
         let para_style_id = if p.props == ParaProps::default() {
-            base
+            // No direct formatting: apply the paragraph's style, or the
+            // docDefaults base when the paragraph carries no style at all.
+            self.para_base(explicit)
         } else {
             let props = self.para_props(&p.props);
+            let base = self.para_base(explicit);
             Some(self.synthesize(StyleCollection::Paragraph, base, props))
         };
 
@@ -320,6 +358,30 @@ impl Lowering {
         }
         if let Some(v) = p.space_after {
             out.push(len("paragraphSpaceAfter", twip_to_pt(v)));
+        }
+        // Word's keepNext is a boolean; paged's keepWithNext is a line count, so
+        // "on" maps to a single-line hold.
+        if p.keep_next == Some(true) {
+            out.push(len("paragraphKeepWithNext", 1.0));
+        }
+        if let Some(k) = p.keep_lines {
+            out.push(boolean("paragraphKeepLinesTogether", k));
+        }
+        if !p.tabs.is_empty() {
+            let stops = p
+                .tabs
+                .iter()
+                .map(|t| LoweredTabStop {
+                    position: twip_to_pt(t.position),
+                    alignment: t.alignment.clone(),
+                    alignment_character: None,
+                    leader: t.leader.clone(),
+                })
+                .collect();
+            out.push(StyleProp {
+                path: "paragraphTabStops".into(),
+                value: PropValue::TabStops(stops),
+            });
         }
         out
     }
@@ -418,6 +480,16 @@ fn synth_signature(
             PropValue::Length(l) => sig.push_str(&format!("{l}")),
             PropValue::Bool(b) => sig.push_str(if *b { "1" } else { "0" }),
             PropValue::ColorRef(c) => sig.push_str(c),
+            PropValue::TabStops(stops) => {
+                for s in stops {
+                    sig.push_str(&format!(
+                        "{}:{}:{},",
+                        s.position,
+                        s.alignment.as_deref().unwrap_or(""),
+                        s.leader.as_deref().unwrap_or("")
+                    ));
+                }
+            }
         }
         sig.push(';');
     }

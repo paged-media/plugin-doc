@@ -5,12 +5,21 @@
 // local structural twin — rather than importing anything from the engine — keeps
 // this package dependency-free apart from `@paged-media/plugin-api`.
 
+/** A tab stop, shaped as the host `TabStopSpec` (position in points). */
+export interface TabStopSpec {
+  position: number;
+  alignment?: string;
+  alignmentCharacter?: string;
+  leader?: string;
+}
+
 /** A wire `Value` (the union `docx-lower`'s `PropValue` serializes to). */
 export type PropValue =
   | { type: "text"; value: string }
   | { type: "length"; value: number }
   | { type: "bool"; value: boolean }
-  | { type: "colorRef"; value: string };
+  | { type: "colorRef"; value: string }
+  | { type: "tabStops"; value: TabStopSpec[] };
 
 /** A single style-property assignment. */
 export interface StyleProp {

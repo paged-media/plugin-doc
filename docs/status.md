@@ -27,6 +27,20 @@ build (7.5 MiB, under the 8 MiB budget — unoptimized; CI runs `wasm-opt -Oz`),
 `pnpm typecheck`, `pnpm test` (host-model), the contract-import lint, and
 `paged-plugin validate`.
 
+## Tier-1a (added after the initial pass)
+
+- **`docDefaults`** — the document-wide base run/paragraph properties become a
+  `docx-Default` base paragraph style that every un-based style + un-styled
+  paragraph inherits (closes the "font/size falls back to engine default" gap).
+- **Tab stops** — `w:tabs` → `paragraphTabStops` (position pt + alignment; `clear`
+  stops dropped; leader glyphs are a later refinement).
+- **keep-with-next / keep-lines-together** — `w:keepNext`/`w:keepLines` lowered.
+- **Underline correctness** — `w:u w:val="none"` now lowers to `underline:false`
+  rather than being read as "on".
+
+All Tier-1a lowering is verified through the real wasm artifact (the `tier1_docx`
+conformance fixture).
+
 ## Deferred (labelled, never faked)
 
 - **Edited save-back** (native → WordprocessingML projection, targeted patch) —
@@ -37,9 +51,6 @@ build (7.5 MiB, under the 8 MiB budget — unoptimized; CI runs `wasm-opt -Oz`),
 - **Tier 1+ constructs** — numbering/lists, tables, inline + floating images,
   headers/footers, fields, notes, tracked changes → surfaced as honest ADR-007
   diagnostics on open, not silently dropped.
-- **`docDefaults`** — the document-wide default run/paragraph properties are not
-  yet mapped, so text without an explicit run property falls back to the engine
-  default rather than Word's Normal (an honest fidelity gap for M1 to close).
 - **In-editor live render / real `host.nativeDocument`** — the bundle is written to
   the shipped contract and exercised to the seam; full end-to-end is
   host-integration-verified in a later milestone (needs the editor checkout + a

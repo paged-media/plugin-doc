@@ -96,6 +96,20 @@ pub struct ParaProps {
     pub space_after: Option<i32>,
     pub keep_next: Option<bool>,
     pub keep_lines: Option<bool>,
+    /// `w:tabs` — explicit tab stops (empty = inherit).
+    pub tabs: Vec<TabStop>,
+}
+
+/// A tab stop (`w:tab`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TabStop {
+    /// `@w:pos` in twips.
+    pub position: i32,
+    /// `@w:val` alignment (`"left"`, `"center"`, `"right"`, `"decimal"`, …).
+    /// `None` for a `"clear"` stop (which removes an inherited tab — skipped).
+    pub alignment: Option<String>,
+    /// `@w:leader` (`"dot"`, `"hyphen"`, …) as a display character.
+    pub leader: Option<String>,
 }
 
 /// Direct character formatting. `None` means "inherit".

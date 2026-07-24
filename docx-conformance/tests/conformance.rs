@@ -20,7 +20,7 @@
 //! import → lower, plus the byte-identical zero-edit round-trip that proves the
 //! preservation invariant.
 
-use docx_conformance::{memo_docx, one_paragraph_docx, zip_parts};
+use docx_conformance::{memo_docx, one_paragraph_docx, tier1_docx, zip_parts};
 use docx_core::{Block, StyleKind};
 use docx_import::import_docx;
 use docx_js::DocSession;
@@ -164,6 +164,71 @@ fn smallest_document_without_styles_part() {
     assert!(doc.styles.styles.is_empty());
     let ir = lower(&doc);
     assert_eq!(ir.story.paragraphs[0].runs[0].text, "Hello, world.");
+}
+
+#[test]
+fn tier1_doc_defaults_tabs_keeps_and_underline() {
+    let doc = import_docx(&tier1_docx()).unwrap();
+
+    // docDefaults parsed the base font/size.
+    assert_eq!(doc.styles.doc_defaults.run.font.as_deref(), Some("Calibri"));
+    assert_eq!(doc.styles.doc_defaults.run.size_half_pts, Some(22));
+    assert_eq!(doc.styles.doc_defaults.para.space_after, Some(160));
+
+    let para = match &doc.body[0] {
+        Block::Paragraph(p) => p,
+        _ => panic!("expected a paragraph"),
+    };
+    // Two real tab stops; the "clear" stop is dropped.
+    assert_eq!(para.props.tabs.len(), 2);
+    assert_eq!(para.props.tabs[0].position, 720);
+    assert_eq!(para.props.tabs[1].alignment.as_deref(), Some("right"));
+    assert_eq!(para.props.keep_next, Some(true));
+    // Underline on for the single, OFF for the explicit none.
+    assert_eq!(para.runs[1].props.underline, Some(true));
+    assert_eq!(para.runs[2].props.underline, Some(false));
+
+    let ir = lower(&doc);
+
+    // docDefaults became a base paragraph style every un-based style inherits.
+    let default = ir
+        .styles
+        .iter()
+        .find(|s| s.id.ends_with("docx-Default"))
+        .expect("docDefaults base style");
+    assert!(default
+        .props
+        .iter()
+        .any(|p| p.path == "characterFontFamily" && p.value == PropValue::Text("Calibri".into())));
+    let normal = ir
+        .styles
+        .iter()
+        .find(|s| s.id.ends_with("docx-Normal"))
+        .unwrap();
+    assert_eq!(normal.based_on.as_deref(), Some(default.id.as_str()));
+
+    // The paragraph synthesized a style carrying keepWithNext + the tab stops.
+    let pstyle_id = ir.story.paragraphs[0].para_style_id.as_deref().unwrap();
+    let pstyle = ir.styles.iter().find(|s| s.id == pstyle_id).unwrap();
+    assert!(pstyle
+        .props
+        .iter()
+        .any(|p| p.path == "paragraphKeepWithNext"));
+    let tabs = pstyle
+        .props
+        .iter()
+        .find(|p| p.path == "paragraphTabStops")
+        .expect("tab stops lowered");
+    match &tabs.value {
+        PropValue::TabStops(stops) => {
+            assert_eq!(stops.len(), 2);
+            assert_eq!(stops[0].position, 36.0); // 720 twips -> 36 pt
+            assert_eq!(stops[1].alignment.as_deref(), Some("right"));
+        }
+        _ => panic!("expected tabStops value"),
+    }
+    // The synthesized paragraph style inherits the docDefaults base.
+    assert_eq!(pstyle.based_on.as_deref(), Some(default.id.as_str()));
 }
 
 #[test]

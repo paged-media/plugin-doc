@@ -26,8 +26,8 @@
 //! an unparseable main document part is a hard error.
 
 use docx_core::{
-    Block, Defaults, DocxDocument, Justification, ParaProps, Paragraph, Run, RunProps, Section,
-    Style, StyleCatalog, StyleKind, VertAlign,
+    Block, DocxDocument, Justification, ParaProps, Paragraph, Run, RunProps, Section, Style,
+    StyleCatalog, StyleKind, TabStop, VertAlign,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
 use paged_ooxml::ooxmlsdk::simple_type::{
@@ -115,6 +115,7 @@ fn map_paragraph(p: &wml::Paragraph) -> Paragraph {
                 &pp.spacing_between_lines,
                 pp.keep_next.is_some(),
                 pp.keep_lines.is_some(),
+                &pp.tabs,
             ),
         ),
         None => (None, ParaProps::default()),
@@ -188,7 +189,7 @@ fn apply_run_property_choice(
         C::Strike(v) => props.strike = Some(on(&v.val)),
         C::Color(col) => props.color = color_hex(&col.val),
         C::FontSize(sz) => props.size_half_pts = hps(&sz.val),
-        C::Underline(_) => props.underline = Some(true),
+        C::Underline(u) => props.underline = Some(underline_on(u)),
         C::VerticalTextAlignment(v) => props.vert_align = Some(vert_align(&v.val)),
         _ => {}
     }
@@ -200,12 +201,26 @@ fn apply_run_property_choice(
 fn map_styles(styles: &wml::Styles) -> StyleCatalog {
     let mut out = StyleCatalog::default();
     if let Some(dd) = styles.doc_defaults.as_deref() {
-        // docDefaults run/paragraph base styles use yet another shape; Tier-0
-        // leaves the document defaults at the engine defaults (an honest gap —
-        // fonts/sizes without an explicit run property fall back to the native
-        // default rather than Word's Normal). Recorded here as a no-op read.
-        let _ = dd;
-        out.doc_defaults = Defaults::default();
+        // docDefaults — the document-wide base run/paragraph properties (Word's
+        // Normal defaults: font, size, spacing). `docx-lower` turns a non-empty
+        // Defaults into a base style every un-based style inherits from.
+        if let Some(rpd) = dd.run_properties_default.as_deref() {
+            if let Some(base) = rpd.run_properties_base_style.as_deref() {
+                out.doc_defaults.run = run_props_base(base);
+            }
+        }
+        if let Some(ppd) = dd.paragraph_properties_default.as_deref() {
+            if let Some(base) = ppd.paragraph_properties_base_style.as_deref() {
+                out.doc_defaults.para = para_props(
+                    &base.justification,
+                    &base.indentation,
+                    &base.spacing_between_lines,
+                    false,
+                    false,
+                    &None,
+                );
+            }
+        }
     }
     for s in &styles.style {
         if let Some(style) = map_style(s) {
@@ -213,6 +228,31 @@ fn map_styles(styles: &wml::Styles) -> StyleCatalog {
         }
     }
     out
+}
+
+/// Read the docDefaults run base style (`w:rPrDefault/w:rPr`) — a named-field
+/// shape carrying the subset of run properties Word emits as defaults.
+fn run_props_base(rpr: &wml::RunPropertiesBaseStyle) -> RunProps {
+    let mut props = RunProps::default();
+    if let Some(f) = &rpr.run_fonts {
+        props.font = f.ascii.clone();
+    }
+    if let Some(b) = &rpr.bold {
+        props.bold = Some(on(&b.val));
+    }
+    if let Some(i) = &rpr.italic {
+        props.italic = Some(on(&i.val));
+    }
+    if let Some(c) = &rpr.color {
+        props.color = color_hex(&c.val);
+    }
+    if let Some(sz) = &rpr.font_size {
+        props.size_half_pts = hps(&sz.val);
+    }
+    if let Some(u) = &rpr.underline {
+        props.underline = Some(underline_on(u));
+    }
+    props
 }
 
 fn map_style(s: &wml::Style) -> Option<Style> {
@@ -234,6 +274,7 @@ fn map_style(s: &wml::Style) -> Option<Style> {
                 &pp.spacing_between_lines,
                 pp.keep_next.is_some(),
                 pp.keep_lines.is_some(),
+                &pp.tabs,
             )
         })
         .unwrap_or_default();
@@ -280,8 +321,8 @@ fn run_props_named(rpr: &wml::StyleRunProperties) -> RunProps {
     if let Some(sz) = &rpr.font_size {
         props.size_half_pts = hps(&sz.val);
     }
-    if rpr.underline.is_some() {
-        props.underline = Some(true);
+    if let Some(u) = &rpr.underline {
+        props.underline = Some(underline_on(u));
     }
     if let Some(v) = &rpr.vertical_text_alignment {
         props.vert_align = Some(vert_align(&v.val));
@@ -298,6 +339,7 @@ fn para_props(
     spacing: &Option<wml::SpacingBetweenLines>,
     keep_next: bool,
     keep_lines: bool,
+    tabs: &Option<wml::Tabs>,
 ) -> ParaProps {
     let mut p = ParaProps::default();
     if let Some(j) = justification {
@@ -318,6 +360,21 @@ fn para_props(
     }
     if keep_lines {
         p.keep_lines = Some(true);
+    }
+    if let Some(t) = tabs {
+        for ts in &t.tab_stop {
+            // A "clear" stop removes an inherited tab — no alignment, not carried.
+            if let Some(alignment) = tab_alignment(&ts.val) {
+                if let Some(position) = stwips(&ts.position) {
+                    p.tabs.push(TabStop {
+                        position,
+                        alignment: Some(alignment),
+                        // Leader glyphs (dot/hyphen) are a later-tier refinement.
+                        leader: None,
+                    });
+                }
+            }
+        }
     }
     p
 }
@@ -396,6 +453,28 @@ fn color_hex(val: &Option<String>) -> Option<String> {
         return None;
     }
     Some(v.to_ascii_uppercase())
+}
+
+/// `w:u` is "on" unless it explicitly says `val="none"`. A present `<w:u/>` with
+/// no `val`, or any real underline style (single/double/…), reads as on.
+fn underline_on(u: &wml::Underline) -> bool {
+    !matches!(u.val, Some(wml::UnderlineValues::None))
+}
+
+/// `w:tab/@w:val` -> a paged tab alignment string, or `None` for `clear`.
+fn tab_alignment(v: &wml::TabStopValues) -> Option<String> {
+    use wml::TabStopValues as T;
+    Some(
+        match v {
+            T::Left | T::Start | T::Number => "left",
+            T::Center => "center",
+            T::Right | T::End => "right",
+            T::Decimal => "decimal",
+            T::Bar => "bar",
+            T::Clear => return None,
+        }
+        .to_string(),
+    )
 }
 
 fn vert_align(v: &wml::VerticalPositionValues) -> VertAlign {

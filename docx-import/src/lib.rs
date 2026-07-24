@@ -322,15 +322,62 @@ fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx) -> Paragraph {
         });
 
     let mut runs = Vec::new();
+    // Complex-field state: a stack so (rare) nested fields resolve correctly.
+    // A run bearing a `fldChar`/`instrText` is a control run (no display text);
+    // runs in an active HYPERLINK field's result become links.
+    let mut fields: Vec<FieldFrame> = Vec::new();
     for choice in &p.paragraph_choice {
         match choice {
-            wml::ParagraphChoice::WRun(r) => runs.push(map_run(r, ctx)),
+            wml::ParagraphChoice::WRun(r) => {
+                if let Some(kind) = run_field_char(r) {
+                    match kind {
+                        wml::FieldCharValues::Begin => fields.push(FieldFrame::default()),
+                        wml::FieldCharValues::Separate => {
+                            if let Some(f) = fields.last_mut() {
+                                f.result_url = parse_hyperlink_instr(&f.instruction);
+                                f.separated = true;
+                            }
+                        }
+                        wml::FieldCharValues::End => {
+                            fields.pop();
+                        }
+                    }
+                    continue;
+                }
+                if let Some(instr) = run_instr_text(r) {
+                    if let Some(f) = fields.last_mut() {
+                        f.instruction.push_str(&instr);
+                    }
+                    continue;
+                }
+                let mut run = map_run(r, ctx);
+                if let Some(f) = fields.last() {
+                    if f.separated {
+                        if let Some(url) = &f.result_url {
+                            run.hyperlink = Some(url.clone());
+                        }
+                    }
+                }
+                runs.push(run);
+            }
             wml::ParagraphChoice::Hyperlink(h) => {
                 let target = ctx.hyperlink_target(h);
                 for hc in &h.hyperlink_choice {
                     if let wml::HyperlinkChoice::WRun(r) = hc {
                         let mut run = map_run(r, ctx);
                         run.hyperlink = target.clone();
+                        runs.push(run);
+                    }
+                }
+            }
+            // `w:fldSimple` — the single-element field form. If it's a
+            // HYPERLINK, its inner display runs become links.
+            wml::ParagraphChoice::SimpleField(fs) => {
+                let url = parse_hyperlink_instr(&fs.instruction);
+                for c in &fs.simple_field_choice {
+                    if let wml::SimpleFieldChoice::WRun(r) = c {
+                        let mut run = map_run(r, ctx);
+                        run.hyperlink = url.clone();
                         runs.push(run);
                     }
                 }
@@ -407,6 +454,57 @@ fn map_cell(c: &wml::TableCell, ctx: &ImportCtx) -> docx_core::TableCell {
         grid_span,
         v_merge,
     }
+}
+
+/// One frame of a complex field (`w:fldChar begin … instrText … separate …
+/// result … end`). Instruction text accumulates between `begin` and `separate`;
+/// runs between `separate` and `end` are the field result.
+#[derive(Default)]
+struct FieldFrame {
+    instruction: String,
+    separated: bool,
+    /// The resolved external URL if this is a `HYPERLINK` field (else `None`).
+    result_url: Option<String>,
+}
+
+/// The `w:fldChar` type carried by a run, if any (a control run — no display text).
+fn run_field_char(r: &wml::Run) -> Option<wml::FieldCharValues> {
+    r.run_choice.iter().find_map(|c| match c {
+        wml::RunChoice::FieldChar(fc) => Some(fc.field_char_type),
+        _ => None,
+    })
+}
+
+/// The concatenated `w:instrText` (field-code) text carried by a run, if any.
+fn run_instr_text(r: &wml::Run) -> Option<String> {
+    let mut s = String::new();
+    for c in &r.run_choice {
+        if let wml::RunChoice::FieldCode(fc) = c {
+            if let Some(t) = &fc.0.xml_content {
+                s.push_str(t);
+            }
+        }
+    }
+    (!s.is_empty()).then_some(s)
+}
+
+/// Parse a field instruction and return the EXTERNAL URL when it is a
+/// `HYPERLINK "url"` field. An internal `HYPERLINK \l "bookmark"` link returns
+/// `None` (styled-only, mirroring the `#anchor` case — the core hyperlink door
+/// registers URL destinations, not text anchors). Word splits the instruction
+/// across several `w:instrText` runs, so this parses the accumulated string.
+fn parse_hyperlink_instr(instr: &str) -> Option<String> {
+    let rest = instr.trim().strip_prefix("HYPERLINK")?;
+    let quote = rest.find('"')?;
+    // A `\l` switch BEFORE the first quoted argument means an internal
+    // bookmark target (no external URL); skip it.
+    if rest[..quote].split_whitespace().any(|t| t == "\\l") {
+        return None;
+    }
+    let after = &rest[quote + 1..];
+    let end = after.find('"')?;
+    let url = &after[..end];
+    (!url.is_empty()).then(|| url.to_string())
 }
 
 fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {

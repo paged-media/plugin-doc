@@ -21,8 +21,8 @@
 //! preservation invariant.
 
 use docx_conformance::{
-    hyperlink_docx, image_docx, list_docx, memo_docx, one_paragraph_docx, table_docx, tier1_docx,
-    zip_parts,
+    field_hyperlink_docx, hyperlink_docx, image_docx, list_docx, memo_docx, one_paragraph_docx,
+    table_docx, tier1_docx, zip_parts,
 };
 use docx_core::{Block, ListKind, StyleKind, VMerge};
 use docx_import::import_docx;
@@ -400,6 +400,54 @@ fn hyperlink_resolves_target_and_styles_run_blue_underline() {
     // The other runs are not links.
     assert_eq!(ir.story.paragraphs()[0].runs[0].hyperlink_url, None);
     // The diagnostic now reports how many became native clickable links.
+    assert!(ir
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("native clickable link")));
+}
+
+#[test]
+fn field_based_hyperlinks_resolve_from_both_field_forms() {
+    // Word writes hyperlinks two ways: a `w:hyperlink` element (covered above) and
+    // a HYPERLINK *field*. Both the complex `fldChar` field and the simple
+    // `w:fldSimple` must resolve to clickable link runs.
+    let doc = import_docx(&field_hyperlink_docx()).unwrap();
+    let para = match &doc.body[0] {
+        Block::Paragraph(p) => p,
+        _ => panic!("expected a paragraph"),
+    };
+    // Display runs only — the fldChar/instrText control runs carry no text and
+    // are not emitted: "Go ", "complex link", " and ", "simple link", " done.".
+    let texts: Vec<&str> = para.runs.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        ["Go ", "complex link", " and ", "simple link", " done."]
+    );
+    // The complex field's instruction was split across two instrText runs and
+    // still accumulated to the right URL.
+    assert_eq!(para.runs[0].hyperlink, None);
+    assert_eq!(
+        para.runs[1].hyperlink.as_deref(),
+        Some("https://example.com/complex")
+    );
+    assert_eq!(para.runs[2].hyperlink, None);
+    assert_eq!(
+        para.runs[3].hyperlink.as_deref(),
+        Some("https://example.com/simple")
+    );
+    assert_eq!(para.runs[4].hyperlink, None);
+
+    // And they lower to native clickable links (carry the URL for insertHyperlink).
+    let ir = lower(&doc);
+    let runs = &ir.story.paragraphs()[0].runs;
+    assert_eq!(
+        runs[1].hyperlink_url.as_deref(),
+        Some("https://example.com/complex")
+    );
+    assert_eq!(
+        runs[3].hyperlink_url.as_deref(),
+        Some("https://example.com/simple")
+    );
     assert!(ir
         .diagnostics
         .iter()

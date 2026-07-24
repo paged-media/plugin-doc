@@ -30,6 +30,7 @@ fn main() {
         "list" => docx_conformance::list_docx(),
         "image" => docx_conformance::image_docx(),
         "hyperlink" => docx_conformance::hyperlink_docx(),
+        "fieldlink" => docx_conformance::field_hyperlink_docx(),
         "table" => docx_conformance::table_docx(),
         "one" => docx_conformance::one_paragraph_docx(),
         _ => docx_conformance::memo_docx(),

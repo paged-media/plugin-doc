@@ -123,10 +123,22 @@ conformance fixture).
   designmap resources; the engine mints the three cross-referencing ids so the
   wire stays `{storyId, start, end, url}`. (Cross-repo, like the anchored-frame
   door: `plugin-doc` stays isolation-clean, `core` carries the door.)
-- **Honest limitations:** internal `#anchor` targets keep the blue+underline look
-  but are not yet native links (the core door registers URL destinations, not text
-  anchors — a later refinement); the diagnostic reports how many became clickable
-  vs styled-only.
+- **Both of Word's hyperlink forms.** Word writes links two ways: the
+  `w:hyperlink` element (above) AND a `HYPERLINK` *field* — either the complex
+  `fldChar begin / instrText / separate / result / end` run sequence (instruction
+  may be split across several `w:instrText` runs) or the one-shot `w:fldSimple`.
+  docx-import runs a field state machine over the paragraph's runs: control runs
+  (`fldChar`/`instrText`) carry no display text and are dropped; result runs of a
+  `HYPERLINK` field inherit the URL. Both forms then flow through the SAME
+  `hyperlink_url` → `insertHyperlink` path — **no docx-lower / host-model / core
+  change, purely a parse addition.** Verified through the real wasm (`fieldlink`
+  fixture: two field links, one with a split instruction, both native-clickable).
+- **Honest limitations:** internal `#anchor` / `HYPERLINK \l` bookmark targets
+  keep the blue+underline look but are not yet native links (the core door
+  registers URL destinations, not text anchors, and the renderer resolves a
+  text-destination best-effort to the story's first page — useless for a
+  multi-page story's mid-doc jumps; both are labelled, not faked). The diagnostic
+  reports how many became clickable vs styled-only.
 
 ## Offset convention (correctness note)
 

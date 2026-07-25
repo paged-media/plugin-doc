@@ -56,7 +56,7 @@ pub fn apply_edits(
 ) -> Result<(), OoxmlError> {
     let mut targets: Vec<ResolvedTarget> = Vec::new();
     for e in &edits.runs {
-        let Some((para_ord, run_ord)) = bindings.resolve(e.block, e.run) else {
+        let Some(addr) = bindings.resolve(e.block, e.run) else {
             continue; // non-patchable — skipped
         };
         if e.new_text.is_none() && e.new_props.is_none() {
@@ -70,8 +70,9 @@ pub fn apply_edits(
             rpr::render_rpr(props, rstyle)
         });
         targets.push(ResolvedTarget {
-            para_ord,
-            run_ord,
+            para_ord: addr.para_ord,
+            run_ord: addr.run_ord,
+            wrapper: addr.wrapper,
             new_text: e.new_text.clone(),
             new_rpr,
             delete: false,
@@ -86,16 +87,16 @@ pub fn apply_edits(
     for s in &edits.structural {
         match s {
             StructuralEdit::DeleteRun { block, run } => {
-                let Some((p, r)) = bindings.resolve(*block, *run) else {
+                let Some(a) = bindings.resolve(*block, *run) else {
                     continue;
                 };
-                let t = targets
-                    .iter_mut()
-                    .find(|t| t.para_ord == p && t.run_ord == r);
-                match t {
+                match targets.iter_mut().find(|t| {
+                    t.para_ord == a.para_ord && t.run_ord == a.run_ord && t.wrapper == a.wrapper
+                }) {
                     Some(t) => t.delete = true,
                     None => {
-                        let mut t = ResolvedTarget::edit(p, r);
+                        let mut t = ResolvedTarget::edit(a.para_ord, a.run_ord);
+                        t.wrapper = a.wrapper;
                         t.delete = true;
                         targets.push(t);
                     }
@@ -112,16 +113,18 @@ pub fn apply_edits(
                 match run {
                     // After an existing run.
                     Some(run) => {
-                        let Some((p, r)) = bindings.resolve(*block, *run) else {
+                        let Some(a) = bindings.resolve(*block, *run) else {
                             continue;
                         };
-                        match targets
-                            .iter_mut()
-                            .find(|t| t.para_ord == p && t.run_ord == r)
-                        {
+                        match targets.iter_mut().find(|t| {
+                            t.para_ord == a.para_ord
+                                && t.run_ord == a.run_ord
+                                && t.wrapper == a.wrapper
+                        }) {
                             Some(t) => t.insert_after.push(frag),
                             None => {
-                                let mut t = ResolvedTarget::edit(p, r);
+                                let mut t = ResolvedTarget::edit(a.para_ord, a.run_ord);
+                                t.wrapper = a.wrapper;
                                 t.insert_after.push(frag);
                                 targets.push(t);
                             }

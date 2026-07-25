@@ -195,7 +195,7 @@ range ops, so it sits entirely on the contiguous side.
   `<w:r>` children.
   **Deferred (labelled):** table structure;
   editing hyperlink/field runs and table-cell content (non-patchable bindings);
-  multi-`<w:t>` runs; paragraph `<w:pPr>` edits; and — the one platform seam —
+  and — the one platform seam —
   the LIVE editor wiring (below).
 
 ## DOC-03 — structured read + the LIVE save-back path (built; awaits the wasm publish)
@@ -363,3 +363,30 @@ a different style produced an empty EditSet).
 Verified: a paragraph gains a centred `<w:pPr>` where it had none, a heading's
 `pStyle` is dropped, run text is untouched, every other part stays byte-identical,
 and the differ detects a paragraph-style repoint end-to-end.
+
+## M2 Increment 3b — hyperlink / field runs are editable
+
+Runs inside a link or field were marked non-patchable outright, on the assumption
+that editing them would desync the target. That was too broad — in every form the
+target lives somewhere OTHER than the run being edited:
+
+- `<w:hyperlink>` — the `r:id` is on the WRAPPER, so the run's `<w:t>`/`<w:rPr>`
+  are free to change. `RunSource::Hyperlink` now carries `{link_ord, run_ord}` and
+  the splicer counts `<w:hyperlink>` children + the runs inside the open one,
+  exactly as the table-cell path does.
+- `w:fldSimple` — the instruction is a wrapper ATTRIBUTE; same treatment
+  (`RunSource::Field { field_ord, run_ord }`).
+- the complex `fldChar` **result** run — a plain direct `<w:r>` child whose URL
+  lives in a separate `instrText` run. It was already addressable; only an
+  over-broad `hyperlink.is_some()` check was rejecting it.
+
+Verified: editing the display text of all three forms keeps the link target
+(`https://paged.media/`, `…/complex`, `…/simple`) and leaves siblings untouched.
+
+**Multi-`<w:t>` runs were never actually a limitation** — a run whose text is split
+across several `<w:t>` children (Word does this after edits) already collapses
+correctly into one on a text replacement, because `LoweredRun.text` is the
+concatenation. A unit test now pins that, and the stale "deferred" claim is gone.
+
+Still deferred: table STRUCTURE (rows/cells), nested tables, a wrapped run INSIDE
+a table cell (it needs both locator paths at once), and paragraph↔table swap.

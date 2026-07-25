@@ -447,6 +447,10 @@ fn map_paragraph(
     // real XML `<w:r>` child index; `<w:hyperlink>`/`<w:fldSimple>`-wrapped runs
     // sit on a different path and are marked non-patchable instead.
     let mut wrun_ord = 0u32;
+    // Ordinals of the WRAPPER children (`<w:hyperlink>` / `<w:fldSimple>`), so a
+    // wrapped run keeps a locatable address of its own.
+    let mut link_ord = 0u32;
+    let mut field_ord = 0u32;
     for choice in &p.paragraph_choice {
         match choice {
             wml::ParagraphChoice::WRun(r) => {
@@ -486,27 +490,39 @@ fn map_paragraph(
             }
             wml::ParagraphChoice::Hyperlink(h) => {
                 let target = ctx.hyperlink_target(h);
+                let mut inner = 0u32;
                 for hc in &h.hyperlink_choice {
                     if let wml::HyperlinkChoice::WRun(r) = hc {
                         let mut run = map_run(r, ctx);
                         run.hyperlink = target.clone();
-                        run.source = Some(RunSource::Hyperlink);
+                        run.source = Some(RunSource::Hyperlink {
+                            link_ord,
+                            run_ord: inner,
+                        });
+                        inner += 1;
                         runs.push(run);
                     }
                 }
+                link_ord += 1;
             }
             // `w:fldSimple` — the single-element field form. If it's a
             // HYPERLINK, its inner display runs become links.
             wml::ParagraphChoice::SimpleField(fs) => {
                 let url = parse_hyperlink_instr(&fs.instruction);
+                let mut inner = 0u32;
                 for c in &fs.simple_field_choice {
                     if let wml::SimpleFieldChoice::WRun(r) = c {
                         let mut run = map_run(r, ctx);
                         run.hyperlink = url.clone();
-                        run.source = Some(RunSource::Field);
+                        run.source = Some(RunSource::Field {
+                            field_ord,
+                            run_ord: inner,
+                        });
+                        inner += 1;
                         runs.push(run);
                     }
                 }
+                field_ord += 1;
             }
             _ => {}
         }

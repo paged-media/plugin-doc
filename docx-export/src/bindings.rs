@@ -68,24 +68,55 @@ pub struct CellParaBinding {
     pub runs: Vec<RunBinding>,
 }
 
+/// Which element a patchable run sits inside, when it is not a direct `<w:r>`
+/// child of the paragraph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wrapper {
+    /// Inside the n-th `<w:hyperlink>` child (the `r:id` lives on the wrapper).
+    Hyperlink(u32),
+    /// Inside the n-th `<w:fldSimple>` child (the instruction is a wrapper attr).
+    Field(u32),
+}
+
 /// A lowered run's provenance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunBinding {
     /// The `run_ord`-th direct `<w:r>` child of the paragraph — patchable.
     Direct { run_ord: u32 },
-    /// A run with no stable direct-`<w:r>` provenance (hyperlink/field-flattened,
-    /// or a linked run) — not patched in the current increment.
+    /// The `run_ord`-th `<w:r>` inside a hyperlink/field WRAPPER. Patchable: the
+    /// link target / field instruction lives on the wrapper, not the run, so
+    /// rewriting the run's `<w:t>`/`<w:rPr>` cannot desync it.
+    Wrapped { wrapper: Wrapper, run_ord: u32 },
+    /// No stable provenance — not patched.
     NonPatchable,
+}
+
+/// A resolved run address in the source document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunAddr {
+    pub para_ord: u32,
+    pub run_ord: u32,
+    /// `None` ⇒ a direct `<w:r>` child of the `<w:p>`.
+    pub wrapper: Option<Wrapper>,
 }
 
 impl DocxBindings {
     /// Resolve a lowered `(block, run)` to `(para_ord, run_ord)` in the source
     /// `word/document.xml`, or `None` when the target is non-patchable (a table,
     /// an out-of-range index, or a hyperlink/field/linked run).
-    pub fn resolve(&self, block: usize, run: usize) -> Option<(u32, u32)> {
+    pub fn resolve(&self, block: usize, run: usize) -> Option<RunAddr> {
         match self.blocks.get(block)? {
             BlockBinding::Paragraph { para_ord, runs } => match runs.get(run)? {
-                RunBinding::Direct { run_ord } => Some((*para_ord, *run_ord)),
+                RunBinding::Direct { run_ord } => Some(RunAddr {
+                    para_ord: *para_ord,
+                    run_ord: *run_ord,
+                    wrapper: None,
+                }),
+                RunBinding::Wrapped { wrapper, run_ord } => Some(RunAddr {
+                    para_ord: *para_ord,
+                    run_ord: *run_ord,
+                    wrapper: Some(*wrapper),
+                }),
                 RunBinding::NonPatchable => None,
             },
             BlockBinding::Table { .. } => None,
@@ -118,7 +149,9 @@ impl DocxBindings {
         let cp = cells.get(cell)?.paragraphs.get(para)?;
         match cp.runs.get(run)? {
             RunBinding::Direct { run_ord } => Some((cp.path, *run_ord)),
-            RunBinding::NonPatchable => None,
+            // A wrapped run inside a table cell needs both locator paths at once;
+            // not addressed in the current increment.
+            RunBinding::Wrapped { .. } | RunBinding::NonPatchable => None,
         }
     }
 }
@@ -131,12 +164,22 @@ fn run_bindings(p: &docx_core::Paragraph) -> Vec<RunBinding> {
         // Lowering drops empty-text runs (docx-lower `lower_paragraph`), so
         // replay that filter to keep run indices aligned.
         .filter(|r| !r.text.is_empty())
-        .map(|r| match (r.source, r.hyperlink.is_some()) {
-            // A direct run that is NOT a link is patchable. A link run (even a
-            // direct one, e.g. a HYPERLINK-field result) is deferred — editing it
-            // would desync the field/hyperlink.
-            (Some(RunSource::DirectRun(n)), false) => RunBinding::Direct { run_ord: n },
-            _ => RunBinding::NonPatchable,
+        .map(|r| match r.source {
+            // A direct `<w:r>` child — patchable. This INCLUDES a complex field's
+            // RESULT run (it carries a hyperlink target, but the URL lives in a
+            // separate `instrText` run, so rewriting this run cannot desync it).
+            Some(RunSource::DirectRun(n)) => RunBinding::Direct { run_ord: n },
+            // Wrapped runs are patchable through the wrapper's own locator path;
+            // the link target / field instruction lives on the WRAPPER.
+            Some(RunSource::Hyperlink { link_ord, run_ord }) => RunBinding::Wrapped {
+                wrapper: Wrapper::Hyperlink(link_ord),
+                run_ord,
+            },
+            Some(RunSource::Field { field_ord, run_ord }) => RunBinding::Wrapped {
+                wrapper: Wrapper::Field(field_ord),
+                run_ord,
+            },
+            None => RunBinding::NonPatchable,
         })
         .collect()
 }

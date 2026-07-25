@@ -47,6 +47,10 @@ pub struct ResolvedTarget {
     /// Increment 2 — pre-rendered `<w:r>…</w:r>` fragments to emit immediately
     /// after this run's `</w:r>`.
     pub insert_after: Vec<Vec<u8>>,
+    /// Increment 3 — when set, `run_ord` counts `<w:r>` inside the n-th
+    /// `<w:hyperlink>` / `<w:fldSimple>` child instead of the paragraph's direct
+    /// `<w:r>` children.
+    pub wrapper: Option<crate::bindings::Wrapper>,
 }
 
 impl ResolvedTarget {
@@ -59,6 +63,7 @@ impl ResolvedTarget {
             new_rpr: None,
             delete: false,
             insert_after: Vec::new(),
+            wrapper: None,
         }
     }
 }
@@ -154,6 +159,12 @@ pub fn patch_document_xml_all(
     let mut prepended = false;
     // Whether the open paragraph's `<w:pPr>` action has been discharged.
     let mut ppr_done = false;
+    // Wrapper locator (`<w:hyperlink>` / `<w:fldSimple>` children of a body
+    // paragraph, and the `<w:r>` index inside the open wrapper).
+    let mut hl_ord: i64 = -1;
+    let mut fld_ord: i64 = -1;
+    let mut wrap_run_ord: i64 = -1;
+    let mut open_wrapper: Option<crate::bindings::Wrapper> = None;
 
     loop {
         // The byte offset of the `<` that begins the event we are about to read
@@ -168,6 +179,9 @@ pub fn patch_document_xml_all(
                 if ln == b"p" && parent == Some(b"body".as_ref()) {
                     p_ord += 1;
                     r_ord = -1;
+                    hl_ord = -1;
+                    fld_ord = -1;
+                    open_wrapper = None;
                     let para_start = event_start;
                     if let Some(pt) = paras.get(&(p_ord as u32)) {
                         if pt.delete {
@@ -187,6 +201,31 @@ pub fn patch_document_xml_all(
                         ppr_done = false;
                     } else {
                         open_para = None;
+                    }
+                }
+                // Increment 3 — wrapper elements whose runs carry their own address.
+                if parent == Some(b"p".as_ref()) && !in_cell(&stack) {
+                    if ln == b"hyperlink" {
+                        hl_ord += 1;
+                        wrap_run_ord = -1;
+                        open_wrapper = Some(crate::bindings::Wrapper::Hyperlink(hl_ord as u32));
+                    } else if ln == b"fldSimple" {
+                        fld_ord += 1;
+                        wrap_run_ord = -1;
+                        open_wrapper = Some(crate::bindings::Wrapper::Field(fld_ord as u32));
+                    }
+                }
+                // A `<w:r>` inside an open wrapper resolves on the wrapper path.
+                if ln == b"r" && open_wrapper.is_some() && parent != Some(b"p".as_ref()) {
+                    wrap_run_ord += 1;
+                    if let Some(t) = targets.iter().find(|t| {
+                        t.wrapper == open_wrapper
+                            && t.para_ord as i64 == p_ord
+                            && t.run_ord as i64 == wrap_run_ord
+                    }) {
+                        let run_open_end = reader.buffer_position() as usize;
+                        splice_run(&mut reader, src, t, run_open_end, &mut out, &mut cursor);
+                        continue;
                     }
                 }
                 // Increment 3 — replace a targeted paragraph's `<w:pPr>`.
@@ -236,6 +275,7 @@ pub fn patch_document_xml_all(
                             new_rpr: ct.new_rpr.clone(),
                             delete: false,
                             insert_after: Vec::new(),
+                            wrapper: None,
                         };
                         let run_open_end = reader.buffer_position() as usize;
                         splice_run(&mut reader, src, &t, run_open_end, &mut out, &mut cursor);
@@ -299,6 +339,9 @@ pub fn patch_document_xml_all(
                 if ln == b"p" && parent == Some(b"body".as_ref()) {
                     p_ord += 1;
                     r_ord = -1;
+                    hl_ord = -1;
+                    fld_ord = -1;
+                    open_wrapper = None;
                 }
                 if ln == b"r" && parent == Some(b"p".as_ref()) {
                     r_ord += 1; // an empty `<w:r/>` has no text/rPr to patch
@@ -307,6 +350,9 @@ pub fn patch_document_xml_all(
             Ok(Event::End(e)) => {
                 let ln = local_name(e.name().as_ref()).to_vec();
                 stack.pop();
+                if ln == b"hyperlink" || ln == b"fldSimple" {
+                    open_wrapper = None;
+                }
                 // A body paragraph just closed — emit any paragraphs queued to
                 // follow it (the reader is positioned just past `</w:p>`).
                 if ln == b"p" && stack.last().map(Vec::as_slice) == Some(b"body".as_ref()) {
@@ -333,7 +379,7 @@ pub fn patch_document_xml_all(
 fn find_target(targets: &[ResolvedTarget], p: i64, r: i64) -> Option<&ResolvedTarget> {
     targets
         .iter()
-        .find(|t| t.para_ord as i64 == p && t.run_ord as i64 == r)
+        .find(|t| t.wrapper.is_none() && t.para_ord as i64 == p && t.run_ord as i64 == r)
 }
 
 /// Walk one targeted `<w:r>`'s direct children, splicing its `<w:rPr>` and/or
@@ -475,6 +521,27 @@ mod tests {
         assert!(out.contains(">Hello<"), "p0 run untouched");
         assert!(out.contains(">BOLD<"));
         assert!(!out.contains(">bold red<"));
+    }
+
+    #[test]
+    fn multi_wt_run_collapses_into_one() {
+        // A run whose text is split across several `<w:t>` children (Word does
+        // this after edits/spell-check). `LoweredRun.text` is the CONCATENATION,
+        // so replacing the run's text must replace ALL of them — the first `<w:t>`
+        // carries the new text and the rest are dropped, never duplicated or left
+        // stale.
+        let src = br#"<w:document xmlns:w="urn:w"><w:body><w:p><w:r><w:t>Hel</w:t><w:t>lo</w:t><w:t> there</w:t></w:r></w:p></w:body></w:document>"#;
+        let mut t = ResolvedTarget::edit(0, 0);
+        t.new_text = Some("Replaced".into());
+        let out = String::from_utf8(patch_document_xml(src, &[t])).unwrap();
+        assert!(
+            out.contains("<w:r><w:t xml:space=\"preserve\">Replaced</w:t></w:r>"),
+            "one <w:t> carries the whole new text:\n{out}"
+        );
+        assert!(!out.contains(">Hel<"), "stale fragment gone");
+        assert!(!out.contains(">lo<"), "stale fragment gone");
+        assert!(!out.contains("> there<"), "stale fragment gone");
+        assert_eq!(out.matches("<w:t").count(), 1, "exactly one <w:t> remains");
     }
 
     #[test]

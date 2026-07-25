@@ -609,6 +609,90 @@ fn diff_detects_a_paragraph_style_change() {
 }
 
 #[test]
+fn hyperlink_display_text_is_editable_and_keeps_its_target() {
+    // A `<w:hyperlink>`-wrapped run: the `r:id` lives on the WRAPPER, so editing
+    // the run's text cannot desync the link. Previously these were marked
+    // non-patchable outright.
+    use docx_conformance::hyperlink_docx;
+
+    let original = hyperlink_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let base = docx_lower::lower(&model);
+    // The linked run is index 1 ("Paged Media").
+    assert_eq!(base.story.paragraphs()[0].runs[1].text, "Paged Media");
+
+    let edits = EditSet {
+        runs: vec![RunEdit::text(0, 1, "the Paged site")],
+        ..Default::default()
+    };
+    let saved = session.save_edited(&edits).unwrap();
+
+    let re = import_docx(&saved).unwrap();
+    let para = match &re.body[0] {
+        Block::Paragraph(p) => p,
+        _ => panic!("expected a paragraph"),
+    };
+    assert_eq!(para.runs[1].text, "the Paged site", "display text edited");
+    assert_eq!(
+        para.runs[1].hyperlink.as_deref(),
+        Some("https://paged.media/"),
+        "the link target survived the edit"
+    );
+    assert_eq!(para.runs[0].text, "Visit ", "sibling untouched");
+    assert_eq!(para.runs[2].text, " today.", "sibling untouched");
+}
+
+#[test]
+fn field_hyperlink_runs_are_editable_in_both_forms() {
+    // fldSimple (a WRAPPER, addressed on its own path) and the complex fldChar
+    // RESULT run (a DIRECT `<w:r>` child whose URL lives in a separate instrText
+    // run) — both are safely patchable.
+    use docx_conformance::field_hyperlink_docx;
+
+    let original = field_hyperlink_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let base = docx_lower::lower(&model);
+    let texts: Vec<&str> = base.story.paragraphs()[0]
+        .runs
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        ["Go ", "complex link", " and ", "simple link", " done."]
+    );
+
+    let edits = EditSet {
+        runs: vec![
+            RunEdit::text(0, 1, "COMPLEX"), // fldChar result run (direct child)
+            RunEdit::text(0, 3, "SIMPLE"),  // fldSimple-wrapped run
+        ],
+        ..Default::default()
+    };
+    let saved = session.save_edited(&edits).unwrap();
+
+    let re = import_docx(&saved).unwrap();
+    let para = match &re.body[0] {
+        Block::Paragraph(p) => p,
+        _ => panic!("expected a paragraph"),
+    };
+    assert_eq!(para.runs[1].text, "COMPLEX");
+    assert_eq!(
+        para.runs[1].hyperlink.as_deref(),
+        Some("https://example.com/complex"),
+        "the complex field's URL (a separate instrText run) survived"
+    );
+    assert_eq!(para.runs[3].text, "SIMPLE");
+    assert_eq!(
+        para.runs[3].hyperlink.as_deref(),
+        Some("https://example.com/simple"),
+        "the fldSimple instruction attribute survived"
+    );
+}
+
+#[test]
 fn non_patchable_target_is_skipped_not_errored() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();

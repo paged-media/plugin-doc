@@ -142,12 +142,17 @@ pub enum ListKind {
 /// fields sit on a different locator path and are marked non-patchable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunSource {
-    /// The `n`-th direct `<w:r>` child of the paragraph (0-based).
+    /// The `n`-th direct `<w:r>` child of the paragraph (0-based). A COMPLEX
+    /// field's result run is one of these — its URL lives in a separate
+    /// `instrText` run, so editing its text is safe.
     DirectRun(u32),
-    /// Flattened out of a `<w:hyperlink>` element.
-    Hyperlink,
-    /// Flattened out of a `<w:fldSimple>` or a complex `fldChar` field.
-    Field,
+    /// The `run_ord`-th `<w:r>` inside the `link_ord`-th `<w:hyperlink>` child of
+    /// the paragraph. The `r:id` lives on the WRAPPER, so the run's own text and
+    /// `<w:rPr>` are safely patchable through this path.
+    Hyperlink { link_ord: u32, run_ord: u32 },
+    /// The `run_ord`-th `<w:r>` inside the `field_ord`-th `<w:fldSimple>` child.
+    /// The instruction lives on the wrapper's `w:instr` attribute.
+    Field { field_ord: u32, run_ord: u32 },
 }
 
 /// A Word run (`w:r`): direct character formatting plus its text.

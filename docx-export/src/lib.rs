@@ -42,8 +42,8 @@ use std::collections::BTreeMap;
 
 use paged_ooxml::{OoxmlError, OpcPackage};
 use splice::{
-    patch_document_xml_rows, ResolvedCellTarget, ResolvedParaTarget, ResolvedRowTarget,
-    ResolvedTarget,
+    patch_document_xml_cols, ColumnAction, ResolvedCellTarget, ResolvedParaTarget,
+    ResolvedRowTarget, ResolvedTarget,
 };
 
 /// Apply `edits` to `pkg`'s main document part in place. Non-patchable targets
@@ -88,6 +88,9 @@ pub fn apply_edits(
     // pass over the unmodified source.
     let mut paras: BTreeMap<u32, ResolvedParaTarget> = BTreeMap::new();
     let mut rows: BTreeMap<(u32, u32), ResolvedRowTarget> = BTreeMap::new();
+    // At most ONE column action per table per save (they shift each other's
+    // indices, so a second would need re-resolution against the patched grid).
+    let mut columns: BTreeMap<u32, ColumnAction> = BTreeMap::new();
     for s in &edits.structural {
         match s {
             StructuralEdit::DeleteRun { block, run } => {
@@ -142,6 +145,31 @@ pub fn apply_edits(
                         paras.entry(p).or_default().prepend_runs.push(frag);
                     }
                 }
+            }
+            // Column ops require a UNIFORM grid (no gridSpan) — otherwise
+            // whether a new column widens a span or splits it is ambiguous, so
+            // the op is skipped rather than corrupting the table.
+            StructuralEdit::DeleteColumn { block, col } => {
+                let Some(t) = bindings.uniform_table_ord(*block) else {
+                    continue;
+                };
+                columns.insert(t, ColumnAction::Delete { col: *col });
+            }
+            StructuralEdit::InsertColumn {
+                block,
+                after_col,
+                text,
+            } => {
+                let Some(t) = bindings.uniform_table_ord(*block) else {
+                    continue;
+                };
+                columns.insert(
+                    t,
+                    ColumnAction::Insert {
+                        after_col: *after_col,
+                        text: text.clone(),
+                    },
+                );
             }
             StructuralEdit::DeleteRow { block, row } => {
                 let Some(t) = bindings.table_ord(*block) else {
@@ -218,13 +246,18 @@ pub fn apply_edits(
         });
     }
 
-    if targets.is_empty() && paras.is_empty() && cell_targets.is_empty() && rows.is_empty() {
+    if targets.is_empty()
+        && paras.is_empty()
+        && cell_targets.is_empty()
+        && rows.is_empty()
+        && columns.is_empty()
+    {
         return Ok(());
     }
 
     let patched = {
         let src = pkg.require(main_part)?;
-        patch_document_xml_rows(src, &targets, &paras, &cell_targets, &rows)
+        patch_document_xml_cols(src, &targets, &paras, &cell_targets, &rows, &columns)
     };
     pkg.set_part(main_part, patched);
     Ok(())

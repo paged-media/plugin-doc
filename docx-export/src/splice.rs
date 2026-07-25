@@ -81,6 +81,19 @@ pub struct ResolvedCellTarget {
     pub new_rpr: Option<Vec<u8>>,
 }
 
+/// A COLUMN-level structural action on one table. Applied to the `<w:tblGrid>`
+/// AND to the matching `<w:tc>` of every row, so the grid and the rows stay
+/// consistent (a bare cell insert/remove would leave the row inconsistent with
+/// `tblGrid`, which is why this is a column op rather than a cell op).
+#[derive(Debug, Clone)]
+pub enum ColumnAction {
+    /// Drop grid column `col` — its `<w:gridCol>` and each row's `col`-th `<w:tc>`.
+    Delete { col: u32 },
+    /// Add a column after `after_col`: a copy of that `<w:gridCol>` plus a fresh
+    /// `<w:tc>` carrying `text` in every row.
+    Insert { after_col: u32, text: String },
+}
+
 /// A ROW-level structural action, addressed by `(table_ord, row)`.
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedRowTarget {
@@ -155,12 +168,26 @@ pub fn patch_document_xml_all(
 
 /// As [`patch_document_xml_all`], plus ROW-level structural actions keyed by
 /// `(table_ord, row)`.
+#[cfg(test)]
 pub fn patch_document_xml_rows(
     src: &[u8],
     targets: &[ResolvedTarget],
     paras: &BTreeMap<u32, ResolvedParaTarget>,
     cells: &[ResolvedCellTarget],
     rows: &BTreeMap<(u32, u32), ResolvedRowTarget>,
+) -> Vec<u8> {
+    patch_document_xml_cols(src, targets, paras, cells, rows, &BTreeMap::new())
+}
+
+/// As [`patch_document_xml_rows`], plus COLUMN actions keyed by table ordinal.
+#[allow(clippy::too_many_arguments)]
+pub fn patch_document_xml_cols(
+    src: &[u8],
+    targets: &[ResolvedTarget],
+    paras: &BTreeMap<u32, ResolvedParaTarget>,
+    cells: &[ResolvedCellTarget],
+    rows: &BTreeMap<(u32, u32), ResolvedRowTarget>,
+    columns: &BTreeMap<u32, ColumnAction>,
 ) -> Vec<u8> {
     let mut reader = Reader::from_reader(src);
     reader.config_mut().trim_text(false);
@@ -188,6 +215,8 @@ pub fn patch_document_xml_rows(
     let mut wrap_run_ord: i64 = -1;
     let mut open_wrapper: Option<crate::bindings::Wrapper> = None;
     let mut open_row: Option<ResolvedRowTarget> = None;
+    // Column locator: the `<w:gridCol>` index inside the open `<w:tblGrid>`.
+    let mut gc_ord: i64 = -1;
 
     loop {
         // The byte offset of the `<` that begins the event we are about to read
@@ -270,6 +299,9 @@ pub fn patch_document_xml_rows(
                     tbl_ord += 1;
                     tr_ord = -1;
                 }
+                if ln == b"tblGrid" && parent == Some(b"tbl".as_ref()) {
+                    gc_ord = -1;
+                }
                 if ln == b"tr" && parent == Some(b"tbl".as_ref()) {
                     tr_ord += 1;
                     tc_ord = -1;
@@ -291,6 +323,40 @@ pub fn patch_document_xml_rows(
                 if ln == b"tc" && parent == Some(b"tr".as_ref()) {
                     tc_ord += 1;
                     cp_ord = -1;
+                    // Column ops: the grid is uniform here (guarded upstream), so
+                    // the `<w:tc>` index IS the grid column.
+                    if let Some(action) = columns.get(&(tbl_ord as u32)) {
+                        match action {
+                            ColumnAction::Delete { col } if *col as i64 == tc_ord => {
+                                let _ = reader.read_to_end(QName(&name));
+                                let end = reader.buffer_position() as usize;
+                                out.extend_from_slice(&src[cursor..event_start]);
+                                cursor = end;
+                                continue;
+                            }
+                            ColumnAction::Insert { after_col, text }
+                                if *after_col as i64 == tc_ord =>
+                            {
+                                let _ = reader.read_to_end(QName(&name));
+                                let end = reader.buffer_position() as usize;
+                                // Copy the reference cell verbatim, then append a
+                                // fresh one carrying the new column's text.
+                                out.extend_from_slice(&src[cursor..end]);
+                                out.extend_from_slice(b"<w:tc><w:p>");
+                                if !text.is_empty() {
+                                    out.extend_from_slice(&crate::rpr::render_run(
+                                        text,
+                                        &docx_core::RunProps::default(),
+                                        None,
+                                    ));
+                                }
+                                out.extend_from_slice(b"</w:p></w:tc>");
+                                cursor = end;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 if ln == b"p" && parent == Some(b"tc".as_ref()) {
                     cp_ord += 1;
@@ -373,6 +439,27 @@ pub fn patch_document_xml_rows(
             Ok(Event::Empty(e)) => {
                 let ln = local_name(e.name().as_ref()).to_vec();
                 let parent = stack.last().map(Vec::as_slice);
+                if ln == b"gridCol" && parent == Some(b"tblGrid".as_ref()) {
+                    gc_ord += 1;
+                    if let Some(action) = columns.get(&(tbl_ord as u32)) {
+                        let end = reader.buffer_position() as usize;
+                        match action {
+                            ColumnAction::Delete { col } if *col as i64 == gc_ord => {
+                                out.extend_from_slice(&src[cursor..event_start]);
+                                cursor = end;
+                            }
+                            ColumnAction::Insert { after_col, .. }
+                                if *after_col as i64 == gc_ord =>
+                            {
+                                // Duplicate this `<w:gridCol>` (keeps its width).
+                                out.extend_from_slice(&src[cursor..end]);
+                                out.extend_from_slice(&src[event_start..end]);
+                                cursor = end;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 if ln == b"p" && parent == Some(b"body".as_ref()) {
                     p_ord += 1;
                     r_ord = -1;

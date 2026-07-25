@@ -409,8 +409,8 @@ Verified on the table fixture — which has both a `gridSpan` header row and a
 row leaves the spanning row, the surrounding body paragraphs and every other part
 untouched; plus a diff-derived deletion end-to-end.
 
-**Cell-level** add/remove within a row is still deferred: it changes the grid and
-interacts with `gridSpan`/`vMerge`, so it needs its own design pass.
+**Cell-level** add/remove within a row is not a coherent operation on its own —
+see Increment 3f, which does it as a COLUMN op.
 
 ## M2 Increment 3d — block alignment (a preservation fix)
 
@@ -449,3 +449,27 @@ The regression test is the interesting part: the fixture gives each row a distin
 prove WHICH node survived — asserting on cell text alone passes even when the
 wrong row is kept. The test now asserts row 2's marker (`w:val="102"`) is intact
 and the middle row's (`101`) is the one that went.
+
+## M2 Increment 3f — table columns
+
+"Add/remove a cell" turned out not to be a well-defined operation: a table's
+columns are declared by `<w:tblGrid><w:gridCol>`, and each row's cells must sum to
+that width, so inserting a bare `<w:tc>` leaves the row inconsistent with the
+grid. The coherent operation is a **column** — grid entry and every row's cell
+together — and that is what shipped.
+
+- `StructuralEdit::DeleteColumn { block, col }` removes the `<w:gridCol>` and each
+  row's matching `<w:tc>`; `InsertColumn { block, after_col, text }` duplicates the
+  reference `<w:gridCol>` (so the new column keeps a sensible width) and appends a
+  fresh `<w:tc>` per row.
+- **Guarded, not guessed.** Both are applied only when the table's grid is
+  UNIFORM (no `gridSpan`), which `build_bindings` records per table. With a span
+  present, whether a new column widens the span or splits it is genuinely
+  ambiguous, so the op is SKIPPED — a test asserts the `gridSpan` fixture comes
+  back byte-identical rather than subtly corrupted.
+- At most one column action per table per save: two would shift each other's
+  indices and the second would need re-resolving against the patched grid.
+
+Verified: inserting after column 0 of the 3x2 fixture yields `cols == 3` with
+`["R0C0", "NEW", "R0C1"]`, deleting column 1 yields `cols == 1` with column 1 gone
+from every row, and the span table is refused untouched.

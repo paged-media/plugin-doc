@@ -943,6 +943,109 @@ fn deleting_a_middle_row_preserves_the_surviving_rows() {
 }
 
 #[test]
+fn columns_can_be_inserted_and_deleted_on_a_uniform_grid() {
+    use docx_conformance::simple_table_docx;
+    use docx_export::StructuralEdit;
+    use docx_lower::ir::LoweredBlock;
+
+    let original = simple_table_docx();
+    let table_of = |bytes: &[u8]| {
+        let ir = docx_lower::lower(&docx_import::import_docx(bytes).unwrap());
+        match ir
+            .story
+            .blocks
+            .iter()
+            .find(|b| matches!(b, LoweredBlock::Table(_)))
+        {
+            Some(LoweredBlock::Table(t)) => t.clone(),
+            _ => panic!("no table"),
+        }
+    };
+    assert_eq!(table_of(&original).cols, 2, "fixture is 3x2");
+
+    // Add a column after col 0 — the grid AND every row must grow together.
+    let session = DocSession::load(&original).unwrap();
+    let grown = session
+        .save_edited(&EditSet {
+            structural: vec![StructuralEdit::InsertColumn {
+                block: 0,
+                after_col: 0,
+                text: "NEW".into(),
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+    let t = table_of(&grown);
+    assert_eq!(t.cols, 3, "gridCol added");
+    assert_eq!(t.rows, 3, "rows unchanged");
+    assert_eq!(t.cells.len(), 9, "one new cell per row");
+    let row0: Vec<String> = t
+        .cells
+        .iter()
+        .filter(|c| c.row == 0)
+        .map(|c| {
+            c.paragraphs
+                .iter()
+                .flat_map(|p| p.runs.iter())
+                .map(|r| r.text.as_str())
+                .collect()
+        })
+        .collect();
+    assert_eq!(row0, ["R0C0", "NEW", "R0C1"], "inserted after col 0");
+
+    // Remove column 1 from the ORIGINAL — grid and rows shrink together.
+    let shrunk = DocSession::load(&original)
+        .unwrap()
+        .save_edited(&EditSet {
+            structural: vec![StructuralEdit::DeleteColumn { block: 0, col: 1 }],
+            ..Default::default()
+        })
+        .unwrap();
+    let t2 = table_of(&shrunk);
+    assert_eq!(t2.cols, 1, "gridCol removed");
+    assert_eq!(t2.cells.len(), 3, "one cell per row remains");
+    let texts: Vec<String> = t2
+        .cells
+        .iter()
+        .map(|c| {
+            c.paragraphs
+                .iter()
+                .flat_map(|p| p.runs.iter())
+                .map(|r| r.text.as_str())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        ["R0C0", "R1C0", "R2C0"],
+        "column 1 gone from every row"
+    );
+}
+
+#[test]
+fn column_ops_are_refused_on_a_gridspan_table() {
+    // The gridSpan fixture: whether a new column widens the span or splits it is
+    // ambiguous, so the op must be SKIPPED — never a corrupted grid.
+    use docx_conformance::table_docx;
+    use docx_export::StructuralEdit;
+
+    let original = table_docx();
+    let session = DocSession::load(&original).unwrap();
+    let saved = session
+        .save_edited(&EditSet {
+            structural: vec![StructuralEdit::DeleteColumn { block: 1, col: 0 }],
+            ..Default::default()
+        })
+        .unwrap();
+    // Skipped ⇒ nothing was patched at all: every part byte-identical.
+    let a = OpcPackage::read(&original).unwrap();
+    let b = OpcPackage::read(&saved).unwrap();
+    for name in a.file_names() {
+        assert_eq!(a.part(name), b.part(name), "part {name} untouched");
+    }
+}
+
+#[test]
 fn non_patchable_target_is_skipped_not_errored() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();

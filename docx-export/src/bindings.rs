@@ -55,6 +55,11 @@ pub enum BlockBinding {
     /// cells are absorbed, not emitted).
     Table {
         table_ord: u32,
+        /// True when EVERY cell spans exactly one grid column. Column
+        /// insert/remove is only well-defined on such a table: with a `gridSpan`
+        /// present, whether a new column widens the span or splits it is
+        /// ambiguous, so those ops are skipped rather than corrupting the grid.
+        uniform_grid: bool,
         cells: Vec<CellBinding>,
     },
 }
@@ -143,6 +148,19 @@ impl DocxBindings {
         match self.blocks.get(block)? {
             BlockBinding::Table { table_ord, .. } => Some(*table_ord),
             BlockBinding::Paragraph { .. } => None,
+        }
+    }
+
+    /// The table's `<w:tbl>` ordinal, but ONLY when its grid is uniform (no
+    /// `gridSpan`) — the precondition for a column insert/remove.
+    pub fn uniform_table_ord(&self, block: usize) -> Option<u32> {
+        match self.blocks.get(block)? {
+            BlockBinding::Table {
+                table_ord,
+                uniform_grid: true,
+                ..
+            } => Some(*table_ord),
+            _ => None,
         }
     }
 
@@ -242,7 +260,16 @@ pub fn build_bindings(doc: &DocxDocument) -> DocxBindings {
                     .flat_map(|c| c.paragraphs.iter())
                     .find_map(|p| p.source_cell.map(|cp| cp.table_ord))
                     .unwrap_or(0);
-                blocks.push(BlockBinding::Table { table_ord, cells });
+                let uniform_grid = t
+                    .rows
+                    .iter()
+                    .flat_map(|r| r.cells.iter())
+                    .all(|c| c.grid_span <= 1);
+                blocks.push(BlockBinding::Table {
+                    table_ord,
+                    uniform_grid,
+                    cells,
+                });
             }
         }
     }

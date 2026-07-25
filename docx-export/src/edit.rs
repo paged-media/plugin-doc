@@ -111,6 +111,19 @@ pub enum StructuralEdit {
     },
     /// Remove the paragraph's entire `<w:p>` subtree.
     DeleteParagraph { block: usize },
+    /// Remove grid column `col` of the table at `block`: its `<w:gridCol>` AND
+    /// the corresponding `<w:tc>` in every row. Only applied to a table whose
+    /// grid is uniform (no `gridSpan`); otherwise skipped.
+    DeleteColumn { block: usize, col: u32 },
+    /// Insert a grid column immediately AFTER `after_col`: a `<w:gridCol>` (a
+    /// copy of the reference column's width) plus a `<w:tc>` in every row. `text`
+    /// fills each new cell. Uniform-grid tables only.
+    InsertColumn {
+        block: usize,
+        after_col: u32,
+        #[serde(default)]
+        text: String,
+    },
     /// Remove the `row`-th `<w:tr>` of the table at `block`.
     DeleteRow { block: usize, row: u32 },
     /// Insert a new `<w:tr>` immediately AFTER the `after_row`-th row of the

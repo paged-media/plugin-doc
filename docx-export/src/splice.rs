@@ -217,6 +217,11 @@ pub fn patch_document_xml_cols(
     let mut open_row: Option<ResolvedRowTarget> = None;
     // Column locator: the `<w:gridCol>` index inside the open `<w:tblGrid>`.
     let mut gc_ord: i64 = -1;
+    // `<w:tbl>` nesting depth. A NESTED table's rows/cells sit under their own
+    // `<w:tbl>`, so without this they would be counted against the OUTER table
+    // and an edit aimed at an outer row would land inside the nested one.
+    // Only depth 1 (a body-level table) is addressed.
+    let mut tbl_depth: i32 = 0;
 
     loop {
         // The byte offset of the `<` that begins the event we are about to read
@@ -295,14 +300,17 @@ pub fn patch_document_xml_cols(
                     }
                 }
                 // --- table-cell locator path (tbl → tr → tc → p → r) ---
-                if ln == b"tbl" && parent == Some(b"body".as_ref()) {
-                    tbl_ord += 1;
-                    tr_ord = -1;
+                if ln == b"tbl" {
+                    tbl_depth += 1;
+                    if tbl_depth == 1 {
+                        tbl_ord += 1;
+                        tr_ord = -1;
+                    }
                 }
-                if ln == b"tblGrid" && parent == Some(b"tbl".as_ref()) {
+                if ln == b"tblGrid" && parent == Some(b"tbl".as_ref()) && tbl_depth == 1 {
                     gc_ord = -1;
                 }
-                if ln == b"tr" && parent == Some(b"tbl".as_ref()) {
+                if ln == b"tr" && parent == Some(b"tbl".as_ref()) && tbl_depth == 1 {
                     tr_ord += 1;
                     tc_ord = -1;
                     open_row = rows.get(&(tbl_ord as u32, tr_ord as u32)).cloned();
@@ -320,7 +328,7 @@ pub fn patch_document_xml_cols(
                         }
                     }
                 }
-                if ln == b"tc" && parent == Some(b"tr".as_ref()) {
+                if ln == b"tc" && parent == Some(b"tr".as_ref()) && tbl_depth == 1 {
                     tc_ord += 1;
                     cp_ord = -1;
                     // Column ops: the grid is uniform here (guarded upstream), so
@@ -358,11 +366,12 @@ pub fn patch_document_xml_cols(
                         }
                     }
                 }
-                if ln == b"p" && parent == Some(b"tc".as_ref()) {
+                if ln == b"p" && parent == Some(b"tc".as_ref()) && tbl_depth == 1 {
                     cp_ord += 1;
                     cr_ord = -1;
                 }
-                if ln == b"r" && parent == Some(b"p".as_ref()) && in_cell(&stack) {
+                if ln == b"r" && parent == Some(b"p".as_ref()) && in_cell(&stack) && tbl_depth == 1
+                {
                     cr_ord += 1;
                     if let Some(ct) = cells.iter().find(|c| {
                         c.table_ord as i64 == tbl_ord
@@ -439,7 +448,7 @@ pub fn patch_document_xml_cols(
             Ok(Event::Empty(e)) => {
                 let ln = local_name(e.name().as_ref()).to_vec();
                 let parent = stack.last().map(Vec::as_slice);
-                if ln == b"gridCol" && parent == Some(b"tblGrid".as_ref()) {
+                if ln == b"gridCol" && parent == Some(b"tblGrid".as_ref()) && tbl_depth == 1 {
                     gc_ord += 1;
                     if let Some(action) = columns.get(&(tbl_ord as u32)) {
                         let end = reader.buffer_position() as usize;
@@ -474,6 +483,9 @@ pub fn patch_document_xml_cols(
             Ok(Event::End(e)) => {
                 let ln = local_name(e.name().as_ref()).to_vec();
                 stack.pop();
+                if ln == b"tbl" {
+                    tbl_depth -= 1;
+                }
                 if ln == b"hyperlink" || ln == b"fldSimple" {
                     open_wrapper = None;
                 }

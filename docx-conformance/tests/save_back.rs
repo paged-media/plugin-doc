@@ -1046,6 +1046,41 @@ fn column_ops_are_refused_on_a_gridspan_table() {
 }
 
 #[test]
+fn a_nested_table_does_not_misdirect_outer_cell_edits() {
+    // The locator counts `<w:tr>` by parent element. A NESTED table's rows sit
+    // under their own `<w:tbl>`, so without depth-awareness they inflate the
+    // OUTER table's row counter — and an edit aimed at an outer row lands inside
+    // the nested table instead. That is silent cross-table corruption.
+    use docx_conformance::nested_table_docx;
+    use docx_export::CellRunEdit;
+
+    let original = nested_table_docx();
+    let session = DocSession::load(&original).unwrap();
+    // Outer cells as lowered: [row0 ("outer r0"), row1 ("outer r1")] — the nested
+    // table itself is not modelled.
+    let edits = EditSet {
+        cells: vec![CellRunEdit::text(0, 1, 0, 0, "PATCHED")],
+        ..Default::default()
+    };
+    let saved = session.save_edited(&edits).unwrap();
+
+    let pkg = OpcPackage::read(&saved).unwrap();
+    let xml = std::str::from_utf8(pkg.part("word/document.xml").unwrap()).unwrap();
+    assert!(
+        xml.contains(">INNER<"),
+        "the NESTED table's content must be untouched:\n{xml}"
+    );
+    assert!(
+        xml.contains(">PATCHED<"),
+        "the outer row-1 cell was edited:\n{xml}"
+    );
+    assert!(
+        xml.contains(">outer r0<"),
+        "the other outer row is untouched"
+    );
+}
+
+#[test]
 fn non_patchable_target_is_skipped_not_errored() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();

@@ -318,10 +318,9 @@ Verified: a direct cell text edit and a diff-driven one both round-trip, with th
 other cells, the row/column spans, the grid widths, and every other part
 unchanged.
 
-**Honest limitations:** cell STRUCTURE (adding/removing rows or cells) is not
-patched, and the locator assumes tables are not NESTED — a `<w:tbl>` inside a
-`<w:tc>` would mis-count, so nested-table cells are never addressed by the
-bindings.
+**Nested tables:** the locator is depth-aware (see Increment 3g) — a nested
+table's rows/cells never affect the outer table's addressing. Nested-table CONTENT
+is still not itself addressable (the bindings only model top-level tables).
 
 ## Read-path fidelity — footnotes / endnotes
 
@@ -473,3 +472,20 @@ together — and that is what shipped.
 Verified: inserting after column 0 of the 3x2 fixture yields `cols == 3` with
 `["R0C0", "NEW", "R0C1"]`, deleting column 1 yields `cols == 1` with column 1 gone
 from every row, and the span table is refused untouched.
+
+## M2 Increment 3g — nested tables (a cross-table corruption fix)
+
+The locator counted `<w:tr>` by parent element, so a NESTED table's rows — which
+sit under their own `<w:tbl>` — were counted against the OUTER table. An edit
+aimed at an outer row therefore landed INSIDE the nested table, silently
+overwriting its content. The docs called nested tables "unsupported"; they were
+actually a corruption hazard in a perfectly valid Word document.
+
+The locator now tracks `<w:tbl>` nesting depth and addresses only depth 1, so
+nested rows, cells, cell paragraphs, cell runs and `<w:gridCol>` entries no longer
+disturb the outer table's counters. Regression-tested with a new
+`nested_table_docx` fixture: editing the outer table's second row patches that
+cell and leaves the nested table's `INNER` text intact.
+
+Nested-table CONTENT is still not addressable (the bindings model only top-level
+tables) — but it is now safely ignored rather than accidentally rewritten.

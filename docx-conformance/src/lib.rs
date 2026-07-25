@@ -429,6 +429,40 @@ pub fn simple_table_docx() -> Vec<u8> {
     ])
 }
 
+/// An outer table whose FIRST cell contains a NESTED table. Exercises the
+/// locator's nesting handling: a nested `<w:tr>` must not be counted against the
+/// outer table's rows, or an edit aimed at an outer row lands inside the nested
+/// table. (A `<w:tc>` holding a table must still end with a `<w:p>`.)
+pub fn nested_table_docx() -> Vec<u8> {
+    let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#;
+    let document = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid>
+      <w:tr><w:tc>
+        <w:tbl>
+          <w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid>
+          <w:tr><w:tc><w:p><w:r><w:t>INNER</w:t></w:r></w:p></w:tc></w:tr>
+        </w:tbl>
+        <w:p><w:r><w:t>outer r0</w:t></w:r></w:p>
+      </w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:r><w:t>outer r1</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>"#;
+    zip_parts(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+    ])
+}
+
 /// The smallest well-formed document: one paragraph, one run, no styles part.
 pub fn one_paragraph_docx() -> Vec<u8> {
     let document = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

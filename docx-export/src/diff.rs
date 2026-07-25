@@ -93,8 +93,39 @@ pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> 
         .zip(&edited.story.blocks)
         .enumerate()
     {
-        // Tables: diff cell content (text/style per cell paragraph run).
+        // Tables: row structure first, then cell content.
         if let (LoweredBlock::Table(bt), LoweredBlock::Table(et)) = (bb, eb) {
+            // Increment 3c — row count changed. Trailing rows are deleted; added
+            // rows are appended after the last baseline row (a full LCS over rows
+            // is a later refinement, as for paragraphs).
+            if et.rows < bt.rows {
+                for row in et.rows..bt.rows {
+                    structural.push(StructuralEdit::DeleteRow {
+                        block: block_idx,
+                        row,
+                    });
+                }
+            } else if et.rows > bt.rows && bt.rows > 0 {
+                for row in bt.rows..et.rows {
+                    let cells: Vec<String> = et
+                        .cells
+                        .iter()
+                        .filter(|c| c.row == row)
+                        .map(|c| {
+                            c.paragraphs
+                                .iter()
+                                .flat_map(|p| p.runs.iter())
+                                .map(|r| r.text.as_str())
+                                .collect()
+                        })
+                        .collect();
+                    structural.push(StructuralEdit::InsertRow {
+                        block: block_idx,
+                        after_row: bt.rows - 1,
+                        cells,
+                    });
+                }
+            }
             for (cell_idx, (bc, ec)) in bt.cells.iter().zip(&et.cells).enumerate() {
                 for (para_idx, (bpara, epara)) in
                     bc.paragraphs.iter().zip(&ec.paragraphs).enumerate()

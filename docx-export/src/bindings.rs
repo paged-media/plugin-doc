@@ -50,9 +50,13 @@ pub enum BlockBinding {
         para_ord: u32,
         runs: Vec<RunBinding>,
     },
-    /// A table: one entry per LOWERED cell, in the same order `docx-lower`
-    /// emits them (vMerge-continue cells are absorbed, not emitted).
-    Table { cells: Vec<CellBinding> },
+    /// A table: its `<w:tbl>` ordinal among the body's tables + one entry per
+    /// LOWERED cell, in the same order `docx-lower` emits them (vMerge-continue
+    /// cells are absorbed, not emitted).
+    Table {
+        table_ord: u32,
+        cells: Vec<CellBinding>,
+    },
 }
 
 /// A lowered table cell's provenance: one entry per paragraph in the cell.
@@ -133,6 +137,15 @@ impl DocxBindings {
         }
     }
 
+    /// The source `<w:tbl>` ordinal of a lowered table block — the address
+    /// row-level structural ops resolve on. `None` when the block is not a table.
+    pub fn table_ord(&self, block: usize) -> Option<u32> {
+        match self.blocks.get(block)? {
+            BlockBinding::Table { table_ord, .. } => Some(*table_ord),
+            BlockBinding::Paragraph { .. } => None,
+        }
+    }
+
     /// Resolve a TABLE-CELL run to its `(CellPath, run_ord)` source address, or
     /// `None` when the target is non-patchable (not a table, out of range, or a
     /// hyperlink/field run).
@@ -143,7 +156,7 @@ impl DocxBindings {
         para: usize,
         run: usize,
     ) -> Option<(CellPath, u32)> {
-        let BlockBinding::Table { cells } = self.blocks.get(block)? else {
+        let BlockBinding::Table { cells, .. } = self.blocks.get(block)? else {
             return None;
         };
         let cp = cells.get(cell)?.paragraphs.get(para)?;
@@ -220,7 +233,16 @@ pub fn build_bindings(doc: &DocxDocument) -> DocxBindings {
                         });
                     }
                 }
-                blocks.push(BlockBinding::Table { cells });
+                // Every cell paragraph carries the same table ordinal; take it
+                // from the first one (0 for a table with no cell paragraphs).
+                let table_ord = t
+                    .rows
+                    .iter()
+                    .flat_map(|r| r.cells.iter())
+                    .flat_map(|c| c.paragraphs.iter())
+                    .find_map(|p| p.source_cell.map(|cp| cp.table_ord))
+                    .unwrap_or(0);
+                blocks.push(BlockBinding::Table { table_ord, cells });
             }
         }
     }

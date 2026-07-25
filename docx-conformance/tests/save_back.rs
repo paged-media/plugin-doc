@@ -693,6 +693,131 @@ fn field_hyperlink_runs_are_editable_in_both_forms() {
 }
 
 #[test]
+fn table_rows_can_be_deleted_and_inserted() {
+    use docx_conformance::table_docx;
+    use docx_export::StructuralEdit;
+    use docx_lower::ir::LoweredBlock;
+
+    let original = table_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let base = docx_lower::lower(&model);
+    let (block, before) = base
+        .story
+        .blocks
+        .iter()
+        .enumerate()
+        .find_map(|(i, b)| match b {
+            LoweredBlock::Table(t) => Some((i, t)),
+            _ => None,
+        })
+        .expect("a table block");
+    assert_eq!(before.rows, 3, "fixture has 3 rows");
+
+    // Drop the LAST row (the vMerge-continue one) and append a fresh 2-cell row
+    // after row 1.
+    let edits = EditSet {
+        structural: vec![
+            StructuralEdit::DeleteRow { block, row: 2 },
+            StructuralEdit::InsertRow {
+                block,
+                after_row: 1,
+                cells: vec!["new left".into(), "new right".into()],
+            },
+        ],
+        ..Default::default()
+    };
+    let saved = session.save_edited(&edits).unwrap();
+
+    let re = docx_lower::lower(&docx_import::import_docx(&saved).unwrap());
+    let after = re
+        .story
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            LoweredBlock::Table(t) => Some(t),
+            _ => None,
+        })
+        .expect("table survives");
+    assert_eq!(after.rows, 3, "one row removed, one added");
+    let texts: Vec<String> = after
+        .cells
+        .iter()
+        .map(|c| {
+            c.paragraphs
+                .iter()
+                .flat_map(|p| p.runs.iter())
+                .map(|r| r.text.as_str())
+                .collect()
+        })
+        .collect();
+    assert!(
+        texts.contains(&"new left".to_string()),
+        "inserted cell: {texts:?}"
+    );
+    assert!(
+        texts.contains(&"new right".to_string()),
+        "inserted cell: {texts:?}"
+    );
+    assert!(texts.contains(&"Title spanning".to_string()), "row 0 kept");
+    assert!(
+        !texts.contains(&"Right bottom".to_string()),
+        "row 2 deleted"
+    );
+    // The surrounding body paragraphs are untouched.
+    let paras: Vec<&str> = re
+        .story
+        .paragraphs()
+        .iter()
+        .map(|p| p.runs.first().map(|r| r.text.as_str()).unwrap_or(""))
+        .collect();
+    assert_eq!(paras, ["Before the table.", "After the table."]);
+    // Every other part stays byte-identical.
+    let orig_pkg = OpcPackage::read(&original).unwrap();
+    let saved_pkg = OpcPackage::read(&saved).unwrap();
+    for name in orig_pkg.file_names() {
+        if name == "word/document.xml" {
+            continue;
+        }
+        assert_eq!(orig_pkg.part(name), saved_pkg.part(name), "part {name}");
+    }
+}
+
+#[test]
+fn diff_derives_a_row_deletion() {
+    use docx_conformance::table_docx;
+    use docx_lower::ir::LoweredBlock;
+
+    let original = table_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let bindings = docx_export::build_bindings(&model);
+    let base = docx_lower::lower(&model);
+
+    // Simulate the editor dropping the last row.
+    let mut edited = base.clone();
+    if let LoweredBlock::Table(t) = &mut edited.story.blocks[1] {
+        t.rows -= 1;
+        t.cells.retain(|c| c.row < t.rows);
+    }
+    let edits = docx_export::diff(&base, &edited, &bindings);
+    assert_eq!(
+        edits.structural.len(),
+        1,
+        "one row op: {:?}",
+        edits.structural
+    );
+
+    let saved = session.save_edited(&edits).unwrap();
+    let re = docx_lower::lower(&docx_import::import_docx(&saved).unwrap());
+    if let LoweredBlock::Table(t) = &re.story.blocks[1] {
+        assert_eq!(t.rows, 2, "the row was removed from the source");
+    } else {
+        panic!("expected a table at block 1");
+    }
+}
+
+#[test]
 fn non_patchable_target_is_skipped_not_errored() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();

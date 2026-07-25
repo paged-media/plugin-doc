@@ -41,7 +41,10 @@ pub use overlay::{overlay_story_content, ParagraphContentIn, RunContentIn, Story
 use std::collections::BTreeMap;
 
 use paged_ooxml::{OoxmlError, OpcPackage};
-use splice::{patch_document_xml_all, ResolvedCellTarget, ResolvedParaTarget, ResolvedTarget};
+use splice::{
+    patch_document_xml_rows, ResolvedCellTarget, ResolvedParaTarget, ResolvedRowTarget,
+    ResolvedTarget,
+};
 
 /// Apply `edits` to `pkg`'s main document part in place. Non-patchable targets
 /// (tables, hyperlink/field runs, out-of-range indices) are silently skipped —
@@ -84,6 +87,7 @@ pub fn apply_edits(
     // ops never shift each other's addresses; the patcher applies them in one
     // pass over the unmodified source.
     let mut paras: BTreeMap<u32, ResolvedParaTarget> = BTreeMap::new();
+    let mut rows: BTreeMap<(u32, u32), ResolvedRowTarget> = BTreeMap::new();
     for s in &edits.structural {
         match s {
             StructuralEdit::DeleteRun { block, run } => {
@@ -138,6 +142,25 @@ pub fn apply_edits(
                         paras.entry(p).or_default().prepend_runs.push(frag);
                     }
                 }
+            }
+            StructuralEdit::DeleteRow { block, row } => {
+                let Some(t) = bindings.table_ord(*block) else {
+                    continue;
+                };
+                rows.entry((t, *row)).or_default().delete = true;
+            }
+            StructuralEdit::InsertRow {
+                block,
+                after_row,
+                cells,
+            } => {
+                let Some(t) = bindings.table_ord(*block) else {
+                    continue;
+                };
+                rows.entry((t, *after_row))
+                    .or_default()
+                    .insert_after
+                    .push(rpr::render_table_row(cells));
             }
             StructuralEdit::DeleteParagraph { block } => {
                 let Some(p) = bindings.para_ord(*block) else {
@@ -195,13 +218,13 @@ pub fn apply_edits(
         });
     }
 
-    if targets.is_empty() && paras.is_empty() && cell_targets.is_empty() {
+    if targets.is_empty() && paras.is_empty() && cell_targets.is_empty() && rows.is_empty() {
         return Ok(());
     }
 
     let patched = {
         let src = pkg.require(main_part)?;
-        patch_document_xml_all(src, &targets, &paras, &cell_targets)
+        patch_document_xml_rows(src, &targets, &paras, &cell_targets, &rows)
     };
     pkg.set_part(main_part, patched);
     Ok(())

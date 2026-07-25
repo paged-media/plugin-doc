@@ -388,5 +388,26 @@ across several `<w:t>` children (Word does this after edits) already collapses
 correctly into one on a text replacement, because `LoweredRun.text` is the
 concatenation. A unit test now pins that, and the stale "deferred" claim is gone.
 
-Still deferred: table STRUCTURE (rows/cells), nested tables, a wrapped run INSIDE
-a table cell (it needs both locator paths at once), and paragraph↔table swap.
+Still deferred: nested tables, a wrapped run INSIDE a table cell (it needs both
+locator paths at once), and paragraph↔table swap.
+
+## M2 Increment 3c — table row structure
+
+Rows can now be added and removed, not just re-texted. `StructuralEdit::DeleteRow`
+/ `InsertRow` address `(block, row)`; bindings carry the table's `<w:tbl>` ordinal
+so a row resolves to `(table_ord, row)`, and the splicer drops a `<w:tr>` subtree
+or emits a rendered one after a given row's `</w:tr>` — the same byte-splice
+machinery as paragraphs, so untouched bytes stay verbatim. `render_table_row`
+emits one `<w:tc>` per cell, each with the `<w:p>` a cell is required to contain.
+
+`diff` derives them: a table whose row count shrank yields `DeleteRow` for the
+trailing rows, one that grew yields `InsertRow` carrying the new rows' cell text
+(a full LCS over rows is a later refinement, matching how paragraphs are handled).
+
+Verified on the table fixture — which has both a `gridSpan` header row and a
+`vMerge` pair — that deleting the merge-continue row and inserting a fresh 2-cell
+row leaves the spanning row, the surrounding body paragraphs and every other part
+untouched; plus a diff-derived deletion end-to-end.
+
+**Cell-level** add/remove within a row is still deferred: it changes the grid and
+interacts with `gridSpan`/`vMerge`, so it needs its own design pass.

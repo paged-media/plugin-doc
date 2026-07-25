@@ -111,6 +111,15 @@ pub enum StructuralEdit {
     },
     /// Remove the paragraph's entire `<w:p>` subtree.
     DeleteParagraph { block: usize },
+    /// Remove the `row`-th `<w:tr>` of the table at `block`.
+    DeleteRow { block: usize, row: u32 },
+    /// Insert a new `<w:tr>` immediately AFTER the `after_row`-th row of the
+    /// table at `block`, with one `<w:tc>` per entry of `cells` carrying its text.
+    InsertRow {
+        block: usize,
+        after_row: u32,
+        cells: Vec<String>,
+    },
     /// Insert a new `<w:p>` immediately AFTER the given paragraph block, with a
     /// single run carrying `text`.
     InsertParagraph {

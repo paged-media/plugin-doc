@@ -81,6 +81,15 @@ pub struct ResolvedCellTarget {
     pub new_rpr: Option<Vec<u8>>,
 }
 
+/// A ROW-level structural action, addressed by `(table_ord, row)`.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedRowTarget {
+    /// Drop the whole `<w:tr>` subtree.
+    pub delete: bool,
+    /// Pre-rendered `<w:tr>…</w:tr>` fragments to emit after this row's `</w:tr>`.
+    pub insert_after: Vec<Vec<u8>>,
+}
+
 /// A paragraph-level structural action, addressed by `<w:p>` ordinal.
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedParaTarget {
@@ -134,11 +143,24 @@ pub fn patch_document_xml_full(
 /// `<w:tc>`); a nested table's rows would be counted against the outer table.
 /// Nested-table cell content is therefore not patched — the bindings only ever
 /// address top-level tables.
+#[cfg(test)]
 pub fn patch_document_xml_all(
     src: &[u8],
     targets: &[ResolvedTarget],
     paras: &BTreeMap<u32, ResolvedParaTarget>,
     cells: &[ResolvedCellTarget],
+) -> Vec<u8> {
+    patch_document_xml_rows(src, targets, paras, cells, &BTreeMap::new())
+}
+
+/// As [`patch_document_xml_all`], plus ROW-level structural actions keyed by
+/// `(table_ord, row)`.
+pub fn patch_document_xml_rows(
+    src: &[u8],
+    targets: &[ResolvedTarget],
+    paras: &BTreeMap<u32, ResolvedParaTarget>,
+    cells: &[ResolvedCellTarget],
+    rows: &BTreeMap<(u32, u32), ResolvedRowTarget>,
 ) -> Vec<u8> {
     let mut reader = Reader::from_reader(src);
     reader.config_mut().trim_text(false);
@@ -165,6 +187,7 @@ pub fn patch_document_xml_all(
     let mut fld_ord: i64 = -1;
     let mut wrap_run_ord: i64 = -1;
     let mut open_wrapper: Option<crate::bindings::Wrapper> = None;
+    let mut open_row: Option<ResolvedRowTarget> = None;
 
     loop {
         // The byte offset of the `<` that begins the event we are about to read
@@ -250,6 +273,20 @@ pub fn patch_document_xml_all(
                 if ln == b"tr" && parent == Some(b"tbl".as_ref()) {
                     tr_ord += 1;
                     tc_ord = -1;
+                    open_row = rows.get(&(tbl_ord as u32, tr_ord as u32)).cloned();
+                    if let Some(rt) = open_row.as_ref() {
+                        if rt.delete {
+                            let _ = reader.read_to_end(QName(&name));
+                            let end = reader.buffer_position() as usize;
+                            out.extend_from_slice(&src[cursor..event_start]);
+                            for frag in &rt.insert_after {
+                                out.extend_from_slice(frag);
+                            }
+                            cursor = end;
+                            open_row = None;
+                            continue;
+                        }
+                    }
                 }
                 if ln == b"tc" && parent == Some(b"tr".as_ref()) {
                     tc_ord += 1;
@@ -352,6 +389,18 @@ pub fn patch_document_xml_all(
                 stack.pop();
                 if ln == b"hyperlink" || ln == b"fldSimple" {
                     open_wrapper = None;
+                }
+                if ln == b"tr" {
+                    if let Some(rt) = open_row.take() {
+                        if !rt.insert_after.is_empty() {
+                            let after = reader.buffer_position() as usize;
+                            out.extend_from_slice(&src[cursor..after]);
+                            for frag in &rt.insert_after {
+                                out.extend_from_slice(frag);
+                            }
+                            cursor = after;
+                        }
+                    }
                 }
                 // A body paragraph just closed — emit any paragraphs queued to
                 // follow it (the reader is positioned just past `</w:p>`).

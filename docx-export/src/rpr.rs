@@ -175,6 +175,22 @@ pub fn render_paragraph(
     out
 }
 
+/// A whole `<w:tr>` element with one `<w:tc>` per `cells` entry. Each cell holds
+/// a single paragraph + run (a `<w:tc>` MUST contain at least one block-level
+/// child, so an empty cell still gets a `<w:p>`).
+pub fn render_table_row(cells: &[String]) -> Vec<u8> {
+    let mut out = b"<w:tr>".to_vec();
+    for text in cells {
+        out.extend_from_slice(b"<w:tc><w:p>");
+        if !text.is_empty() {
+            out.extend_from_slice(&render_run(text, &RunProps::default(), None));
+        }
+        out.extend_from_slice(b"</w:p></w:tc>");
+    }
+    out.extend_from_slice(b"</w:tr>");
+    out
+}
+
 /// Emit a boolean toggle property: `Some(true)` ⇒ `<w:NAME/>`, `Some(false)` ⇒
 /// `<w:NAME w:val="false"/>`, `None` ⇒ omitted (inherit). Matches the `on()`
 /// reading in `docx-import` (absent `w:val` ⇒ true).

@@ -489,3 +489,28 @@ cell and leaves the nested table's `INNER` text intact.
 
 Nested-table CONTENT is still not addressable (the bindings model only top-level
 tables) — but it is now safely ignored rather than accidentally rewritten.
+
+## M2 Increment 3h — the table footprint was in the wrong address space
+
+An audit of the doc's remaining prose-only claims found the admitted fudge
+(`TABLE_FOOTPRINT = 1`, "a conservative constant refined during editor
+integration") was not conservative — it was in the wrong space, and one counter
+was serving two.
+
+`insertTable` pushes a host paragraph carrying the table with **no runs**
+(`Paragraph { table: Some(..), ..Default::default() }` in core's
+`apply_insert_table`). The contiguous style space counts only `CharacterRun`
+text, so a table contributes **0** there — every `applyStyle` /
+`insertAnchoredFrame` / `insertHyperlink` range after a table was shifted by one
+per preceding table. In `insertText`'s space it does contribute 1 (the synthetic
+inter-paragraph break the host paragraph still has).
+
+So `place.ts` now tracks the two spaces separately (`styleOffset` / `textOffset`,
+footprints 0 and 1), and `buildTextPour` takes both bases and reports `byteLength`
+(UTF-8, because insertText's space counts BYTES) alongside the contiguous
+`length`. Pinned by vitest: distinct bases land on the right ops, and `"é\nb"` is
+2 contiguous code points but 4 bytes.
+
+Honest note: the contiguous side is proven by unit test and by reading core's
+apply path; the exact byte-space arithmetic across many steps is still only
+verifiable against a live host, so it stays flagged for the in-editor run.

@@ -30,7 +30,19 @@ import type { BundleHost, Diagnostic, ElementId, PageId } from "@paged-media/plu
 /** A conservative story-offset advance past a table paragraph. The exact
  *  footprint is refined during editor integration (a table occupies one
  *  paragraph position in the story). */
-const TABLE_FOOTPRINT = 1;
+/**
+ * A table's footprint in the STYLE-range (contiguous character) space is ZERO:
+ * `insertTable` pushes a host paragraph carrying the table with NO runs
+ * (`Paragraph { table: Some(..), ..Default::default() }` in core's
+ * `apply_insert_table`), and the contiguous space counts only `CharacterRun`
+ * text. In the `insertText` address space it is 1 — that space counts a synthetic
+ * inter-paragraph break, which the host paragraph still has.
+ *
+ * These are two DIFFERENT address spaces (see docs/status.md, "Offset
+ * convention"), so they are tracked separately below.
+ */
+const TABLE_FOOTPRINT_STYLE = 0;
+const TABLE_FOOTPRINT_TEXT = 1;
 
 /** Extract the bare table id string from an `insertTable` outcome's createdId. */
 function tableIdOf(id: ElementId | null): string | null {
@@ -119,18 +131,28 @@ export async function placeEmbedded(
 
   // 2. Walk the story plan in order: text runs pour at the running offset;
   //    tables insert (the outcome mints the id) then pour their cells.
-  let offset = 0;
+  // `styleOffset` addresses the CONTIGUOUS character space (applyStyle /
+  // insertAnchoredFrame / insertHyperlink ranges); `textOffset` addresses
+  // insertText's byte+synthetic-break space. They diverge as soon as the story
+  // contains a table, which is why they are no longer one counter.
+  let styleOffset = 0;
+  let textOffset = 0;
   for (const step of buildStory(ir, storyId)) {
     if (step.kind === "text") {
-      await host.document.mutate({ op: "batch", args: { ops: step.mutations(offset) } });
-      offset += step.length;
+      await host.document.mutate({
+        op: "batch",
+        args: { ops: step.mutations(textOffset, styleOffset) },
+      });
+      styleOffset += step.length;
+      textOffset += step.byteLength;
     } else {
       const outcome = await host.document.mutate(step.insert);
       const tableId = outcome.applied ? tableIdOf(outcome.createdId) : null;
       if (tableId) {
         await host.document.mutate(step.cells(tableId));
       }
-      offset += TABLE_FOOTPRINT;
+      styleOffset += TABLE_FOOTPRINT_STYLE;
+      textOffset += TABLE_FOOTPRINT_TEXT;
     }
   }
 

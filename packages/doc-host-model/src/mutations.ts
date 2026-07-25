@@ -129,12 +129,19 @@ function poured(
 export function buildTextPour(
   paragraphs: LoweredParagraph[],
   storyId: string,
-  base: number,
-): { mutations: Mutation[]; length: number } {
-  const { text, ranges, images, links, length } = poured(paragraphs, base);
+  /** Where the `insertText` lands — the engine's byte + synthetic-break space. */
+  textBase: number,
+  /** Where style/anchor/link RANGES start — the contiguous character space.
+   *  Defaults to `textBase` (they coincide only before the first table). */
+  styleBase: number = textBase,
+): { mutations: Mutation[]; length: number; byteLength: number } {
+  const { text, ranges, images, links, length } = poured(paragraphs, styleBase);
   const ops: Mutation[] = [];
   if (text.length > 0) {
-    ops.push({ op: "insertText", args: { storyId, offset: base, text, cell: null } } as Mutation);
+    ops.push({
+      op: "insertText",
+      args: { storyId, offset: textBase, text, cell: null },
+    } as Mutation);
   }
   for (const r of ranges.filter((r) => r.scope === "paragraph")) {
     ops.push(applyStyleOp(storyId, r.start, r.end, r.style, "paragraph"));
@@ -167,7 +174,10 @@ export function buildTextPour(
       args: { storyId, start: link.start, end: link.end, url: link.url },
     } as unknown as Mutation);
   }
-  return { mutations: ops, length };
+  // The engine's insertText space counts BYTES, so report UTF-8 length (not code
+  // points) for the caller's running text offset.
+  const byteLength = new TextEncoder().encode(text).length;
+  return { mutations: ops, length, byteLength };
 }
 
 function applyStyleOp(
@@ -281,7 +291,14 @@ export function buildTableCells(table: LoweredTable, storyId: string, tableId: s
  *  step builds its ops given the running story offset (advancing it by `length`);
  *  a table step inserts the table (its outcome mints the id), then pours cells. */
 export type StoryStep =
-  | { kind: "text"; length: number; mutations: (baseOffset: number) => Mutation[] }
+  | {
+      kind: "text";
+      /** Contiguous-character length (the style-range space). */
+      length: number;
+      /** UTF-8 byte length of the inserted text (the insertText space). */
+      byteLength: number;
+      mutations: (textBase: number, styleBase: number) => Mutation[];
+    }
   | { kind: "table"; insert: Mutation; cells: (tableId: string) => Mutation };
 
 /** Split the story's blocks into executable steps: consecutive paragraph blocks
@@ -293,10 +310,13 @@ export function buildStory(ir: LoweredDoc, storyId: string): StoryStep[] {
     if (pending.length === 0) return;
     const paras = pending;
     pending = [];
+    const probe = buildTextPour(paras, storyId, 0);
     steps.push({
       kind: "text",
-      length: buildTextPour(paras, storyId, 0).length,
-      mutations: (base) => buildTextPour(paras, storyId, base).mutations,
+      length: probe.length,
+      byteLength: probe.byteLength,
+      mutations: (textBase, styleBase) =>
+        buildTextPour(paras, storyId, textBase, styleBase).mutations,
     });
   };
   for (const block of ir.story.blocks) {

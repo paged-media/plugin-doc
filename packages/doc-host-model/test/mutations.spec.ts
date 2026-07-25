@@ -216,6 +216,37 @@ describe("inline images", () => {
   });
 });
 
+describe("offset spaces", () => {
+  it("separates the insertText base from the style-range base", () => {
+    // After a table the two diverge: a table contributes 1 to insertText's
+    // byte+break space but ZERO to the contiguous style space (its host
+    // paragraph carries no runs). buildTextPour must honour both bases.
+    const { mutations } = buildTextPour(
+      [P(null, [{ text: "abc", charStyleId: "CharacterStyle/x" }])],
+      "Story/u1",
+      /* textBase */ 11,
+      /* styleBase */ 10,
+    );
+    const insert = mutations.find((o) => o.op === "insertText");
+    expect((insert?.args as { offset: number }).offset).toBe(11);
+    expect(mutations).toContainEqual({
+      op: "applyStyle",
+      args: { storyId: "Story/u1", start: 10, end: 13, style: "CharacterStyle/x", scope: "character" },
+    });
+  });
+
+  it("reports UTF-8 byteLength (not code points) for the text space", () => {
+    // "é" is 1 code point but 2 UTF-8 bytes; the paragraph separator counts too.
+    const r = buildTextPour(
+      [P(null, [{ text: "é", charStyleId: null }]), P(null, [{ text: "b", charStyleId: null }])],
+      "Story/u1",
+      0,
+    );
+    expect(r.length).toBe(2); // contiguous code points: é + b
+    expect(r.byteLength).toBe(4); // "é" (2) + "\n" (1) + "b" (1)
+  });
+});
+
 describe("hyperlinks", () => {
   it("emits insertHyperlink over the linked run's contiguous range", () => {
     const { mutations } = buildTextPour(

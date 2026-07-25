@@ -212,6 +212,19 @@ the bundle calls it → `save_edited_from_content`. Until then the SDK method is
 reserved seam and the bundle degrades honestly (as it does for `openNative`).
 Structure-preserving edits only; table-cell content not yet round-tripped.
 
+**That release step is pre-verified (2026-07-25).** canvas-wasm was built locally
+from the core DOC-03 branch (`sync-wasm.sh`'s path, the documented tool for
+unpublished engine changes) and the generated `.d.ts` was checked to carry
+`requestStoryContent`/`storyContentResult` with `selfId`/`characterStyle`/
+`fontStyle`/`pointSize` — **matching both the hand-written plugin-api contract and
+paged.doc's serde twin** (the real cross-layer drift risk, since three layers are
+hand-maintained). The vendored `wire.d.ts` was then temporarily synced from that
+build and the SDK adapter's reserved throw swapped for the real
+`requestStoryContent` forward: **both packages typecheck**. Both changes were
+reverted (a wire sync from an unpublished build must never be committed — the gate
+compares against the published package), so the shipped state stays honest. Net:
+when v54 publishes, the adapter is a proven ~6-line swap.
+
 ## Deferred (labelled, never faked)
 
 - **Edited save-back — LIVE editor run**: verified with a mock read (above); the

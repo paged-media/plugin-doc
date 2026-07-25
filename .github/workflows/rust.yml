@@ -40,15 +40,21 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - name: nextest (junit; red results still publish)
         run: cargo nextest run --workspace --profile ci || true
-      - uses: paged-media/state/actions/publish-results@main
-        if: ${{ always() }}
+      # plugin-doc is a PUBLIC repo and the publish-results action lives in the
+      # PRIVATE paged-media/state repo. GitHub refuses to resolve a private
+      # repo's action from a public workflow ("Unable to resolve action
+      # paged-media/state, not found"), which failed this job at SET-UP — before
+      # any step ran — on all 18 runs since the workflow was added. So we follow
+      # core/ci.yml's inverted pattern: upload the JUnit as an artifact, and let
+      # state pull it (private state CAN read a public repo's artifacts).
+      - name: upload nextest JUnit artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
         with:
-          source: plugin-doc
-          suite: nextest
-          format: nextest-junit
+          name: nextest-junit
           path: target/nextest/ci/junit.xml
-          map: "true"
-          dispatch-token: ${{ secrets.STATE_DISPATCH_TOKEN }}
+          if-no-files-found: error
+          retention-days: 14
 
   wasm:
     runs-on: ubuntu-latest

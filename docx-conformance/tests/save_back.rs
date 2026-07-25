@@ -818,6 +818,60 @@ fn diff_derives_a_row_deletion() {
 }
 
 #[test]
+fn deleting_a_middle_paragraph_preserves_the_survivors() {
+    // memo = [Plain, Heading, Mix(3 runs)]. Dropping the MIDDLE one must delete
+    // THAT paragraph's <w:p> and leave the third one's source node intact — not
+    // rewrite the heading into the third's text and delete the third.
+    use docx_lower::ir::LoweredBlock;
+
+    let original = memo_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let bindings = docx_export::build_bindings(&model);
+    let base = docx_lower::lower(&model);
+
+    let mut edited = base.clone();
+    edited.story.blocks.remove(1); // drop the heading
+
+    let edits = docx_export::diff(&base, &edited, &bindings);
+    let saved = session.save_edited(&edits).unwrap();
+    let re = import_docx(&saved).unwrap();
+
+    let paras: Vec<&docx_core::Paragraph> = re
+        .body
+        .iter()
+        .filter_map(|b| match b {
+            Block::Paragraph(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(paras.len(), 2, "one paragraph removed");
+    assert_eq!(paras[0].runs[0].text, "Plain body text.");
+    // The SURVIVING third paragraph must still be its own source node — three
+    // separate runs, with the bold-red one intact.
+    let texts: Vec<&str> = paras[1].runs.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        ["Mix of normal and ", "bold red", " text."],
+        "the survivor kept its own runs (not flattened from a rewritten heading)"
+    );
+    assert_eq!(
+        paras[1].runs[1].props.bold,
+        Some(true),
+        "its formatting survived"
+    );
+    // THE SHARP ONE: the survivor must not have inherited the deleted heading's
+    // paragraph style. If the differ deleted the TRAILING paragraph and rewrote
+    // the heading in place, this is Some("Heading1") — the text is right but the
+    // wrong source node survived.
+    assert_eq!(
+        paras[1].style_id, None,
+        "the survivor is the third paragraph's own <w:p>, not the heading's"
+    );
+    let _ = LoweredBlock::Table; // keep the import used
+}
+
+#[test]
 fn non_patchable_target_is_skipped_not_errored() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();

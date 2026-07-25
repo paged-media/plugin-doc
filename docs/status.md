@@ -402,7 +402,7 @@ emits one `<w:tc>` per cell, each with the `<w:p>` a cell is required to contain
 
 `diff` derives them: a table whose row count shrank yields `DeleteRow` for the
 trailing rows, one that grew yields `InsertRow` carrying the new rows' cell text
-(a full LCS over rows is a later refinement, matching how paragraphs are handled).
+(a full LCS over ROWS is still a later refinement — blocks now have one, below).
 
 Verified on the table fixture — which has both a `gridSpan` header row and a
 `vMerge` pair — that deleting the merge-continue row and inserting a fresh 2-cell
@@ -411,3 +411,24 @@ untouched; plus a diff-derived deletion end-to-end.
 
 **Cell-level** add/remove within a row is still deferred: it changes the grid and
 interacts with `gridSpan`/`vMerge`, so it needs its own design pass.
+
+## M2 Increment 3d — block alignment (a preservation fix)
+
+The structural diff paired story blocks BY INDEX, which quietly violated the
+preservation invariant on a very ordinary edit. Deleting a paragraph in the
+MIDDLE of a document produced the right text but kept the wrong `<w:p>`: with
+`[Plain, Heading, Mix]` → `[Plain, Mix]`, it deleted the trailing paragraph and
+rewrote the *heading's* node with Mix's runs — so the surviving paragraph still
+carried `<w:pStyle w:val="Heading1"/>`, and the third paragraph's own node (its
+`<w:pPr>`, rsids and any unmodelled children) was destroyed.
+
+Blocks are now aligned by an **LCS over a block identity key** (a paragraph's
+style + full text; a table's shape) rather than by position, so a deletion deletes
+that block and the survivors keep their own nodes. One post-pass matters: an
+adjacent Del+Ins is coalesced into a MATCH — without it, *editing* a paragraph's
+text changes its key and the pair would be reported as delete-then-insert,
+destroying the very `<w:p>` we want to patch in place. Coalescing keeps an edit an
+edit and leaves a true deletion a deletion.
+
+Regression-tested by the case that exposed it (the survivor must NOT inherit the
+deleted heading's style), and every pre-existing save-back test still passes.

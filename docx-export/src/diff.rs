@@ -40,34 +40,28 @@ pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> 
     let mut cells: Vec<CellRunEdit> = Vec::new();
     let mut paragraphs: Vec<ParaEdit> = Vec::new();
 
-    // Increment 2 — paragraph-level structure. Blocks beyond the edited story's
-    // length were deleted; blocks the edited story adds at the end are appended
-    // after the last shared paragraph block.
-    if edited.story.blocks.len() < base.story.blocks.len() {
-        for (block_idx, bb) in base
-            .story
-            .blocks
-            .iter()
-            .enumerate()
-            .skip(edited.story.blocks.len())
-        {
-            if matches!(bb, LoweredBlock::Paragraph(_)) {
-                structural.push(StructuralEdit::DeleteParagraph { block: block_idx });
+    // Increment 3d — align the story's BLOCKS by identity (an LCS), not by
+    // index. A MIDDLE deletion must delete that paragraph and leave the
+    // survivors' own `<w:p>` nodes intact; index-pairing would rewrite the wrong
+    // node and destroy the trailing one (its `<w:pPr>`, rsids and unmodelled
+    // children) — correct text, wrong source node.
+    let bkeys: Vec<String> = base.story.blocks.iter().map(block_key).collect();
+    let ekeys: Vec<String> = edited.story.blocks.iter().map(block_key).collect();
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut anchor: Option<usize> = None;
+    for step in lcs_align(&bkeys, &ekeys) {
+        match step {
+            Align::Match(bi, ei) => {
+                anchor = Some(bi);
+                pairs.push((bi, ei));
             }
-        }
-    } else if edited.story.blocks.len() > base.story.blocks.len() {
-        // Anchor appended paragraphs after the LAST baseline paragraph block.
-        let anchor = base
-            .story
-            .blocks
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, b)| matches!(b, LoweredBlock::Paragraph(_)))
-            .map(|(i, _)| i);
-        if let Some(anchor) = anchor {
-            for eb in edited.story.blocks.iter().skip(base.story.blocks.len()) {
-                if let LoweredBlock::Paragraph(ep) = eb {
+            Align::Del(bi) => {
+                if matches!(base.story.blocks[bi], LoweredBlock::Paragraph(_)) {
+                    structural.push(StructuralEdit::DeleteParagraph { block: bi });
+                }
+            }
+            Align::Ins(ei) => {
+                if let (Some(a), LoweredBlock::Paragraph(ep)) = (anchor, &edited.story.blocks[ei]) {
                     let text: String = ep.runs.iter().map(|r| r.text.as_str()).collect();
                     let (props, rstyle) = ep
                         .runs
@@ -75,7 +69,7 @@ pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> 
                         .map(|r| effective_props(r.char_style_id.as_deref(), edited, bindings))
                         .unwrap_or_default();
                     structural.push(StructuralEdit::InsertParagraph {
-                        block: anchor,
+                        block: a,
                         text,
                         props,
                         para_style: ep.para_style_id.clone(),
@@ -86,13 +80,9 @@ pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> 
         }
     }
 
-    for (block_idx, (bb, eb)) in base
-        .story
-        .blocks
-        .iter()
-        .zip(&edited.story.blocks)
-        .enumerate()
-    {
+    for (block_idx, edited_idx) in pairs {
+        let bb = &base.story.blocks[block_idx];
+        let eb = &edited.story.blocks[edited_idx];
         // Tables: row structure first, then cell content.
         if let (LoweredBlock::Table(bt), LoweredBlock::Table(et)) = (bb, eb) {
             // Increment 3c — row count changed. Trailing rows are deleted; added
@@ -290,6 +280,86 @@ fn invert_para_props(props: &[StyleProp]) -> docx_core::ParaProps {
         }
     }
     p
+}
+
+/// One step of a block alignment.
+enum Align {
+    Match(usize, usize),
+    Del(usize),
+    Ins(usize),
+}
+
+/// A block's identity for alignment: a paragraph is keyed by its style + full
+/// text, a table by its shape. Keys only decide WHICH nodes pair up; the pair is
+/// then compared field-by-field as before.
+fn block_key(b: &LoweredBlock) -> String {
+    match b {
+        LoweredBlock::Paragraph(p) => {
+            let text: String = p.runs.iter().map(|r| r.text.as_str()).collect();
+            format!("P|{}|{text}", p.para_style_id.as_deref().unwrap_or(""))
+        }
+        LoweredBlock::Table(t) => format!("T|{}x{}", t.rows, t.cols),
+    }
+}
+
+/// A standard LCS alignment, with one post-pass that matters here: an adjacent
+/// Del+Ins is coalesced into a MATCH. Without it, editing a paragraph's text
+/// changes its key, and the pair would be reported as delete-then-insert —
+/// destroying the very `<w:p>` we want to patch in place. Coalescing keeps an
+/// edit an edit, and leaves a true deletion a deletion.
+fn lcs_align(a: &[String], b: &[String]) -> Vec<Align> {
+    let (n, m) = (a.len(), b.len());
+    let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+    let mut raw: Vec<Align> = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < n && j < m {
+        if a[i] == b[j] {
+            raw.push(Align::Match(i, j));
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            raw.push(Align::Del(i));
+            i += 1;
+        } else {
+            raw.push(Align::Ins(j));
+            j += 1;
+        }
+    }
+    while i < n {
+        raw.push(Align::Del(i));
+        i += 1;
+    }
+    while j < m {
+        raw.push(Align::Ins(j));
+        j += 1;
+    }
+
+    // Coalesce Del(bi) immediately followed by Ins(ei) into Match(bi, ei).
+    let mut out: Vec<Align> = Vec::with_capacity(raw.len());
+    let mut k = 0usize;
+    while k < raw.len() {
+        if let (Align::Del(bi), Some(Align::Ins(ei))) = (&raw[k], raw.get(k + 1)) {
+            out.push(Align::Match(*bi, *ei));
+            k += 2;
+            continue;
+        }
+        out.push(match raw[k] {
+            Align::Match(x, y) => Align::Match(x, y),
+            Align::Del(x) => Align::Del(x),
+            Align::Ins(x) => Align::Ins(x),
+        });
+        k += 1;
+    }
+    out
 }
 
 /// Align a paragraph's baseline runs against its edited runs by (text, style)

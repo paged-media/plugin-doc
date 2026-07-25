@@ -31,11 +31,59 @@ use docx_core::{RunProps, VertAlign};
 use docx_lower::ir::{LoweredBlock, LoweredDoc, PropValue, StyleProp};
 
 use crate::bindings::DocxBindings;
-use crate::edit::{EditSet, RunEdit};
+use crate::edit::{EditSet, RunEdit, StructuralEdit};
 
 /// Diff two lowerings into the edits needed to turn `base` into `edited`.
 pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> EditSet {
     let mut runs = Vec::new();
+    let mut structural: Vec<StructuralEdit> = Vec::new();
+
+    // Increment 2 — paragraph-level structure. Blocks beyond the edited story's
+    // length were deleted; blocks the edited story adds at the end are appended
+    // after the last shared paragraph block.
+    if edited.story.blocks.len() < base.story.blocks.len() {
+        for (block_idx, bb) in base
+            .story
+            .blocks
+            .iter()
+            .enumerate()
+            .skip(edited.story.blocks.len())
+        {
+            if matches!(bb, LoweredBlock::Paragraph(_)) {
+                structural.push(StructuralEdit::DeleteParagraph { block: block_idx });
+            }
+        }
+    } else if edited.story.blocks.len() > base.story.blocks.len() {
+        // Anchor appended paragraphs after the LAST baseline paragraph block.
+        let anchor = base
+            .story
+            .blocks
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, b)| matches!(b, LoweredBlock::Paragraph(_)))
+            .map(|(i, _)| i);
+        if let Some(anchor) = anchor {
+            for eb in edited.story.blocks.iter().skip(base.story.blocks.len()) {
+                if let LoweredBlock::Paragraph(ep) = eb {
+                    let text: String = ep.runs.iter().map(|r| r.text.as_str()).collect();
+                    let (props, rstyle) = ep
+                        .runs
+                        .first()
+                        .map(|r| effective_props(r.char_style_id.as_deref(), edited, bindings))
+                        .unwrap_or_default();
+                    structural.push(StructuralEdit::InsertParagraph {
+                        block: anchor,
+                        text,
+                        props,
+                        para_style: ep.para_style_id.clone(),
+                        rstyle,
+                    });
+                }
+            }
+        }
+    }
+
     for (block_idx, (bb, eb)) in base
         .story
         .blocks
@@ -47,7 +95,10 @@ pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> 
             continue; // table (or a paragraph↔table swap) — structural, deferred
         };
         if bp.runs.len() != ep.runs.len() {
-            continue; // run inserted/removed — structural, deferred
+            // Increment 2 — a run was inserted or removed. Align the two run
+            // lists by their (text, style) identity and emit structural ops.
+            structural.extend(align_runs(block_idx, bp, ep, edited, bindings));
+            continue;
         }
         for (run_idx, (br, er)) in bp.runs.iter().zip(&ep.runs).enumerate() {
             let mut edit = RunEdit {
@@ -77,7 +128,81 @@ pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> 
             }
         }
     }
-    EditSet { runs }
+    EditSet { runs, structural }
+}
+
+/// Align a paragraph's baseline runs against its edited runs by (text, style)
+/// identity and emit the insert/delete ops that turn one into the other. A
+/// classic LCS: matched runs are left alone, unmatched baseline runs are
+/// deleted, unmatched edited runs are inserted after the preceding match (or at
+/// the paragraph start).
+fn align_runs(
+    block: usize,
+    bp: &docx_lower::ir::LoweredParagraph,
+    ep: &docx_lower::ir::LoweredParagraph,
+    edited: &LoweredDoc,
+    bindings: &DocxBindings,
+) -> Vec<StructuralEdit> {
+    let key = |r: &docx_lower::ir::LoweredRun| (r.text.clone(), r.char_style_id.clone());
+    let a: Vec<_> = bp.runs.iter().map(key).collect();
+    let b: Vec<_> = ep.runs.iter().map(key).collect();
+
+    // LCS table over the two run lists.
+    let (n, m) = (a.len(), b.len());
+    let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let mut ops = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    // The last baseline run index that survives — new runs anchor after it.
+    let mut anchor: Option<usize> = None;
+    while i < n && j < m {
+        if a[i] == b[j] {
+            anchor = Some(i);
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            ops.push(StructuralEdit::DeleteRun { block, run: i });
+            i += 1;
+        } else {
+            ops.push(insert_run_op(block, anchor, &ep.runs[j], edited, bindings));
+            j += 1;
+        }
+    }
+    while i < n {
+        ops.push(StructuralEdit::DeleteRun { block, run: i });
+        i += 1;
+    }
+    while j < m {
+        ops.push(insert_run_op(block, anchor, &ep.runs[j], edited, bindings));
+        j += 1;
+    }
+    ops
+}
+
+fn insert_run_op(
+    block: usize,
+    after: Option<usize>,
+    run: &docx_lower::ir::LoweredRun,
+    edited: &LoweredDoc,
+    bindings: &DocxBindings,
+) -> StructuralEdit {
+    let (props, rstyle) = effective_props(run.char_style_id.as_deref(), edited, bindings);
+    StructuralEdit::InsertRun {
+        block,
+        run: after,
+        text: run.text.clone(),
+        props,
+        rstyle,
+    }
 }
 
 /// The effective DIRECT character formatting a run's lowered style token maps to,

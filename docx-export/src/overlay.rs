@@ -26,7 +26,7 @@
 //! Isolation-clean: this mirrors the core wire shape as a plugin-local type
 //! (deserialized from the JSON the bundle forwards) — no core dependency.
 
-use docx_lower::ir::{LoweredBlock, LoweredDoc};
+use docx_lower::ir::{LoweredBlock, LoweredDoc, LoweredRun};
 use serde::{Deserialize, Serialize};
 
 /// Plugin-local twin of the core `StoryContent` wire struct (camelCase JSON).
@@ -72,12 +72,25 @@ pub fn overlay_story_content(baseline: &LoweredDoc, content: &StoryContentIn) ->
             break; // read-back ran out of paragraphs
         };
         ci += 1;
-        if cp.runs.len() != p.runs.len() {
-            continue; // run inserted/removed — structural, skip this paragraph
-        }
-        for (run, cr) in p.runs.iter_mut().zip(&cp.runs) {
-            run.text = cr.text.clone();
-            run.char_style_id = cr.character_style.clone();
+        if cp.runs.len() == p.runs.len() {
+            for (run, cr) in p.runs.iter_mut().zip(&cp.runs) {
+                run.text = cr.text.clone();
+                run.char_style_id = cr.character_style.clone();
+            }
+        } else {
+            // Increment 2 — the run list CHANGED (a run was added or removed in
+            // the editor). Replace it wholesale; `diff` aligns the two lists by
+            // (text, style) identity and emits the insert/delete ops.
+            let template = p.runs.first().cloned().unwrap_or_default();
+            p.runs = cp
+                .runs
+                .iter()
+                .map(|cr| LoweredRun {
+                    text: cr.text.clone(),
+                    char_style_id: cr.character_style.clone(),
+                    ..template.clone()
+                })
+                .collect();
         }
     }
     edited

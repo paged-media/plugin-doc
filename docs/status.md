@@ -185,8 +185,9 @@ range ops, so it sits entirely on the contiguous side.
   targets changed, every other part + untouched subtree byte-identical, and the
   edits survive a re-import round-trip. Plus `splice`/`rpr` unit tests (exact
   byte-identity) and the drift guard.
-- **Covered:** run text change + run property change on direct `<w:r>` children.
-  **Deferred (labelled):** structural insert/delete of paragraphs/runs/tables;
+- **Covered (Increment 1):** run text change + run property change on direct
+  `<w:r>` children.
+  **Deferred (labelled):** table structure;
   editing hyperlink/field runs and table-cell content (non-patchable bindings);
   multi-`<w:t>` runs; paragraph `<w:pPr>` edits; and — the one platform seam —
   the LIVE editor wiring (below).
@@ -266,3 +267,28 @@ ops use.)
   the save-back engine (proven) runs test-driven only.
 - **DOC-04** (Word-reference fidelity harness), **DOC-05** (ratify embed-or-open as
   a platform pattern), **DOC-06** (C-1 per-glyph faithful text) remain open.
+
+## M2 Increment 2 — structural edits (insert / delete)
+
+Save-back is no longer limited to in-place edits. `EditSet` gains a `structural`
+lane — `DeleteRun`, `InsertRun` (after a run, or at the paragraph start),
+`DeleteParagraph`, `InsertParagraph` — and the splicer grew the matching
+byte-level moves: dropping a `<w:r>`/`<w:p>` subtree (skip its byte range) and
+emitting a rendered fragment at an anchor. All coordinates address the BASELINE,
+so ops never shift each other's addresses; one pass over the unmodified source
+applies them all, and untouched bytes stay verbatim as before.
+
+`diff` derives them automatically: when a paragraph's run count changes it runs an
+**LCS alignment** over the runs' `(text, style)` identity — matched runs are left
+alone, unmatched baseline runs become `DeleteRun`, unmatched edited runs become
+`InsertRun` anchored after the preceding match. Paragraph count changes map to
+`DeleteParagraph` / `InsertParagraph`. The DOC-03 overlay now replaces a
+paragraph's run list wholesale when it changed, so the live editor path drives
+structural edits too.
+
+Verified: splice unit tests (delete run, insert-after, prepend, paragraph
+delete+append) and two end-to-end conformance tests — one through the DOC-03
+overlay (delete a run + append a run, other parts byte-identical), one via a
+hand-authored `EditSet` (delete the heading, append a paragraph).
+
+**Still deferred:** table STRUCTURE (rows/cells), and a paragraph↔table swap.

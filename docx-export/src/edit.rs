@@ -24,10 +24,51 @@
 use docx_core::RunProps;
 use serde::{Deserialize, Serialize};
 
-/// A set of run-level edits to apply to one document.
+/// A set of edits to apply to one document: in-place run edits plus structural
+/// insert/delete of runs and paragraphs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EditSet {
+    /// In-place edits (text / properties) on existing runs.
     pub runs: Vec<RunEdit>,
+    /// Increment 2 — insert/delete of runs and paragraphs. Coordinates are
+    /// BASELINE (pre-edit) lowered story coordinates throughout: the patcher
+    /// resolves every op against the unmodified source, so ops never shift each
+    /// other's addresses.
+    #[serde(default)]
+    pub structural: Vec<StructuralEdit>,
+}
+
+/// A structural change. All indices address the BASELINE document.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "op")]
+pub enum StructuralEdit {
+    /// Remove the run's entire `<w:r>` subtree.
+    DeleteRun { block: usize, run: usize },
+    /// Insert a new `<w:r>` immediately AFTER the given run (or at the start of
+    /// the paragraph when `run` is `None`).
+    InsertRun {
+        block: usize,
+        run: Option<usize>,
+        text: String,
+        #[serde(default)]
+        props: RunProps,
+        #[serde(default)]
+        rstyle: Option<String>,
+    },
+    /// Remove the paragraph's entire `<w:p>` subtree.
+    DeleteParagraph { block: usize },
+    /// Insert a new `<w:p>` immediately AFTER the given paragraph block, with a
+    /// single run carrying `text`.
+    InsertParagraph {
+        block: usize,
+        text: String,
+        #[serde(default)]
+        props: RunProps,
+        #[serde(default)]
+        para_style: Option<String>,
+        #[serde(default)]
+        rstyle: Option<String>,
+    },
 }
 
 /// One run's edit, addressed by lowered story `block` index and lowered `run`

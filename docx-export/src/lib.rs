@@ -35,11 +35,13 @@ mod splice;
 
 pub use bindings::{build_bindings, BlockBinding, DocxBindings, RunBinding};
 pub use diff::diff;
-pub use edit::{EditSet, RunEdit};
+pub use edit::{EditSet, RunEdit, StructuralEdit};
 pub use overlay::{overlay_story_content, ParagraphContentIn, RunContentIn, StoryContentIn};
 
+use std::collections::BTreeMap;
+
 use paged_ooxml::{OoxmlError, OpcPackage};
-use splice::{patch_document_xml, ResolvedTarget};
+use splice::{patch_document_xml_full, ResolvedParaTarget, ResolvedTarget};
 
 /// Apply `edits` to `pkg`'s main document part in place. Non-patchable targets
 /// (tables, hyperlink/field runs, out-of-range indices) are silently skipped —
@@ -72,16 +74,98 @@ pub fn apply_edits(
             run_ord,
             new_text: e.new_text.clone(),
             new_rpr,
+            delete: false,
+            insert_after: Vec::new(),
         });
     }
 
-    if targets.is_empty() {
+    // Increment 2 — structural ops. All coordinates address the BASELINE, so
+    // ops never shift each other's addresses; the patcher applies them in one
+    // pass over the unmodified source.
+    let mut paras: BTreeMap<u32, ResolvedParaTarget> = BTreeMap::new();
+    for s in &edits.structural {
+        match s {
+            StructuralEdit::DeleteRun { block, run } => {
+                let Some((p, r)) = bindings.resolve(*block, *run) else {
+                    continue;
+                };
+                let t = targets
+                    .iter_mut()
+                    .find(|t| t.para_ord == p && t.run_ord == r);
+                match t {
+                    Some(t) => t.delete = true,
+                    None => {
+                        let mut t = ResolvedTarget::edit(p, r);
+                        t.delete = true;
+                        targets.push(t);
+                    }
+                }
+            }
+            StructuralEdit::InsertRun {
+                block,
+                run,
+                text,
+                props,
+                rstyle,
+            } => {
+                let frag = rpr::render_run(text, props, rstyle.as_deref());
+                match run {
+                    // After an existing run.
+                    Some(run) => {
+                        let Some((p, r)) = bindings.resolve(*block, *run) else {
+                            continue;
+                        };
+                        match targets
+                            .iter_mut()
+                            .find(|t| t.para_ord == p && t.run_ord == r)
+                        {
+                            Some(t) => t.insert_after.push(frag),
+                            None => {
+                                let mut t = ResolvedTarget::edit(p, r);
+                                t.insert_after.push(frag);
+                                targets.push(t);
+                            }
+                        }
+                    }
+                    // At the paragraph's start.
+                    None => {
+                        let Some(p) = bindings.para_ord(*block) else {
+                            continue;
+                        };
+                        paras.entry(p).or_default().prepend_runs.push(frag);
+                    }
+                }
+            }
+            StructuralEdit::DeleteParagraph { block } => {
+                let Some(p) = bindings.para_ord(*block) else {
+                    continue;
+                };
+                paras.entry(p).or_default().delete = true;
+            }
+            StructuralEdit::InsertParagraph {
+                block,
+                text,
+                props,
+                para_style,
+                rstyle,
+            } => {
+                let Some(p) = bindings.para_ord(*block) else {
+                    continue;
+                };
+                let frag =
+                    rpr::render_paragraph(text, props, rstyle.as_deref(), para_style.as_deref());
+                paras.entry(p).or_default().insert_after.push(frag);
+            }
+        }
+    }
+
+    if targets.is_empty() && paras.is_empty() {
         return Ok(());
     }
 
     let patched = {
         let src = pkg.require(main_part)?;
-        patch_document_xml(src, &targets)
+        patch_document_xml_full(src, &targets, &paras)
     };
     pkg.set_part(main_part, patched);
     Ok(())

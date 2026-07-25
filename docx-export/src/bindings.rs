@@ -76,6 +76,16 @@ impl DocxBindings {
             BlockBinding::Table => None,
         }
     }
+
+    /// The source `<w:p>` ordinal of a lowered story block, or `None` when the
+    /// block is a table (or out of range) — the address paragraph-level
+    /// structural ops resolve on.
+    pub fn para_ord(&self, block: usize) -> Option<u32> {
+        match self.blocks.get(block)? {
+            BlockBinding::Paragraph { para_ord, .. } => Some(*para_ord),
+            BlockBinding::Table => None,
+        }
+    }
 }
 
 /// Build the bindings from the imported model. `Run.source` / `Paragraph.

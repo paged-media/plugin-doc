@@ -46,6 +46,7 @@ fn edited_save_back_patches_targets_and_preserves_everything_else() {
     // run (p2, run 1) — its synthesized bold+red style projects to a direct
     // `<w:rPr>` carrying only the color.
     let edits = EditSet {
+        structural: vec![],
         runs: vec![
             RunEdit::text(0, 0, "Edited body text."),
             RunEdit::props(
@@ -309,11 +310,116 @@ fn doc03_identity_content_is_a_no_op() {
 }
 
 #[test]
+fn structural_edits_insert_and_delete_runs_and_paragraphs() {
+    // Increment 2, driven through the DOC-03 overlay: delete a run, add a run,
+    // and the untouched content stays byte-identical.
+    use docx_export::{ParagraphContentIn, RunContentIn, StoryContentIn};
+    use docx_lower::ir::LoweredBlock;
+
+    let original = memo_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let base = docx_lower::lower(&model);
+
+    let mut content = StoryContentIn {
+        self_id: "Story/doc".into(),
+        paragraphs: base
+            .story
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                LoweredBlock::Paragraph(p) => Some(ParagraphContentIn {
+                    paragraph_style: p.para_style_id.clone(),
+                    runs: p
+                        .runs
+                        .iter()
+                        .map(|r| RunContentIn {
+                            text: r.text.clone(),
+                            character_style: r.char_style_id.clone(),
+                        })
+                        .collect(),
+                }),
+                _ => None,
+            })
+            .collect(),
+    };
+    // p2 is "Mix of normal and " + "bold red" + " text." — drop the middle run
+    // and append a new one at the end.
+    content.paragraphs[2].runs.remove(1);
+    content.paragraphs[2].runs.push(RunContentIn {
+        text: " (appended)".into(),
+        character_style: None,
+    });
+
+    let saved = session.save_edited_from_content(&content).unwrap();
+    let re = import_docx(&saved).unwrap();
+    let p2 = body_para(&re, 2);
+    let texts: Vec<&str> = p2.runs.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        ["Mix of normal and ", " text.", " (appended)"],
+        "middle run deleted, new run appended"
+    );
+    // Other paragraphs untouched; other parts byte-identical.
+    assert_eq!(body_para(&re, 0).runs[0].text, "Plain body text.");
+    assert_eq!(body_para(&re, 1).runs[0].text, "A Centered Heading");
+    let orig_pkg = OpcPackage::read(&original).unwrap();
+    let saved_pkg = OpcPackage::read(&saved).unwrap();
+    for name in orig_pkg.file_names() {
+        if name == "word/document.xml" {
+            continue;
+        }
+        assert_eq!(orig_pkg.part(name), saved_pkg.part(name), "part {name}");
+    }
+}
+
+#[test]
+fn structural_paragraph_delete_and_append() {
+    use docx_export::{EditSet, StructuralEdit};
+
+    let original = memo_docx();
+    let session = DocSession::load(&original).unwrap();
+    let edits = EditSet {
+        runs: vec![],
+        structural: vec![
+            StructuralEdit::DeleteParagraph { block: 1 }, // the heading
+            StructuralEdit::InsertParagraph {
+                block: 2,
+                text: "A brand new paragraph.".into(),
+                props: Default::default(),
+                para_style: None,
+                rstyle: None,
+            },
+        ],
+    };
+    let saved = session.save_edited(&edits).unwrap();
+    let re = import_docx(&saved).unwrap();
+    let texts: Vec<String> = re
+        .body
+        .iter()
+        .filter_map(|b| match b {
+            Block::Paragraph(p) => Some(p.runs.iter().map(|r| r.text.as_str()).collect()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "Plain body text.",
+            "Mix of normal and bold red text.",
+            "A brand new paragraph.",
+        ],
+        "heading deleted, new paragraph appended after the last one"
+    );
+}
+
+#[test]
 fn non_patchable_target_is_skipped_not_errored() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();
     // Out-of-range block/run resolves to nothing → skipped, document unchanged.
     let edits = EditSet {
+        structural: vec![],
         runs: vec![RunEdit::text(99, 0, "nowhere")],
     };
     let saved = session.save_edited(&edits).unwrap();

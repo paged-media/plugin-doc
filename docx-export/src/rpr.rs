@@ -72,6 +72,36 @@ pub fn render_rpr(props: &RunProps, rstyle: Option<&str>) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// A whole `<w:r>` element: optional `<w:rPr>` + the text. Used by the
+/// structural inserts (Increment 2).
+pub fn render_run(text: &str, props: &RunProps, rstyle: Option<&str>) -> Vec<u8> {
+    let mut out = b"<w:r>".to_vec();
+    if props != &RunProps::default() || rstyle.is_some() {
+        out.extend_from_slice(&render_rpr(props, rstyle));
+    }
+    out.extend_from_slice(&render_wt(text));
+    out.extend_from_slice(b"</w:r>");
+    out
+}
+
+/// A whole `<w:p>` element carrying one run, with an optional `<w:pStyle>`.
+pub fn render_paragraph(
+    text: &str,
+    props: &RunProps,
+    rstyle: Option<&str>,
+    para_style: Option<&str>,
+) -> Vec<u8> {
+    let mut out = b"<w:p>".to_vec();
+    if let Some(ps) = para_style {
+        out.extend_from_slice(
+            format!("<w:pPr><w:pStyle w:val=\"{}\"/></w:pPr>", escape(ps)).as_bytes(),
+        );
+    }
+    out.extend_from_slice(&render_run(text, props, rstyle));
+    out.extend_from_slice(b"</w:p>");
+    out
+}
+
 /// Emit a boolean toggle property: `Some(true)` ⇒ `<w:NAME/>`, `Some(false)` ⇒
 /// `<w:NAME w:val="false"/>`, `None` ⇒ omitted (inherit). Matches the `on()`
 /// reading in `docx-import` (absent `w:val` ⇒ true).

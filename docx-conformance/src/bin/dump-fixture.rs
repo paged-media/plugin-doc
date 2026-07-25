@@ -33,6 +33,7 @@ fn main() {
         "fieldlink" => docx_conformance::field_hyperlink_docx(),
         "footnote" => docx_conformance::footnote_docx(),
         "nested" => docx_conformance::nested_table_docx(),
+        "anchorlink" => docx_conformance::internal_anchor_docx(),
         "simpletable" => docx_conformance::simple_table_docx(),
         "table" => docx_conformance::table_docx(),
         "one" => docx_conformance::one_paragraph_docx(),

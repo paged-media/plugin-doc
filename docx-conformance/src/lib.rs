@@ -463,6 +463,35 @@ pub fn nested_table_docx() -> Vec<u8> {
     ])
 }
 
+/// A document with INTERNAL (bookmark) links in both Word forms: a
+/// `<w:hyperlink w:anchor="...">` and a `HYPERLINK \l "bm"` field. Neither has an
+/// external URL, so both must stay styled-only — never a native clickable link.
+pub fn internal_anchor_docx() -> Vec<u8> {
+    let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#;
+    let document = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">See </w:t></w:r>
+      <w:hyperlink w:anchor="chapter2"><w:r><w:t>chapter two</w:t></w:r></w:hyperlink>
+      <w:r><w:t xml:space="preserve"> and </w:t></w:r>
+      <w:fldSimple w:instr="HYPERLINK \l &quot;bookmark1&quot;"><w:r><w:t>the bookmark</w:t></w:r></w:fldSimple>
+      <w:r><w:t xml:space="preserve">.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+    zip_parts(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+    ])
+}
+
 /// The smallest well-formed document: one paragraph, one run, no styles part.
 pub fn one_paragraph_docx() -> Vec<u8> {
     let document = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

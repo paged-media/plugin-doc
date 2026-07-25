@@ -21,8 +21,8 @@
 //! preservation invariant.
 
 use docx_conformance::{
-    field_hyperlink_docx, footnote_docx, hyperlink_docx, image_docx, list_docx, memo_docx,
-    one_paragraph_docx, table_docx, tier1_docx, zip_parts,
+    field_hyperlink_docx, footnote_docx, hyperlink_docx, image_docx, internal_anchor_docx,
+    list_docx, memo_docx, one_paragraph_docx, table_docx, tier1_docx, zip_parts,
 };
 use docx_core::{Block, ListKind, StyleKind, VMerge};
 use docx_import::import_docx;
@@ -493,6 +493,52 @@ fn footnotes_are_parsed_and_honestly_diagnosed() {
         !flow.contains("The note body."),
         "note text must not be faked into the flow: {flow}"
     );
+}
+
+#[test]
+fn internal_anchor_links_stay_styled_only() {
+    // The documented claim: an INTERNAL (bookmark) target keeps the conventional
+    // blue+underline look but must NOT become a native clickable link — the core
+    // hyperlink door registers URL destinations, not text anchors.
+    let doc = import_docx(&internal_anchor_docx()).unwrap();
+    let para = match &doc.body[0] {
+        Block::Paragraph(p) => p,
+        _ => panic!("expected a paragraph"),
+    };
+    // Both link runs resolve a target, and both are internal.
+    assert_eq!(para.runs[1].hyperlink.as_deref(), Some("#chapter2"));
+    assert_eq!(
+        para.runs[3].hyperlink.as_deref(),
+        None,
+        "a `HYPERLINK \\l` field carries no external URL"
+    );
+
+    let ir = lower(&doc);
+    let runs = &ir.story.paragraphs()[0].runs;
+    // ...but NEITHER carries a url, so no insertHyperlink is ever emitted.
+    for (i, r) in runs.iter().enumerate() {
+        assert_eq!(r.hyperlink_url, None, "run {i} must not be a native link");
+    }
+    // The `w:anchor` run still LOOKS like a link (blue + underline).
+    let style_id = runs[1]
+        .char_style_id
+        .as_deref()
+        .expect("anchor run is styled");
+    let style = ir.styles.iter().find(|s| s.id == style_id).unwrap();
+    assert!(style
+        .props
+        .iter()
+        .any(|p| p.path == "characterUnderline" && p.value == PropValue::Bool(true)));
+    assert!(style.props.iter().any(|p| p.path == "characterFillColor"));
+    // And the diagnostic says so honestly.
+    let msg = ir
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .find(|m| m.contains("hyperlink"))
+        .expect("a hyperlink diagnostic");
+    assert!(msg.contains("0 became native clickable link"), "{msg}");
+    assert!(msg.contains("styled-only"), "{msg}");
 }
 
 #[test]

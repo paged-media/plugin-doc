@@ -85,68 +85,79 @@ pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> 
         let eb = &edited.story.blocks[edited_idx];
         // Tables: row structure first, then cell content.
         if let (LoweredBlock::Table(bt), LoweredBlock::Table(et)) = (bb, eb) {
-            // Increment 3c — row count changed. Trailing rows are deleted; added
-            // rows are appended after the last baseline row (a full LCS over rows
-            // is a later refinement, as for paragraphs).
-            if et.rows < bt.rows {
-                for row in et.rows..bt.rows {
-                    structural.push(StructuralEdit::DeleteRow {
+            // Increment 3e — align ROWS by identity too (the same defect the
+            // block alignment fixed, one level down): a MIDDLE row deletion must
+            // drop that `<w:tr>` and leave the survivors' own nodes — including
+            // properties paged does not model (`w:trPr`, rsids) — intact.
+            let brows = rows_of(bt);
+            let erows = rows_of(et);
+            let bkeys: Vec<String> = brows.iter().map(|r| row_key(bt, r)).collect();
+            let ekeys: Vec<String> = erows.iter().map(|r| row_key(et, r)).collect();
+            let mut row_pairs: Vec<(usize, usize)> = Vec::new();
+            let mut row_anchor: Option<usize> = None;
+            for step in lcs_align(&bkeys, &ekeys) {
+                match step {
+                    Align::Match(bi, ei) => {
+                        row_anchor = Some(bi);
+                        row_pairs.push((bi, ei));
+                    }
+                    Align::Del(bi) => structural.push(StructuralEdit::DeleteRow {
                         block: block_idx,
-                        row,
-                    });
-                }
-            } else if et.rows > bt.rows && bt.rows > 0 {
-                for row in bt.rows..et.rows {
-                    let cells: Vec<String> = et
-                        .cells
-                        .iter()
-                        .filter(|c| c.row == row)
-                        .map(|c| {
-                            c.paragraphs
+                        row: bi as u32,
+                    }),
+                    Align::Ins(ei) => {
+                        if let Some(a) = row_anchor {
+                            let cells_text: Vec<String> = erows[ei]
                                 .iter()
-                                .flat_map(|p| p.runs.iter())
-                                .map(|r| r.text.as_str())
-                                .collect()
-                        })
-                        .collect();
-                    structural.push(StructuralEdit::InsertRow {
-                        block: block_idx,
-                        after_row: bt.rows - 1,
-                        cells,
-                    });
+                                .map(|&ci| cell_text(&et.cells[ci]))
+                                .collect();
+                            structural.push(StructuralEdit::InsertRow {
+                                block: block_idx,
+                                after_row: a as u32,
+                                cells: cells_text,
+                            });
+                        }
+                    }
                 }
             }
-            for (cell_idx, (bc, ec)) in bt.cells.iter().zip(&et.cells).enumerate() {
-                for (para_idx, (bpara, epara)) in
-                    bc.paragraphs.iter().zip(&ec.paragraphs).enumerate()
-                {
-                    if bpara.runs.len() != epara.runs.len() {
-                        continue; // cell structure changed — deferred
-                    }
-                    for (run_idx, (br, er)) in bpara.runs.iter().zip(&epara.runs).enumerate() {
-                        let mut edit = CellRunEdit {
-                            block: block_idx,
-                            cell: cell_idx,
-                            para: para_idx,
-                            run: run_idx,
-                            ..Default::default()
-                        };
-                        let mut changed = false;
-                        if br.text != er.text {
-                            edit.new_text = Some(er.text.clone());
-                            changed = true;
+
+            // Cell content, compared only within MATCHED row pairs so an edit
+            // never lands on a row that is about to be deleted.
+            for (bi, ei) in row_pairs {
+                for (&bci, &eci) in brows[bi].iter().zip(&erows[ei]) {
+                    let (bc, ec) = (&bt.cells[bci], &et.cells[eci]);
+                    let cell_idx = bci;
+                    for (para_idx, (bpara, epara)) in
+                        bc.paragraphs.iter().zip(&ec.paragraphs).enumerate()
+                    {
+                        if bpara.runs.len() != epara.runs.len() {
+                            continue; // cell structure changed — deferred
                         }
-                        let (bprops, brs) =
-                            effective_props(br.char_style_id.as_deref(), base, bindings);
-                        let (eprops, ers) =
-                            effective_props(er.char_style_id.as_deref(), edited, bindings);
-                        if bprops != eprops || brs != ers {
-                            edit.new_props = Some(eprops);
-                            edit.rstyle = Some(ers);
-                            changed = true;
-                        }
-                        if changed {
-                            cells.push(edit);
+                        for (run_idx, (br, er)) in bpara.runs.iter().zip(&epara.runs).enumerate() {
+                            let mut edit = CellRunEdit {
+                                block: block_idx,
+                                cell: cell_idx,
+                                para: para_idx,
+                                run: run_idx,
+                                ..Default::default()
+                            };
+                            let mut changed = false;
+                            if br.text != er.text {
+                                edit.new_text = Some(er.text.clone());
+                                changed = true;
+                            }
+                            let (bprops, brs) =
+                                effective_props(br.char_style_id.as_deref(), base, bindings);
+                            let (eprops, ers) =
+                                effective_props(er.char_style_id.as_deref(), edited, bindings);
+                            if bprops != eprops || brs != ers {
+                                edit.new_props = Some(eprops);
+                                edit.rstyle = Some(ers);
+                                changed = true;
+                            }
+                            if changed {
+                                cells.push(edit);
+                            }
                         }
                     }
                 }
@@ -280,6 +291,35 @@ fn invert_para_props(props: &[StyleProp]) -> docx_core::ParaProps {
         }
     }
     p
+}
+
+/// A table's cell indices grouped by row, in emission order. A `rowSpan>1` cell
+/// belongs to its RESTART row only (it is emitted once), matching `lower_table`.
+fn rows_of(t: &docx_lower::ir::LoweredTable) -> Vec<Vec<usize>> {
+    let mut rows: Vec<Vec<usize>> = vec![Vec::new(); t.rows as usize];
+    for (i, c) in t.cells.iter().enumerate() {
+        if let Some(r) = rows.get_mut(c.row as usize) {
+            r.push(i);
+        }
+    }
+    rows
+}
+
+/// A cell's full text (its paragraphs' runs concatenated).
+fn cell_text(c: &docx_lower::ir::LoweredCell) -> String {
+    c.paragraphs
+        .iter()
+        .flat_map(|p| p.runs.iter())
+        .map(|r| r.text.as_str())
+        .collect()
+}
+
+/// A row's identity for alignment: its cells' text.
+fn row_key(t: &docx_lower::ir::LoweredTable, row: &[usize]) -> String {
+    row.iter()
+        .map(|&i| cell_text(&t.cells[i]))
+        .collect::<Vec<_>>()
+        .join("\u{1f}")
 }
 
 /// One step of a block alignment.

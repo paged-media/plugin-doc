@@ -402,7 +402,7 @@ emits one `<w:tc>` per cell, each with the `<w:p>` a cell is required to contain
 
 `diff` derives them: a table whose row count shrank yields `DeleteRow` for the
 trailing rows, one that grew yields `InsertRow` carrying the new rows' cell text
-(a full LCS over ROWS is still a later refinement — blocks now have one, below).
+(superseded — rows are now identity-aligned too, see Increment 3e).
 
 Verified on the table fixture — which has both a `gridSpan` header row and a
 `vMerge` pair — that deleting the merge-continue row and inserting a fresh 2-cell
@@ -432,3 +432,20 @@ edit and leaves a true deletion a deletion.
 
 Regression-tested by the case that exposed it (the survivor must NOT inherit the
 deleted heading's style), and every pre-existing save-back test still passes.
+
+## M2 Increment 3e — row alignment (the same preservation fix, one level down)
+
+Rows had the defect the block alignment had just fixed: the row diff deleted
+TRAILING rows and let the cell comparison rewrite the rest by index. Deleting a
+MIDDLE row therefore produced the right text while destroying the wrong `<w:tr>`.
+
+Rows are now aligned by an LCS over a row identity key (its cells' text), reusing
+the same `lcs_align` (including the Del+Ins→Match coalescing that keeps an edit an
+edit). Cell content is compared only within MATCHED row pairs, so an edit can
+never land on a row that is about to be deleted.
+
+The regression test is the interesting part: the fixture gives each row a distinct
+**unmodelled** `w:trHeight`. paged never reads it, so it is the only thing that can
+prove WHICH node survived — asserting on cell text alone passes even when the
+wrong row is kept. The test now asserts row 2's marker (`w:val="102"`) is intact
+and the middle row's (`101`) is the one that went.

@@ -872,6 +872,77 @@ fn deleting_a_middle_paragraph_preserves_the_survivors() {
 }
 
 #[test]
+fn deleting_a_middle_row_preserves_the_surviving_rows() {
+    // The row-level twin of the block-alignment fix: dropping the MIDDLE row must
+    // delete THAT `<w:tr>` and leave rows 0 and 2 as their own source nodes — not
+    // delete the trailing row and rewrite the middle one's cells.
+    use docx_conformance::simple_table_docx;
+    use docx_lower::ir::LoweredBlock;
+
+    let original = simple_table_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let bindings = docx_export::build_bindings(&model);
+    let base = docx_lower::lower(&model);
+
+    let mut edited = base.clone();
+    if let LoweredBlock::Table(t) = &mut edited.story.blocks[0] {
+        t.cells.retain(|c| c.row != 1); // drop the MIDDLE row
+        for c in t.cells.iter_mut() {
+            if c.row == 2 {
+                c.row = 1; // rows above close up
+            }
+        }
+        t.rows = 2;
+    }
+
+    let edits = docx_export::diff(&base, &edited, &bindings);
+    let saved = session.save_edited(&edits).unwrap();
+    let re = docx_lower::lower(&docx_import::import_docx(&saved).unwrap());
+    let t = re
+        .story
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            LoweredBlock::Table(t) => Some(t),
+            _ => None,
+        })
+        .expect("table survives");
+    assert_eq!(t.rows, 2, "one row removed");
+    let texts: Vec<String> = t
+        .cells
+        .iter()
+        .map(|c| {
+            c.paragraphs
+                .iter()
+                .flat_map(|p| p.runs.iter())
+                .map(|r| r.text.as_str())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        ["R0C0", "R0C1", "R2C0", "R2C1"],
+        "rows 0 and 2 survived as themselves (the MIDDLE row went)"
+    );
+
+    // THE SHARP ONE: each row carries a distinct UNMODELLED `w:trHeight`. If the
+    // differ deleted the TRAILING row and rewrote the middle one, the text above
+    // still passes — but row 2's marker (102) is gone and row 1's (101) remains.
+    let pkg = OpcPackage::read(&saved).unwrap();
+    let xml = std::str::from_utf8(pkg.part("word/document.xml").unwrap()).unwrap();
+    assert!(xml.contains(r#"w:val="100""#), "row 0's node survived");
+    assert!(
+        xml.contains(r#"w:val="102""#),
+        "row 2's OWN node survived (its unmodelled trHeight is intact):\n{xml}"
+    );
+    assert!(
+        !xml.contains(r#"w:val="101""#),
+        "the MIDDLE row's node is the one that went"
+    );
+}
+
+#[test]
 fn non_patchable_target_is_skipped_not_errored() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();

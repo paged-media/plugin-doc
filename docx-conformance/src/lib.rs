@@ -389,6 +389,46 @@ pub fn footnote_docx() -> Vec<u8> {
     ])
 }
 
+/// A plain 3-row x 2-col table (no merges) — the clean case for testing ROW
+/// alignment, where deleting a middle row is unambiguous.
+pub fn simple_table_docx() -> Vec<u8> {
+    let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#;
+    let mut rows = String::new();
+    for r in 0..3 {
+        // Each row carries a DISTINCT, UNMODELLED property (`w:trHeight`). paged
+        // does not read it, so it is the marker that proves WHICH `<w:tr>` node
+        // survived an edit — text alone cannot show that.
+        rows.push_str(&format!(
+            "<w:tr><w:trPr><w:trHeight w:val=\"{}\"/></w:trPr>",
+            100 + r
+        ));
+        for c in 0..2 {
+            rows.push_str(&format!(
+                "<w:tc><w:p><w:r><w:t>R{r}C{c}</w:t></w:r></w:p></w:tc>"
+            ));
+        }
+        rows.push_str("</w:tr>");
+    }
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid>{rows}</w:tbl>
+  </w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+    ])
+}
+
 /// The smallest well-formed document: one paragraph, one run, no styles part.
 pub fn one_paragraph_docx() -> Vec<u8> {
     let document = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

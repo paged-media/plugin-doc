@@ -43,6 +43,9 @@ pub struct DocxDocument {
     /// ([`Run::note_ref`]). Empty when the document has none.
     #[serde(default)]
     pub notes: Vec<Note>,
+    /// Header + footer parts referenced by the document's sections.
+    #[serde(default)]
+    pub headers_footers: Vec<HeaderFooter>,
     /// Body content in document order.
     pub body: Vec<Block>,
     /// The style catalog from `styles.xml` (`docDefaults` + named styles).
@@ -181,6 +184,24 @@ pub struct Run {
     /// [`DocxDocument::notes`].
     #[serde(default)]
     pub note_ref: Option<i64>,
+    /// When this run is a FIELD's result, the field's name (the instruction's
+    /// first token, upper-cased: `PAGE`, `DATE`, `NUMPAGES`, `REF`, …). The run's
+    /// `text` is the value Word last computed — a frozen snapshot, since the
+    /// native model has no equivalent for most field kinds. `HYPERLINK` fields
+    /// are handled separately (see [`Run::hyperlink`]).
+    #[serde(default)]
+    pub field: Option<String>,
+}
+
+/// A header or footer part's content (`w:hdr` / `w:ftr`), reached from a
+/// section's `headerReference`/`footerReference`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HeaderFooter {
+    /// `true` for a footer, `false` for a header.
+    pub footer: bool,
+    /// `w:type` on the reference: `default` / `first` / `even`.
+    pub kind: Option<String>,
+    pub paragraphs: Vec<Paragraph>,
 }
 
 /// An inline image (`w:drawing` → `wp:inline`/`wp:anchor` → a picture blip),

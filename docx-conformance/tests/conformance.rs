@@ -21,8 +21,9 @@
 //! preservation invariant.
 
 use docx_conformance::{
-    field_hyperlink_docx, footnote_docx, hyperlink_docx, image_docx, internal_anchor_docx,
-    list_docx, memo_docx, one_paragraph_docx, table_docx, tier1_docx, zip_parts,
+    field_hyperlink_docx, footnote_docx, header_field_docx, hyperlink_docx, image_docx,
+    internal_anchor_docx, list_docx, memo_docx, one_paragraph_docx, table_docx, tier1_docx,
+    zip_parts,
 };
 use docx_core::{Block, ListKind, StyleKind, VMerge};
 use docx_import::import_docx;
@@ -539,6 +540,66 @@ fn internal_anchor_links_stay_styled_only() {
         .expect("a hyperlink diagnostic");
     assert!(msg.contains("0 became native clickable link"), "{msg}");
     assert!(msg.contains("styled-only"), "{msg}");
+}
+
+#[test]
+fn headers_footers_and_frozen_fields_are_parsed_and_diagnosed() {
+    let doc = import_docx(&header_field_docx()).unwrap();
+
+    // Headers + footers are parsed from their own parts (they were silently
+    // dropped before — no model, no diagnostic).
+    assert_eq!(doc.headers_footers.len(), 2);
+    let header = doc.headers_footers.iter().find(|h| !h.footer).unwrap();
+    assert_eq!(header.paragraphs[0].runs[0].text, "Quarterly Report");
+    assert_eq!(header.kind.as_deref(), Some("default"));
+    let footer = doc.headers_footers.iter().find(|h| h.footer).unwrap();
+    assert_eq!(footer.paragraphs[0].runs[0].text, "Confidential");
+
+    // Both field forms are named: fldSimple DATE and the complex PAGE field.
+    let para = match &doc.body[0] {
+        Block::Paragraph(p) => p,
+        _ => panic!("expected a paragraph"),
+    };
+    let named: Vec<(&str, &str)> = para
+        .runs
+        .iter()
+        .filter_map(|r| r.field.as_deref().map(|f| (f, r.text.as_str())))
+        .collect();
+    assert_eq!(
+        named,
+        [("DATE", "23 July 2026"), ("PAGE", "7")],
+        "field NAME + its last-computed value"
+    );
+
+    // Lowering keeps the values (the text still reads correctly) but says
+    // plainly that they are frozen, and that the header/footer is not placed.
+    let ir = lower(&doc);
+    let flow: String = ir
+        .story
+        .paragraphs()
+        .iter()
+        .flat_map(|p| p.runs.iter())
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(flow, "Printed on 23 July 2026, page 7.", "values preserved");
+    assert!(
+        !flow.contains("Quarterly Report") && !flow.contains("Confidential"),
+        "header/footer text must NOT be faked into the body flow: {flow}"
+    );
+
+    let msgs: Vec<&str> = ir.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    let fields = msgs
+        .iter()
+        .find(|m| m.contains("field(s)"))
+        .expect("field diagnostic");
+    assert!(fields.contains("DATE, PAGE"), "{fields}");
+    assert!(fields.contains("frozen snapshot"), "{fields}");
+    let hf = msgs
+        .iter()
+        .find(|m| m.contains("header(s)"))
+        .expect("header diagnostic");
+    assert!(hf.contains("1 header(s) + 1 footer(s)"), "{hf}");
+    assert!(hf.contains("NOT placed"), "{hf}");
 }
 
 #[test]

@@ -167,6 +167,64 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
         ctx.diagnostics.push(Diagnostic::info(msg, 3));
     }
 
+    // Non-HYPERLINK FIELDS. Word computes a field's value and stores it as the
+    // field's RESULT text; we keep that text (so the document still reads
+    // correctly) but it is a FROZEN snapshot — the native model has no equivalent
+    // for most field kinds, and nothing recomputes it. Name the kinds rather than
+    // letting them look like ordinary text.
+    {
+        let mut kinds: Vec<&str> = doc
+            .body
+            .iter()
+            .filter_map(|b| match b {
+                Block::Paragraph(p) => Some(p),
+                _ => None,
+            })
+            .flat_map(|p| p.runs.iter())
+            .filter_map(|r| r.field.as_deref())
+            .filter(|f| *f != "HYPERLINK")
+            .collect();
+        kinds.sort_unstable();
+        let total = kinds.len();
+        kinds.dedup();
+        if total > 0 {
+            ctx.diagnostics.push(Diagnostic::info(
+                format!(
+                    "{total} field(s) ({}) lowered as their last-computed TEXT — a \
+                     frozen snapshot. The value is preserved and round-trips on \
+                     save, but nothing recomputes it (the native model has no \
+                     equivalent for these field kinds)",
+                    kinds.join(", ")
+                ),
+                3,
+            ));
+        }
+    }
+
+    // HEADERS / FOOTERS. Parsed and preserved in the source package, but the
+    // native model places body content only — there is no header/footer story to
+    // pour them into — so they are not rendered. Say so.
+    if !doc.headers_footers.is_empty() {
+        let headers = doc.headers_footers.iter().filter(|h| !h.footer).count();
+        let footers = doc.headers_footers.len() - headers;
+        let mut msg = String::new();
+        if headers > 0 {
+            msg.push_str(&format!("{headers} header(s)"));
+        }
+        if footers > 0 {
+            if !msg.is_empty() {
+                msg.push_str(" + ");
+            }
+            msg.push_str(&format!("{footers} footer(s)"));
+        }
+        msg.push_str(
+            " parsed; their text is preserved in the source .docx and round-trips \
+             on save, but is NOT placed on the page — the native model has no \
+             header/footer story yet",
+        );
+        ctx.diagnostics.push(Diagnostic::info(msg, 3));
+    }
+
     let section = lower_section(doc.sections.first());
     let styles = ctx.ordered_styles();
 

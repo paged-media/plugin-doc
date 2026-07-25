@@ -26,9 +26,9 @@
 //! an unparseable main document part is a hard error.
 
 use docx_core::{
-    Block, CellPath, DocxDocument, Image, Justification, ListKind, ListMarker, Note, ParaProps,
-    Paragraph, Run, RunProps, RunSource, Section, Style, StyleCatalog, StyleKind, TabStop,
-    VertAlign,
+    Block, CellPath, DocxDocument, HeaderFooter, Image, Justification, ListKind, ListMarker, Note,
+    ParaProps, Paragraph, Run, RunProps, RunSource, Section, Style, StyleCatalog, StyleKind,
+    TabStop, VertAlign,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
@@ -137,7 +137,7 @@ pub fn import_docx_with_package(
 
     // Body mapping borrows the package (image resolution); scope the borrow so
     // the package can be moved into the return value once mapping is done.
-    let (body, sections, notes) = {
+    let (body, sections, notes, headers_footers) = {
         let doc_rels = pkg
             .part(&rels::rels_part_name(&main_part))
             .map(rels::Relationships::parse)
@@ -156,11 +156,13 @@ pub fn import_docx_with_package(
             .map(|b| map_body(b, &ctx))
             .unwrap_or_else(|| (Vec::new(), Vec::new()));
         let notes = map_notes(&pkg, &main_part, &ctx);
-        (body, sections, notes)
+        let headers_footers = map_headers_footers(&pkg, &main_part, &wml_doc, &ctx);
+        (body, sections, notes, headers_footers)
     };
 
     let doc = DocxDocument {
         notes,
+        headers_footers,
         body,
         styles,
         sections,
@@ -241,6 +243,82 @@ fn endnote_paragraphs(choices: &[wml::EndnoteChoice], ctx: &ImportCtx) -> Vec<Pa
             _ => None,
         })
         .collect()
+}
+
+/// Parse every header/footer part the document's sections reference. The refs
+/// live on `sectPr` (`w:headerReference` / `w:footerReference`, each with an
+/// `r:id` and a `w:type`); the parts themselves are `w:hdr` / `w:ftr` roots.
+fn map_headers_footers(
+    pkg: &OpcPackage,
+    main_part: &str,
+    doc: &wml::Document,
+    ctx: &ImportCtx,
+) -> Vec<HeaderFooter> {
+    let Some(rels_bytes) = pkg.part(&rels::rels_part_name(main_part)) else {
+        return Vec::new();
+    };
+    let rels = rels::Relationships::parse(rels_bytes);
+    let base = part_dir(main_part);
+    let Some(body) = doc.body.as_deref() else {
+        return Vec::new();
+    };
+    let Some(sect) = body.section_properties.as_deref() else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for choice in &sect.section_properties_choice {
+        let (footer, id, kind) = match choice {
+            wml::SectionPropertiesChoice::HeaderReference(h) => (
+                false,
+                h.id.clone(),
+                Some(format!("{:?}", h.r#type).to_ascii_lowercase()),
+            ),
+            wml::SectionPropertiesChoice::FooterReference(f) => (
+                true,
+                f.id.clone(),
+                Some(format!("{:?}", f.r#type).to_ascii_lowercase()),
+            ),
+        };
+        let Some(rel) = rels.by_id(&id) else { continue };
+        let name = resolve_target(base, &rel.target);
+        let Some(bytes) = pkg.part(&name) else {
+            continue;
+        };
+        let paragraphs = if footer {
+            parse_root::<wml::Footer>(&name, bytes)
+                .ok()
+                .map(|f| {
+                    f.footer_choice
+                        .iter()
+                        .filter_map(|c| match c {
+                            wml::FooterChoice::Paragraph(p) => Some(map_paragraph(p, ctx, 0, None)),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            parse_root::<wml::Header>(&name, bytes)
+                .ok()
+                .map(|h| {
+                    h.header_choice
+                        .iter()
+                        .filter_map(|c| match c {
+                            wml::HeaderChoice::Paragraph(p) => Some(map_paragraph(p, ctx, 0, None)),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        out.push(HeaderFooter {
+            footer,
+            kind,
+            paragraphs,
+        });
+    }
+    out
 }
 
 /// A notes part name (via the main document's `.rels`), by relationship suffix.
@@ -462,6 +540,7 @@ fn map_paragraph(
                         wml::FieldCharValues::Separate => {
                             if let Some(f) = fields.last_mut() {
                                 f.result_url = parse_hyperlink_instr(&f.instruction);
+                                f.result_field = field_name(&f.instruction);
                                 f.separated = true;
                             }
                         }
@@ -484,6 +563,7 @@ fn map_paragraph(
                         if let Some(url) = &f.result_url {
                             run.hyperlink = Some(url.clone());
                         }
+                        run.field = f.result_field.clone();
                     }
                 }
                 runs.push(run);
@@ -514,6 +594,7 @@ fn map_paragraph(
                     if let wml::SimpleFieldChoice::WRun(r) = c {
                         let mut run = map_run(r, ctx);
                         run.hyperlink = url.clone();
+                        run.field = field_name(&fs.instruction);
                         run.source = Some(RunSource::Field {
                             field_ord,
                             run_ord: inner,
@@ -625,6 +706,10 @@ struct FieldFrame {
     separated: bool,
     /// The resolved external URL if this is a `HYPERLINK` field (else `None`).
     result_url: Option<String>,
+    /// The field's NAME (instruction's first token, upper-cased) — `PAGE`,
+    /// `DATE`, `REF`, … Stamped on the result runs so lowering can report which
+    /// field kinds became frozen text.
+    result_field: Option<String>,
 }
 
 /// The `w:fldChar` type carried by a run, if any (a control run — no display text).
@@ -653,6 +738,16 @@ fn run_instr_text(r: &wml::Run) -> Option<String> {
 /// `None` (styled-only, mirroring the `#anchor` case — the core hyperlink door
 /// registers URL destinations, not text anchors). Word splits the instruction
 /// across several `w:instrText` runs, so this parses the accumulated string.
+/// A field instruction's NAME: its first whitespace-separated token, upper-cased
+/// (`" PAGE  \\* MERGEFORMAT "` → `PAGE`). `None` for an empty instruction.
+fn field_name(instr: &str) -> Option<String> {
+    instr
+        .split_whitespace()
+        .next()
+        .map(|t| t.to_ascii_uppercase())
+        .filter(|t| !t.is_empty())
+}
+
 fn parse_hyperlink_instr(instr: &str) -> Option<String> {
     let rest = instr.trim().strip_prefix("HYPERLINK")?;
     let quote = rest.find('"')?;
@@ -709,6 +804,7 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
         // The caller (map_paragraph) stamps the real provenance from context.
         source: None,
         note_ref,
+        field: None,
     }
 }
 

@@ -250,8 +250,8 @@ ops use.)
 - **Standalone true-open** — degrades to embedded placement + a diagnostic when
   `document.openNative@1` is unwired (the common case today); the `docx →
   native-bytes` producer is a future `plugin-publish` sibling.
-- **Constructs still past the tier line** — headers/footers, tracked changes,
-  non-HYPERLINK fields (PAGE/DATE/REF), floating (anchored-with-wrap) images,
+- **Constructs still past the tier line** — tracked changes, floating
+  (anchored-with-wrap) images,
   page/section breaks and internal `#anchor` links (both need a renderer door) →
   surfaced as honest ADR-007 diagnostics on open, not silently dropped.
   (Numbering/lists, tables, inline images, hyperlinks and footnotes have SHIPPED
@@ -514,3 +514,30 @@ footprints 0 and 1), and `buildTextPour` takes both bases and reports `byteLengt
 Honest note: the contiguous side is proven by unit test and by reading core's
 apply path; the exact byte-space arithmetic across many steps is still only
 verifiable against a live host, so it stays flagged for the in-editor run.
+
+## Tier-3b — headers / footers + non-HYPERLINK fields
+
+Two more silent drops closed. Both were consumed by the importer with no model
+and no diagnostic, so a reader could not tell they had been lost.
+
+- **Headers / footers.** `sectPr`'s `headerReference` / `footerReference` are
+  resolved through the document rels and their `w:hdr` / `w:ftr` parts parsed into
+  `docx-core::HeaderFooter` (kind + paragraphs). They are NOT placed — the native
+  model has no header/footer story — and the diagnostic says exactly that. Their
+  text is deliberately kept OUT of the body flow; a test asserts it never leaks in.
+- **Non-HYPERLINK fields.** A field's name (the instruction's first token:
+  `PAGE`, `DATE`, `REF`, …) is now carried on the result run, for both the
+  `fldSimple` and complex `fldChar` forms. Word stores the value it last computed
+  as the field's RESULT, and that text is preserved — so the document still reads
+  correctly — but the diagnostic names the kinds and says plainly that the value is
+  a FROZEN snapshot nothing recomputes.
+
+Why not lower `PAGE` to the native `insertField(PageNumber)`? The door exists, but
+a field marker occupies one character in the story, which would fragment the pour
+into several `insertText` ops and complicate the offset lanes — and in real
+documents `PAGE` lives overwhelmingly in headers/footers, which are not placed
+anyway. Recorded as the natural follow-on once headers/footers can be poured.
+
+Verified through the real wasm (`headerfield` fixture): flow reads
+`"Printed on 23 July 2026, page 7."`, both diagnostics precise, header/footer text
+absent from the body.

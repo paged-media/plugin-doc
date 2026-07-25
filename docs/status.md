@@ -250,9 +250,12 @@ ops use.)
 - **Standalone true-open** — degrades to embedded placement + a diagnostic when
   `document.openNative@1` is unwired (the common case today); the `docx →
   native-bytes` producer is a future `plugin-publish` sibling.
-- **Tier 1+ constructs** — numbering/lists, tables, inline + floating images,
-  headers/footers, fields, notes, tracked changes → surfaced as honest ADR-007
-  diagnostics on open, not silently dropped.
+- **Constructs still past the tier line** — headers/footers, tracked changes,
+  non-HYPERLINK fields (PAGE/DATE/REF), floating (anchored-with-wrap) images,
+  page/section breaks and internal `#anchor` links (both need a renderer door) →
+  surfaced as honest ADR-007 diagnostics on open, not silently dropped.
+  (Numbering/lists, tables, inline images, hyperlinks and footnotes have SHIPPED
+  — see the tier sections above.)
 - **In-editor live render / real `host.nativeDocument`** — the bundle is written to
   the shipped contract and exercised to the seam; full end-to-end is
   host-integration-verified in a later milestone (needs the editor checkout + a

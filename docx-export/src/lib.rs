@@ -35,7 +35,7 @@ mod splice;
 
 pub use bindings::{build_bindings, BlockBinding, DocxBindings, RunBinding};
 pub use diff::diff;
-pub use edit::{CellRunEdit, EditSet, RunEdit, StructuralEdit};
+pub use edit::{CellRunEdit, EditSet, ParaEdit, RunEdit, StructuralEdit};
 pub use overlay::{overlay_story_content, ParagraphContentIn, RunContentIn, StoryContentIn};
 
 use std::collections::BTreeMap;
@@ -157,6 +157,15 @@ pub fn apply_edits(
                 paras.entry(p).or_default().insert_after.push(frag);
             }
         }
+    }
+
+    // Increment 3 — paragraph `<w:pPr>` edits.
+    for pe in &edits.paragraphs {
+        let Some(p) = bindings.para_ord(pe.block) else {
+            continue; // a table (or out of range) — skipped
+        };
+        let pstyle = pe.pstyle.as_ref().and_then(|o| o.as_deref());
+        paras.entry(p).or_default().new_ppr = Some(rpr::render_ppr(&pe.new_props, pstyle));
     }
 
     // Table-cell run edits — their own `w:tbl`/`w:tr`/`w:tc`/`w:p` locator path.

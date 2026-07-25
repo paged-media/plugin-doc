@@ -87,6 +87,9 @@ pub struct ResolvedParaTarget {
     /// Pre-rendered `<w:r>…</w:r>` fragments to emit at the START of this
     /// paragraph's content (used by `InsertRun { run: None }`).
     pub prepend_runs: Vec<Vec<u8>>,
+    /// Increment 3 — pre-rendered `<w:pPr>…</w:pPr>` bytes replacing (or, when
+    /// the paragraph has none, inserted as) the paragraph's first child.
+    pub new_ppr: Option<Vec<u8>>,
 }
 
 /// Are we inside a table cell? (The body-paragraph counters must ignore cell
@@ -149,6 +152,8 @@ pub fn patch_document_xml_all(
     // The paragraph currently open at body level, if it carries actions.
     let mut open_para: Option<(u32, ResolvedParaTarget)> = None;
     let mut prepended = false;
+    // Whether the open paragraph's `<w:pPr>` action has been discharged.
+    let mut ppr_done = false;
 
     loop {
         // The byte offset of the `<` that begins the event we are about to read
@@ -179,8 +184,23 @@ pub fn patch_document_xml_all(
                         }
                         open_para = Some((p_ord as u32, pt.clone()));
                         prepended = false;
+                        ppr_done = false;
                     } else {
                         open_para = None;
+                    }
+                }
+                // Increment 3 — replace a targeted paragraph's `<w:pPr>`.
+                if ln == b"pPr" && parent == Some(b"p".as_ref()) && !in_cell(&stack) {
+                    if let Some((_, pt)) = open_para.as_ref() {
+                        if let Some(ppr) = pt.new_ppr.clone() {
+                            let _ = reader.read_to_end(QName(&name));
+                            let end = reader.buffer_position() as usize;
+                            out.extend_from_slice(&src[cursor..event_start]);
+                            out.extend_from_slice(&ppr);
+                            cursor = end;
+                            ppr_done = true;
+                            continue;
+                        }
                     }
                 }
                 // --- table-cell locator path (tbl → tr → tc → p → r) ---
@@ -224,8 +244,17 @@ pub fn patch_document_xml_all(
                 }
                 if ln == b"r" && parent == Some(b"p".as_ref()) && !in_cell(&stack) {
                     r_ord += 1;
-                    // A pending prepend lands before the first run.
+                    // A pending pPr insert + prepends land before the first run.
                     if let Some((_, pt)) = open_para.as_ref() {
+                        if !ppr_done {
+                            if let Some(ppr) = pt.new_ppr.as_deref() {
+                                let at = event_start;
+                                out.extend_from_slice(&src[cursor..at]);
+                                out.extend_from_slice(ppr);
+                                cursor = at;
+                            }
+                            ppr_done = true;
+                        }
                         if !prepended && !pt.prepend_runs.is_empty() {
                             let at = event_start;
                             out.extend_from_slice(&src[cursor..at]);

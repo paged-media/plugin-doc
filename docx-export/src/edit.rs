@@ -21,7 +21,7 @@
 //! the Lowered IR and the host mutations use). `diff` produces one of these from
 //! two `LoweredDoc`s; the vertical slice hand-authors it.
 
-use docx_core::RunProps;
+use docx_core::{ParaProps, RunProps};
 use serde::{Deserialize, Serialize};
 
 /// A set of edits to apply to one document: in-place run edits plus structural
@@ -40,6 +40,22 @@ pub struct EditSet {
     /// `(block, cell, paragraph, run)`.
     #[serde(default)]
     pub cells: Vec<CellRunEdit>,
+    /// Increment 3 — in-place PARAGRAPH-property edits (`<w:pPr>`), addressed by
+    /// lowered story block.
+    #[serde(default)]
+    pub paragraphs: Vec<ParaEdit>,
+}
+
+/// One paragraph's `<w:pPr>` edit: its effective DIRECT paragraph formatting and
+/// the real Word `<w:pStyle>` it should carry (a synthesized paragraph style is
+/// projected into `new_props`, exactly as run styles are into `<w:rPr>`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParaEdit {
+    pub block: usize,
+    pub new_props: ParaProps,
+    /// `Some(Some(id))` sets a real `<w:pStyle>`, `Some(None)` clears it.
+    pub pstyle: Option<Option<String>>,
 }
 
 /// One table-cell run's edit. `block` is the lowered story block (the table),

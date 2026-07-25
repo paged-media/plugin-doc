@@ -21,7 +21,7 @@
 //! `CT_RPr` child order. `w:`-prefixed element names resolve against the
 //! `xmlns:w` decl on the root element (copied verbatim in the surrounding bytes).
 
-use docx_core::{RunProps, VertAlign};
+use docx_core::{Justification, ParaProps, RunProps, VertAlign};
 use quick_xml::escape::escape;
 
 /// A run's `<w:t>` element with the new text, always `xml:space="preserve"` so
@@ -69,6 +69,79 @@ pub fn render_rpr(props: &RunProps, rstyle: Option<&str>) -> Vec<u8> {
         s.push_str(&format!("<w:vertAlign w:val=\"{v}\"/>"));
     }
     s.push_str("</w:rPr>");
+    s.into_bytes()
+}
+
+/// A `<w:pPr>` element for a paragraph's applied style + direct formatting —
+/// the paragraph twin of [`render_rpr`], in WML `CT_PPr` child order. `pstyle` is
+/// a REAL Word style id; synthesized paragraph styles must already have been
+/// projected into `props`.
+pub fn render_ppr(props: &ParaProps, pstyle: Option<&str>) -> Vec<u8> {
+    let mut s = String::from("<w:pPr>");
+    if let Some(id) = pstyle {
+        s.push_str(&format!("<w:pStyle w:val=\"{}\"/>", escape(id)));
+    }
+    if props.keep_next == Some(true) {
+        s.push_str("<w:keepNext/>");
+    }
+    if props.keep_lines == Some(true) {
+        s.push_str("<w:keepLines/>");
+    }
+    // <w:spacing> carries before/after together.
+    if props.space_before.is_some() || props.space_after.is_some() {
+        s.push_str("<w:spacing");
+        if let Some(v) = props.space_before {
+            s.push_str(&format!(" w:before=\"{v}\""));
+        }
+        if let Some(v) = props.space_after {
+            s.push_str(&format!(" w:after=\"{v}\""));
+        }
+        s.push_str("/>");
+    }
+    // <w:ind> carries the indents together; a hanging indent is emitted as
+    // `w:hanging` (a positive twip value), never as a negative firstLine.
+    if props.left_indent.is_some()
+        || props.right_indent.is_some()
+        || props.first_line_indent.is_some()
+        || props.hanging_indent.is_some()
+    {
+        s.push_str("<w:ind");
+        if let Some(v) = props.left_indent {
+            s.push_str(&format!(" w:left=\"{v}\""));
+        }
+        if let Some(v) = props.right_indent {
+            s.push_str(&format!(" w:right=\"{v}\""));
+        }
+        if let Some(v) = props.hanging_indent {
+            s.push_str(&format!(" w:hanging=\"{v}\""));
+        } else if let Some(v) = props.first_line_indent {
+            s.push_str(&format!(" w:firstLine=\"{v}\""));
+        }
+        s.push_str("/>");
+    }
+    if !props.tabs.is_empty() {
+        s.push_str("<w:tabs>");
+        for t in &props.tabs {
+            let val = t.alignment.as_deref().unwrap_or("left");
+            s.push_str(&format!(
+                "<w:tab w:val=\"{}\" w:pos=\"{}\"/>",
+                escape(val),
+                t.position
+            ));
+        }
+        s.push_str("</w:tabs>");
+    }
+    if let Some(j) = props.justification {
+        let v = match j {
+            Justification::Left | Justification::Start => "left",
+            Justification::Center => "center",
+            Justification::Right | Justification::End => "right",
+            Justification::Both => "both",
+            Justification::Distribute => "distribute",
+        };
+        s.push_str(&format!("<w:jc w:val=\"{v}\"/>"));
+    }
+    s.push_str("</w:pPr>");
     s.into_bytes()
 }
 

@@ -340,3 +340,26 @@ mutation. Note text is deliberately NOT inlined into the flow; a conformance tes
 asserts it never appears there, so the gap stays visible rather than faked.
 
 Verified through the real wasm artifact (`footnote` fixture).
+
+## M2 Increment 3 — paragraph properties (`<w:pPr>`)
+
+Increment 1 noted `<w:pPr>` edits as a fast-follow and Increment 2 did not land
+them, so a paragraph's own formatting never round-tripped — and the differ did not
+even LOOK at paragraph styles (it compared runs only, so repointing a paragraph at
+a different style produced an empty EditSet).
+
+- `EditSet.paragraphs` (`ParaEdit { block, new_props, pstyle }`), the paragraph
+  twin of the run lane: a synthesized paragraph style is projected into direct
+  `<w:pPr>` formatting, and a REAL Word style id is recovered through a new
+  `para_token_to_style_id` map (the lowered token is lossy, exactly as for runs).
+- `rpr.rs::render_ppr` emits `<w:pPr>` in WML `CT_PPr` child order, packing the
+  indents into one `<w:ind>` and before/after into one `<w:spacing>`, and emitting
+  a hanging indent as `w:hanging` rather than a negative `firstLine`.
+- The splicer replaces a targeted paragraph's `<w:pPr>`, or INSERTS one before the
+  first run when the paragraph has none.
+- `diff` now compares each paragraph's effective style + direct formatting and
+  emits a `ParaEdit`, so the live DOC-03 path carries paragraph changes too.
+
+Verified: a paragraph gains a centred `<w:pPr>` where it had none, a heading's
+`pStyle` is dropped, run text is untouched, every other part stays byte-identical,
+and the differ detects a paragraph-style repoint end-to-end.

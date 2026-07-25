@@ -31,13 +31,14 @@ use docx_core::{RunProps, VertAlign};
 use docx_lower::ir::{LoweredBlock, LoweredDoc, PropValue, StyleProp};
 
 use crate::bindings::DocxBindings;
-use crate::edit::{CellRunEdit, EditSet, RunEdit, StructuralEdit};
+use crate::edit::{CellRunEdit, EditSet, ParaEdit, RunEdit, StructuralEdit};
 
 /// Diff two lowerings into the edits needed to turn `base` into `edited`.
 pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> EditSet {
     let mut runs = Vec::new();
     let mut structural: Vec<StructuralEdit> = Vec::new();
     let mut cells: Vec<CellRunEdit> = Vec::new();
+    let mut paragraphs: Vec<ParaEdit> = Vec::new();
 
     // Increment 2 — paragraph-level structure. Blocks beyond the edited story's
     // length were deleted; blocks the edited story adds at the end are appended
@@ -167,12 +168,97 @@ pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> 
                 runs.push(edit);
             }
         }
+
+        // Increment 3 — the paragraph's own `<w:pPr>` (style + direct formatting).
+        let (b_props, b_style) = effective_para_props(bp.para_style_id.as_deref(), base, bindings);
+        let (e_props, e_style) =
+            effective_para_props(ep.para_style_id.as_deref(), edited, bindings);
+        if b_props != e_props || b_style != e_style {
+            paragraphs.push(ParaEdit {
+                block: block_idx,
+                new_props: e_props,
+                pstyle: Some(e_style),
+            });
+        }
     }
     EditSet {
         runs,
         structural,
         cells,
+        paragraphs,
     }
+}
+
+/// The effective DIRECT paragraph formatting a lowered paragraph-style token maps
+/// to, plus the real `<w:pStyle>` it should carry — the paragraph twin of
+/// [`effective_props`].
+fn effective_para_props(
+    token: Option<&str>,
+    doc: &LoweredDoc,
+    bindings: &DocxBindings,
+) -> (docx_core::ParaProps, Option<String>) {
+    let Some(token) = token else {
+        return (docx_core::ParaProps::default(), None);
+    };
+    if let Some(style_id) = bindings.para_token_to_style_id.get(token) {
+        return (docx_core::ParaProps::default(), Some(style_id.clone()));
+    }
+    if let Some(style) = doc.styles.iter().find(|s| s.id == token) {
+        let props = invert_para_props(&style.props);
+        let pstyle = style
+            .based_on
+            .as_deref()
+            .and_then(|b| bindings.para_token_to_style_id.get(b).cloned());
+        return (props, pstyle);
+    }
+    (docx_core::ParaProps::default(), None)
+}
+
+/// Invert a synthesized paragraph style's `StyleProp`s back to `ParaProps` — the
+/// reverse of `docx-lower`'s `para_props` (points → twips, 20 twips per point).
+fn invert_para_props(props: &[StyleProp]) -> docx_core::ParaProps {
+    use docx_core::Justification as J;
+    let tw = |pt: f32| (pt * 20.0).round() as i32;
+    let mut p = docx_core::ParaProps::default();
+    for sp in props {
+        match (sp.path.as_str(), &sp.value) {
+            ("paragraphJustification", PropValue::Text(v)) => {
+                p.justification = match v.as_str() {
+                    "CenterAlign" => Some(J::Center),
+                    "RightAlign" => Some(J::Right),
+                    "LeftJustified" => Some(J::Both),
+                    "FullyJustified" => Some(J::Distribute),
+                    _ => Some(J::Left),
+                };
+            }
+            ("paragraphLeftIndent", PropValue::Length(v)) => p.left_indent = Some(tw(*v)),
+            ("paragraphRightIndent", PropValue::Length(v)) => p.right_indent = Some(tw(*v)),
+            ("paragraphFirstLineIndent", PropValue::Length(v)) => {
+                // A NEGATIVE first-line indent is Word's hanging indent.
+                if *v < 0.0 {
+                    p.hanging_indent = Some(tw(-*v));
+                } else {
+                    p.first_line_indent = Some(tw(*v));
+                }
+            }
+            ("paragraphSpaceBefore", PropValue::Length(v)) => p.space_before = Some(tw(*v)),
+            ("paragraphSpaceAfter", PropValue::Length(v)) => p.space_after = Some(tw(*v)),
+            ("paragraphKeepWithNext", PropValue::Length(v)) => p.keep_next = Some(*v > 0.0),
+            ("paragraphKeepLinesTogether", PropValue::Bool(b)) => p.keep_lines = Some(*b),
+            ("paragraphTabStops", PropValue::TabStops(stops)) => {
+                p.tabs = stops
+                    .iter()
+                    .map(|t| docx_core::TabStop {
+                        position: tw(t.position),
+                        alignment: t.alignment.clone(),
+                        leader: None,
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    p
 }
 
 /// Align a paragraph's baseline runs against its edited runs by (text, style)

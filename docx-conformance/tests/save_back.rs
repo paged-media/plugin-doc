@@ -48,6 +48,7 @@ fn edited_save_back_patches_targets_and_preserves_everything_else() {
     let edits = EditSet {
         structural: vec![],
         cells: vec![],
+        paragraphs: vec![],
         runs: vec![
             RunEdit::text(0, 0, "Edited body text."),
             RunEdit::props(
@@ -383,6 +384,7 @@ fn structural_paragraph_delete_and_append() {
     let edits = EditSet {
         runs: vec![],
         cells: vec![],
+        paragraphs: vec![],
         structural: vec![
             StructuralEdit::DeleteParagraph { block: 1 }, // the heading
             StructuralEdit::InsertParagraph {
@@ -517,6 +519,96 @@ fn table_cell_diff_drives_save_back() {
 }
 
 #[test]
+fn paragraph_property_edits_rewrite_the_ppr() {
+    use docx_export::ParaEdit;
+
+    let original = memo_docx();
+    let session = DocSession::load(&original).unwrap();
+    // Centre p0 (it has NO <w:pPr> at all, so one must be INSERTED) and drop the
+    // heading's pStyle from p1 (its <w:pPr> is REPLACED).
+    let edits = EditSet {
+        paragraphs: vec![
+            ParaEdit {
+                block: 0,
+                new_props: docx_core::ParaProps {
+                    justification: Some(docx_core::Justification::Center),
+                    ..Default::default()
+                },
+                pstyle: Some(None),
+            },
+            ParaEdit {
+                block: 1,
+                new_props: docx_core::ParaProps::default(),
+                pstyle: Some(None),
+            },
+        ],
+        ..Default::default()
+    };
+    let saved = session.save_edited(&edits).unwrap();
+
+    let re = import_docx(&saved).unwrap();
+    let p0 = body_para(&re, 0);
+    assert_eq!(
+        p0.props.justification,
+        Some(docx_core::Justification::Center),
+        "pPr INSERTED on a paragraph that had none"
+    );
+    assert_eq!(p0.runs[0].text, "Plain body text.", "text untouched");
+    let p1 = body_para(&re, 1);
+    assert_eq!(p1.style_id, None, "the heading's pStyle was dropped");
+    assert_eq!(p1.runs[0].text, "A Centered Heading", "text untouched");
+    // Everything else survives.
+    assert_eq!(body_para(&re, 2).runs[1].text, "bold red");
+    let orig_pkg = OpcPackage::read(&original).unwrap();
+    let saved_pkg = OpcPackage::read(&saved).unwrap();
+    for name in orig_pkg.file_names() {
+        if name == "word/document.xml" {
+            continue;
+        }
+        assert_eq!(orig_pkg.part(name), saved_pkg.part(name), "part {name}");
+    }
+}
+
+#[test]
+fn diff_detects_a_paragraph_style_change() {
+    use docx_lower::ir::LoweredBlock;
+
+    let original = memo_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let bindings = docx_export::build_bindings(&model);
+    let base = docx_lower::lower(&model);
+
+    // Repoint p1 (the heading) at p0's paragraph style — a paragraph-level change
+    // the differ used to miss entirely (it only compared runs).
+    let mut edited = base.clone();
+    let p0_style = match &base.story.blocks[0] {
+        LoweredBlock::Paragraph(p) => p.para_style_id.clone(),
+        _ => panic!("expected a paragraph"),
+    };
+    if let LoweredBlock::Paragraph(p) = &mut edited.story.blocks[1] {
+        p.para_style_id = p0_style;
+    }
+    let edits = docx_export::diff(&base, &edited, &bindings);
+    assert_eq!(
+        edits.paragraphs.len(),
+        1,
+        "one paragraph edit: {:?}",
+        edits.paragraphs
+    );
+    assert_eq!(edits.paragraphs[0].block, 1);
+
+    let saved = session.save_edited(&edits).unwrap();
+    let re = import_docx(&saved).unwrap();
+    assert_ne!(
+        body_para(&re, 1).style_id.as_deref(),
+        Some("Heading1"),
+        "the heading style no longer applies"
+    );
+    assert_eq!(body_para(&re, 1).runs[0].text, "A Centered Heading");
+}
+
+#[test]
 fn non_patchable_target_is_skipped_not_errored() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();
@@ -524,6 +616,7 @@ fn non_patchable_target_is_skipped_not_errored() {
     let edits = EditSet {
         structural: vec![],
         cells: vec![],
+        paragraphs: vec![],
         runs: vec![RunEdit::text(99, 0, "nowhere")],
     };
     let saved = session.save_edited(&edits).unwrap();

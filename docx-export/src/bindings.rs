@@ -38,6 +38,8 @@ pub struct DocxBindings {
     /// uses it to recover a real `<w:rStyle>` when projecting a changed run's
     /// style back (the lowered token is lossy, so this map is the only inverse).
     pub char_token_to_style_id: HashMap<String, String>,
+    /// The same, for PARAGRAPH styles (`<w:pStyle>`).
+    pub para_token_to_style_id: HashMap<String, String>,
 }
 
 /// A lowered story block's provenance.
@@ -191,8 +193,21 @@ pub fn build_bindings(doc: &DocxDocument) -> DocxBindings {
             )
         })
         .collect();
+    let para_token_to_style_id = doc
+        .styles
+        .styles
+        .iter()
+        .filter(|s| s.kind == StyleKind::Paragraph)
+        .map(|s| {
+            (
+                docx_lower::para_style_token(&s.style_id),
+                s.style_id.clone(),
+            )
+        })
+        .collect();
     DocxBindings {
         blocks,
         char_token_to_style_id,
+        para_token_to_style_id,
     }
 }

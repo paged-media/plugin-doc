@@ -733,6 +733,12 @@ pub fn char_style_token(style_id: &str) -> String {
     format!("{CHAR_PREFIX}{}", sanitize(style_id))
 }
 
+/// The lowered PARAGRAPH-style token for a Word paragraph `style_id` (the twin of
+/// [`char_style_token`]; `sanitize` is lossy, so save-back needs the map).
+pub fn para_style_token(style_id: &str) -> String {
+    format!("{PARA_PREFIX}{}", sanitize(style_id))
+}
+
 /// Parse `RRGGBB` into `[r, g, b]` on 0–255.
 fn parse_hex(hex: &str) -> Option<(f32, f32, f32)> {
     if hex.len() != 6 {

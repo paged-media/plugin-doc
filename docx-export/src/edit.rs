@@ -36,6 +36,44 @@ pub struct EditSet {
     /// other's addresses.
     #[serde(default)]
     pub structural: Vec<StructuralEdit>,
+    /// In-place edits on TABLE-CELL runs, addressed by lowered
+    /// `(block, cell, paragraph, run)`.
+    #[serde(default)]
+    pub cells: Vec<CellRunEdit>,
+}
+
+/// One table-cell run's edit. `block` is the lowered story block (the table),
+/// `cell` its index in the lowered cell list, then the paragraph + run within it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellRunEdit {
+    pub block: usize,
+    pub cell: usize,
+    pub para: usize,
+    pub run: usize,
+    pub new_text: Option<String>,
+    pub new_props: Option<RunProps>,
+    pub rstyle: Option<Option<String>>,
+}
+
+impl CellRunEdit {
+    /// A pure text change on a cell run.
+    pub fn text(
+        block: usize,
+        cell: usize,
+        para: usize,
+        run: usize,
+        new_text: impl Into<String>,
+    ) -> Self {
+        CellRunEdit {
+            block,
+            cell,
+            para,
+            run,
+            new_text: Some(new_text.into()),
+            ..Default::default()
+        }
+    }
 }
 
 /// A structural change. All indices address the BASELINE document.

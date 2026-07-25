@@ -35,13 +35,13 @@ mod splice;
 
 pub use bindings::{build_bindings, BlockBinding, DocxBindings, RunBinding};
 pub use diff::diff;
-pub use edit::{EditSet, RunEdit, StructuralEdit};
+pub use edit::{CellRunEdit, EditSet, RunEdit, StructuralEdit};
 pub use overlay::{overlay_story_content, ParagraphContentIn, RunContentIn, StoryContentIn};
 
 use std::collections::BTreeMap;
 
 use paged_ooxml::{OoxmlError, OpcPackage};
-use splice::{patch_document_xml_full, ResolvedParaTarget, ResolvedTarget};
+use splice::{patch_document_xml_all, ResolvedCellTarget, ResolvedParaTarget, ResolvedTarget};
 
 /// Apply `edits` to `pkg`'s main document part in place. Non-patchable targets
 /// (tables, hyperlink/field runs, out-of-range indices) are silently skipped —
@@ -159,13 +159,37 @@ pub fn apply_edits(
         }
     }
 
-    if targets.is_empty() && paras.is_empty() {
+    // Table-cell run edits — their own `w:tbl`/`w:tr`/`w:tc`/`w:p` locator path.
+    let mut cell_targets: Vec<ResolvedCellTarget> = Vec::new();
+    for c in &edits.cells {
+        let Some((path, run_ord)) = bindings.resolve_cell(c.block, c.cell, c.para, c.run) else {
+            continue; // non-patchable — skipped
+        };
+        if c.new_text.is_none() && c.new_props.is_none() {
+            continue;
+        }
+        let new_rpr = c.new_props.as_ref().map(|props| {
+            let rstyle = c.rstyle.as_ref().and_then(|o| o.as_deref());
+            rpr::render_rpr(props, rstyle)
+        });
+        cell_targets.push(ResolvedCellTarget {
+            table_ord: path.table_ord,
+            row: path.row,
+            cell: path.cell,
+            para: path.para,
+            run_ord,
+            new_text: c.new_text.clone(),
+            new_rpr,
+        });
+    }
+
+    if targets.is_empty() && paras.is_empty() && cell_targets.is_empty() {
         return Ok(());
     }
 
     let patched = {
         let src = pkg.require(main_part)?;
-        patch_document_xml_full(src, &targets, &paras)
+        patch_document_xml_all(src, &targets, &paras, &cell_targets)
     };
     pkg.set_part(main_part, patched);
     Ok(())

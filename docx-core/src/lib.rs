@@ -57,6 +57,22 @@ pub enum Block {
     Table(Table),
 }
 
+/// Where a TABLE-CELL paragraph lives in `word/document.xml` — the source path
+/// the save-back patcher walks (`w:tbl` → `w:tr` → `w:tc` → `w:p`). All ordinals
+/// are 0-based positions among siblings of that element type. `None` on body
+/// paragraphs (they use [`Paragraph::source_para_ord`] instead).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CellPath {
+    /// The table's ordinal among the direct `<w:tbl>` children of `<w:body>`.
+    pub table_ord: u32,
+    /// The row's ordinal within the table.
+    pub row: u32,
+    /// The cell's ordinal within the row.
+    pub cell: u32,
+    /// The paragraph's ordinal within the cell.
+    pub para: u32,
+}
+
 /// A Word paragraph (`w:p`): an applied paragraph style, direct paragraph
 /// properties, and a sequence of runs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -72,10 +88,14 @@ pub struct Paragraph {
     /// paragraph belongs to, if any.
     pub list: Option<ListMarker>,
     /// Provenance for M2 save-back: this paragraph's ordinal among the direct
-    /// `<w:p>` children of `<w:body>` (0-based). `0` for table-cell paragraphs
-    /// (which are not body-level and are non-patchable in the current increment).
+    /// `<w:p>` children of `<w:body>` (0-based). Meaningless for table-cell
+    /// paragraphs — those carry [`Paragraph::source_cell`] instead.
     #[serde(default)]
     pub source_para_ord: u32,
+    /// Provenance for a TABLE-CELL paragraph: its `w:tbl`/`w:tr`/`w:tc`/`w:p`
+    /// source path. `None` for body paragraphs.
+    #[serde(default)]
+    pub source_cell: Option<CellPath>,
 }
 
 /// A list marker, resolved from `w:numPr` + `numbering.xml` at import time so the

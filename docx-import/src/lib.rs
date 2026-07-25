@@ -26,8 +26,9 @@
 //! an unparseable main document part is a hard error.
 
 use docx_core::{
-    Block, DocxDocument, Image, Justification, ListKind, ListMarker, ParaProps, Paragraph, Run,
-    RunProps, RunSource, Section, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
+    Block, CellPath, DocxDocument, Image, Justification, ListKind, ListMarker, ParaProps,
+    Paragraph, Run, RunProps, RunSource, Section, Style, StyleCatalog, StyleKind, TabStop,
+    VertAlign,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
@@ -290,14 +291,17 @@ fn map_body(body: &wml::Body, ctx: &ImportCtx) -> (Vec<Block>, Vec<Section>) {
     // patcher's paragraph key. Only body paragraphs advance it (tables and any
     // dropped body child do not), matching "the Nth `<w:p>` under `<w:body>`".
     let mut para_ord = 0u32;
+    // Ordinal among the direct `<w:tbl>` children of `<w:body>` (cell provenance).
+    let mut table_ord = 0u32;
     for choice in &body.body_choice {
         match choice {
             wml::BodyChoice::Paragraph(p) => {
-                blocks.push(Block::Paragraph(map_paragraph(p, ctx, para_ord)));
+                blocks.push(Block::Paragraph(map_paragraph(p, ctx, para_ord, None)));
                 para_ord += 1;
             }
             wml::BodyChoice::Table(t) => {
-                blocks.push(Block::Table(map_table(t, ctx)));
+                blocks.push(Block::Table(map_table(t, ctx, table_ord)));
+                table_ord += 1;
             }
             _ => {}
         }
@@ -310,7 +314,12 @@ fn map_body(body: &wml::Body, ctx: &ImportCtx) -> (Vec<Block>, Vec<Section>) {
     (blocks, sections)
 }
 
-fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx, para_ord: u32) -> Paragraph {
+fn map_paragraph(
+    p: &wml::Paragraph,
+    ctx: &ImportCtx,
+    para_ord: u32,
+    source_cell: Option<CellPath>,
+) -> Paragraph {
     let (style_id, props) = match p.paragraph_properties.as_deref() {
         Some(pp) => (
             pp.paragraph_style_id.as_ref().map(|s| s.val.clone()),
@@ -423,10 +432,11 @@ fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx, para_ord: u32) -> Paragrap
         runs,
         list,
         source_para_ord: para_ord,
+        source_cell,
     }
 }
 
-fn map_table(t: &wml::Table, ctx: &ImportCtx) -> docx_core::Table {
+fn map_table(t: &wml::Table, ctx: &ImportCtx, table_ord: u32) -> docx_core::Table {
     let column_widths = t
         .table_grid
         .as_deref()
@@ -439,17 +449,19 @@ fn map_table(t: &wml::Table, ctx: &ImportCtx) -> docx_core::Table {
         .unwrap_or_default();
 
     let mut rows = Vec::new();
+    let mut row_ord = 0u32;
     for tc in &t.table_choice2 {
         if let wml::TableChoice2::TableRow(tr) = tc {
-            let cells = tr
-                .table_row_choice
-                .iter()
-                .filter_map(|rc| match rc {
-                    wml::TableRowChoice::TableCell(c) => Some(map_cell(c, ctx)),
-                    _ => None,
-                })
-                .collect();
+            let mut cell_ord = 0u32;
+            let mut cells = Vec::new();
+            for rc in &tr.table_row_choice {
+                if let wml::TableRowChoice::TableCell(c) = rc {
+                    cells.push(map_cell(c, ctx, table_ord, row_ord, cell_ord));
+                    cell_ord += 1;
+                }
+            }
             rows.push(docx_core::TableRow { cells });
+            row_ord += 1;
         }
     }
     docx_core::Table {
@@ -458,7 +470,13 @@ fn map_table(t: &wml::Table, ctx: &ImportCtx) -> docx_core::Table {
     }
 }
 
-fn map_cell(c: &wml::TableCell, ctx: &ImportCtx) -> docx_core::TableCell {
+fn map_cell(
+    c: &wml::TableCell,
+    ctx: &ImportCtx,
+    table_ord: u32,
+    row: u32,
+    cell: u32,
+) -> docx_core::TableCell {
     let props = c.table_cell_properties.as_deref();
     let grid_span = props
         .and_then(|p| p.grid_span.as_ref())
@@ -473,16 +491,22 @@ fn map_cell(c: &wml::TableCell, ctx: &ImportCtx) -> docx_core::TableCell {
             _ => docx_core::VMerge::Continue,
         },
     };
-    let paragraphs = c
-        .table_cell_choice
-        .iter()
-        .filter_map(|cc| match cc {
-            // Table-cell paragraphs are not body-level; `0` is a placeholder —
-            // cell content is non-patchable in the current save-back increment.
-            wml::TableCellChoice::Paragraph(p) => Some(map_paragraph(p, ctx, 0)),
-            _ => None,
-        })
-        .collect();
+    // Cell paragraphs carry a `CellPath` (tbl/tr/tc/p ordinals) so save-back can
+    // locate them; `source_para_ord` is meaningless here.
+    let mut paragraphs = Vec::new();
+    let mut para = 0u32;
+    for cc in &c.table_cell_choice {
+        if let wml::TableCellChoice::Paragraph(p) = cc {
+            let path = CellPath {
+                table_ord,
+                row,
+                cell,
+                para,
+            };
+            paragraphs.push(map_paragraph(p, ctx, 0, Some(path)));
+            para += 1;
+        }
+    }
     docx_core::TableCell {
         paragraphs,
         grid_span,

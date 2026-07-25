@@ -47,6 +47,7 @@ fn edited_save_back_patches_targets_and_preserves_everything_else() {
     // `<w:rPr>` carrying only the color.
     let edits = EditSet {
         structural: vec![],
+        cells: vec![],
         runs: vec![
             RunEdit::text(0, 0, "Edited body text."),
             RunEdit::props(
@@ -381,6 +382,7 @@ fn structural_paragraph_delete_and_append() {
     let session = DocSession::load(&original).unwrap();
     let edits = EditSet {
         runs: vec![],
+        cells: vec![],
         structural: vec![
             StructuralEdit::DeleteParagraph { block: 1 }, // the heading
             StructuralEdit::InsertParagraph {
@@ -414,12 +416,114 @@ fn structural_paragraph_delete_and_append() {
 }
 
 #[test]
+fn table_cell_text_round_trips() {
+    use docx_conformance::table_docx;
+    use docx_export::CellRunEdit;
+
+    let original = table_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let base = docx_lower::lower(&model);
+
+    // Find the table block + its first cell's first run.
+    let (block, table) = base
+        .story
+        .blocks
+        .iter()
+        .enumerate()
+        .find_map(|(i, b)| match b {
+            docx_lower::ir::LoweredBlock::Table(t) => Some((i, t)),
+            _ => None,
+        })
+        .expect("a table block");
+    let before = table.cells[0].paragraphs[0].runs[0].text.clone();
+    assert!(!before.is_empty(), "the first cell has text");
+
+    let edits = docx_export::EditSet {
+        cells: vec![CellRunEdit::text(block, 0, 0, 0, "PATCHED CELL")],
+        ..Default::default()
+    };
+    let saved = session.save_edited(&edits).unwrap();
+
+    // The cell text changed...
+    let re_model = docx_import::import_docx(&saved).unwrap();
+    let re = docx_lower::lower(&re_model);
+    let re_table = re
+        .story
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            docx_lower::ir::LoweredBlock::Table(t) => Some(t),
+            _ => None,
+        })
+        .expect("table survives");
+    assert_eq!(re_table.cells[0].paragraphs[0].runs[0].text, "PATCHED CELL");
+    // ...the OTHER cells are untouched, and the grid survives.
+    assert_eq!(re_table.cells.len(), table.cells.len());
+    assert_eq!(re_table.column_widths_pt, table.column_widths_pt);
+    for (i, (a, b)) in table.cells.iter().zip(&re_table.cells).enumerate().skip(1) {
+        let at: String = a
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.runs.iter())
+            .map(|r| r.text.as_str())
+            .collect();
+        let bt: String = b
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.runs.iter())
+            .map(|r| r.text.as_str())
+            .collect();
+        assert_eq!(at, bt, "cell {i} untouched");
+        assert_eq!(a.row_span, b.row_span, "cell {i} rowSpan kept");
+        assert_eq!(a.col_span, b.col_span, "cell {i} colSpan kept");
+    }
+    // Every other part stays byte-identical.
+    let orig_pkg = OpcPackage::read(&original).unwrap();
+    let saved_pkg = OpcPackage::read(&saved).unwrap();
+    for name in orig_pkg.file_names() {
+        if name == "word/document.xml" {
+            continue;
+        }
+        assert_eq!(orig_pkg.part(name), saved_pkg.part(name), "part {name}");
+    }
+}
+
+#[test]
+fn table_cell_diff_drives_save_back() {
+    use docx_conformance::table_docx;
+
+    let original = table_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let bindings = docx_export::build_bindings(&model);
+    let base = docx_lower::lower(&model);
+
+    // Edit a cell in a cloned lowering; the differ must produce a cell edit.
+    let mut edited = base.clone();
+    if let docx_lower::ir::LoweredBlock::Table(t) = &mut edited.story.blocks[1] {
+        t.cells[1].paragraphs[0].runs[0].text = "via diff".into();
+    }
+    let edits = docx_export::diff(&base, &edited, &bindings);
+    assert_eq!(edits.cells.len(), 1, "one cell edit: {:?}", edits.cells);
+
+    let saved = session.save_edited(&edits).unwrap();
+    let re = docx_lower::lower(&docx_import::import_docx(&saved).unwrap());
+    if let docx_lower::ir::LoweredBlock::Table(t) = &re.story.blocks[1] {
+        assert_eq!(t.cells[1].paragraphs[0].runs[0].text, "via diff");
+    } else {
+        panic!("expected a table at block 1");
+    }
+}
+
+#[test]
 fn non_patchable_target_is_skipped_not_errored() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();
     // Out-of-range block/run resolves to nothing → skipped, document unchanged.
     let edits = EditSet {
         structural: vec![],
+        cells: vec![],
         runs: vec![RunEdit::text(99, 0, "nowhere")],
     };
     let saved = session.save_edited(&edits).unwrap();

@@ -766,6 +766,7 @@ mod tests {
             ],
             list: None,
             source_para_ord: 0,
+            source_cell: None,
         }));
 
         let lowered = lower(&doc);

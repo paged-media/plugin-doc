@@ -292,3 +292,24 @@ overlay (delete a run + append a run, other parts byte-identical), one via a
 hand-authored `EditSet` (delete the heading, append a paragraph).
 
 **Still deferred:** table STRUCTURE (rows/cells), and a paragraph↔table swap.
+
+## Table-cell round-trip
+
+Cell content is no longer non-patchable. `docx-import` stamps each cell paragraph
+with a **`CellPath`** (`w:tbl` / `w:tr` / `w:tc` / `w:p` ordinals);
+`docx-export::build_bindings` projects those onto lowered cell coordinates,
+replaying `lower_table`'s emission order exactly (a vMerge-continue cell is
+absorbed, not emitted) so cell indices line up with `LoweredTable.cells`. The
+splicer gained a second locator path — `tbl → tr → tc → p → r` counters that run
+alongside the body-paragraph counters (each ignores the other's runs) — and
+`EditSet.cells` carries `CellRunEdit { block, cell, para, run, … }`. `diff` emits
+them automatically when a table's cell text or style changes.
+
+Verified: a direct cell text edit and a diff-driven one both round-trip, with the
+other cells, the row/column spans, the grid widths, and every other part
+unchanged.
+
+**Honest limitations:** cell STRUCTURE (adding/removing rows or cells) is not
+patched, and the locator assumes tables are not NESTED — a `<w:tbl>` inside a
+`<w:tc>` would mis-count, so nested-table cells are never addressed by the
+bindings.

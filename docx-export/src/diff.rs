@@ -31,12 +31,13 @@ use docx_core::{RunProps, VertAlign};
 use docx_lower::ir::{LoweredBlock, LoweredDoc, PropValue, StyleProp};
 
 use crate::bindings::DocxBindings;
-use crate::edit::{EditSet, RunEdit, StructuralEdit};
+use crate::edit::{CellRunEdit, EditSet, RunEdit, StructuralEdit};
 
 /// Diff two lowerings into the edits needed to turn `base` into `edited`.
 pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> EditSet {
     let mut runs = Vec::new();
     let mut structural: Vec<StructuralEdit> = Vec::new();
+    let mut cells: Vec<CellRunEdit> = Vec::new();
 
     // Increment 2 — paragraph-level structure. Blocks beyond the edited story's
     // length were deleted; blocks the edited story adds at the end are appended
@@ -91,8 +92,47 @@ pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> 
         .zip(&edited.story.blocks)
         .enumerate()
     {
+        // Tables: diff cell content (text/style per cell paragraph run).
+        if let (LoweredBlock::Table(bt), LoweredBlock::Table(et)) = (bb, eb) {
+            for (cell_idx, (bc, ec)) in bt.cells.iter().zip(&et.cells).enumerate() {
+                for (para_idx, (bpara, epara)) in
+                    bc.paragraphs.iter().zip(&ec.paragraphs).enumerate()
+                {
+                    if bpara.runs.len() != epara.runs.len() {
+                        continue; // cell structure changed — deferred
+                    }
+                    for (run_idx, (br, er)) in bpara.runs.iter().zip(&epara.runs).enumerate() {
+                        let mut edit = CellRunEdit {
+                            block: block_idx,
+                            cell: cell_idx,
+                            para: para_idx,
+                            run: run_idx,
+                            ..Default::default()
+                        };
+                        let mut changed = false;
+                        if br.text != er.text {
+                            edit.new_text = Some(er.text.clone());
+                            changed = true;
+                        }
+                        let (bprops, brs) =
+                            effective_props(br.char_style_id.as_deref(), base, bindings);
+                        let (eprops, ers) =
+                            effective_props(er.char_style_id.as_deref(), edited, bindings);
+                        if bprops != eprops || brs != ers {
+                            edit.new_props = Some(eprops);
+                            edit.rstyle = Some(ers);
+                            changed = true;
+                        }
+                        if changed {
+                            cells.push(edit);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         let (LoweredBlock::Paragraph(bp), LoweredBlock::Paragraph(ep)) = (bb, eb) else {
-            continue; // table (or a paragraph↔table swap) — structural, deferred
+            continue; // a paragraph↔table swap — structural, deferred
         };
         if bp.runs.len() != ep.runs.len() {
             // Increment 2 — a run was inserted or removed. Align the two run
@@ -128,7 +168,11 @@ pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> 
             }
         }
     }
-    EditSet { runs, structural }
+    EditSet {
+        runs,
+        structural,
+        cells,
+    }
 }
 
 /// Align a paragraph's baseline runs against its edited runs by (text, style)

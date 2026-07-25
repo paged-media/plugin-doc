@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 
-use docx_core::{Block, DocxDocument, RunSource, StyleKind};
+use docx_core::{Block, CellPath, DocxDocument, RunSource, StyleKind, VMerge};
 
 /// The provenance map for one document.
 #[derive(Debug, Clone, Default)]
@@ -48,9 +48,22 @@ pub enum BlockBinding {
         para_ord: u32,
         runs: Vec<RunBinding>,
     },
-    /// A table — non-patchable in the current increment (cell content has no
-    /// stable body-level provenance yet).
-    Table,
+    /// A table: one entry per LOWERED cell, in the same order `docx-lower`
+    /// emits them (vMerge-continue cells are absorbed, not emitted).
+    Table { cells: Vec<CellBinding> },
+}
+
+/// A lowered table cell's provenance: one entry per paragraph in the cell.
+#[derive(Debug, Clone, Default)]
+pub struct CellBinding {
+    pub paragraphs: Vec<CellParaBinding>,
+}
+
+/// A cell paragraph: its `w:tbl`/`w:tr`/`w:tc`/`w:p` source path + its runs.
+#[derive(Debug, Clone)]
+pub struct CellParaBinding {
+    pub path: CellPath,
+    pub runs: Vec<RunBinding>,
 }
 
 /// A lowered run's provenance.
@@ -73,7 +86,7 @@ impl DocxBindings {
                 RunBinding::Direct { run_ord } => Some((*para_ord, *run_ord)),
                 RunBinding::NonPatchable => None,
             },
-            BlockBinding::Table => None,
+            BlockBinding::Table { .. } => None,
         }
     }
 
@@ -83,39 +96,87 @@ impl DocxBindings {
     pub fn para_ord(&self, block: usize) -> Option<u32> {
         match self.blocks.get(block)? {
             BlockBinding::Paragraph { para_ord, .. } => Some(*para_ord),
-            BlockBinding::Table => None,
+            BlockBinding::Table { .. } => None,
+        }
+    }
+
+    /// Resolve a TABLE-CELL run to its `(CellPath, run_ord)` source address, or
+    /// `None` when the target is non-patchable (not a table, out of range, or a
+    /// hyperlink/field run).
+    pub fn resolve_cell(
+        &self,
+        block: usize,
+        cell: usize,
+        para: usize,
+        run: usize,
+    ) -> Option<(CellPath, u32)> {
+        let BlockBinding::Table { cells } = self.blocks.get(block)? else {
+            return None;
+        };
+        let cp = cells.get(cell)?.paragraphs.get(para)?;
+        match cp.runs.get(run)? {
+            RunBinding::Direct { run_ord } => Some((cp.path, *run_ord)),
+            RunBinding::NonPatchable => None,
         }
     }
 }
 
+/// One paragraph's run bindings, replaying lowering's run filter so indices line
+/// up 1:1 with `LoweredRun`s.
+fn run_bindings(p: &docx_core::Paragraph) -> Vec<RunBinding> {
+    p.runs
+        .iter()
+        // Lowering drops empty-text runs (docx-lower `lower_paragraph`), so
+        // replay that filter to keep run indices aligned.
+        .filter(|r| !r.text.is_empty())
+        .map(|r| match (r.source, r.hyperlink.is_some()) {
+            // A direct run that is NOT a link is patchable. A link run (even a
+            // direct one, e.g. a HYPERLINK-field result) is deferred — editing it
+            // would desync the field/hyperlink.
+            (Some(RunSource::DirectRun(n)), false) => RunBinding::Direct { run_ord: n },
+            _ => RunBinding::NonPatchable,
+        })
+        .collect()
+}
+
 /// Build the bindings from the imported model. `Run.source` / `Paragraph.
-/// source_para_ord` were stamped by `docx-import`; here we only project them onto
-/// lowered-story coordinates, replaying the lowering run filter so indices match.
+/// source_para_ord` / `Paragraph.source_cell` were stamped by `docx-import`; here
+/// we only project them onto lowered-story coordinates, replaying the lowering
+/// run filter + table-cell emission order so indices match.
 pub fn build_bindings(doc: &DocxDocument) -> DocxBindings {
     let mut blocks = Vec::with_capacity(doc.body.len());
     for block in &doc.body {
         match block {
             Block::Paragraph(p) => {
-                let runs = p
-                    .runs
-                    .iter()
-                    // Lowering drops empty-text runs (docx-lower `lower_paragraph`),
-                    // so replay that filter to keep run indices aligned.
-                    .filter(|r| !r.text.is_empty())
-                    .map(|r| match (r.source, r.hyperlink.is_some()) {
-                        // A direct run that is NOT a link is patchable. A link run
-                        // (even a direct one, e.g. a HYPERLINK-field result) is
-                        // deferred — editing it would desync the field/hyperlink.
-                        (Some(RunSource::DirectRun(n)), false) => RunBinding::Direct { run_ord: n },
-                        _ => RunBinding::NonPatchable,
-                    })
-                    .collect();
                 blocks.push(BlockBinding::Paragraph {
                     para_ord: p.source_para_ord,
-                    runs,
+                    runs: run_bindings(p),
                 });
             }
-            Block::Table(_) => blocks.push(BlockBinding::Table),
+            // Replay `docx-lower::lower_table`'s cell emission EXACTLY (a
+            // vMerge-continue cell is absorbed into its restart cell above and
+            // not emitted) so cell indices line up with `LoweredTable.cells`.
+            Block::Table(t) => {
+                let mut cells: Vec<CellBinding> = Vec::new();
+                for row in &t.rows {
+                    for cell in &row.cells {
+                        if cell.v_merge == VMerge::Continue {
+                            continue;
+                        }
+                        cells.push(CellBinding {
+                            paragraphs: cell
+                                .paragraphs
+                                .iter()
+                                .map(|p| CellParaBinding {
+                                    path: p.source_cell.unwrap_or_default(),
+                                    runs: run_bindings(p),
+                                })
+                                .collect(),
+                        });
+                    }
+                }
+                blocks.push(BlockBinding::Table { cells });
+            }
         }
     }
     let char_token_to_style_id = doc

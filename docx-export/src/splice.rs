@@ -63,6 +63,19 @@ impl ResolvedTarget {
     }
 }
 
+/// A TABLE-CELL run to patch: the `w:tbl`/`w:tr`/`w:tc`/`w:p` path + the run
+/// ordinal within that cell paragraph, plus the replacements.
+#[derive(Debug, Clone)]
+pub struct ResolvedCellTarget {
+    pub table_ord: u32,
+    pub row: u32,
+    pub cell: u32,
+    pub para: u32,
+    pub run_ord: u32,
+    pub new_text: Option<String>,
+    pub new_rpr: Option<Vec<u8>>,
+}
+
 /// A paragraph-level structural action, addressed by `<w:p>` ordinal.
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedParaTarget {
@@ -76,6 +89,12 @@ pub struct ResolvedParaTarget {
     pub prepend_runs: Vec<Vec<u8>>,
 }
 
+/// Are we inside a table cell? (The body-paragraph counters must ignore cell
+/// content, and vice versa.)
+fn in_cell(stack: &[Vec<u8>]) -> bool {
+    stack.iter().any(|n| n.as_slice() == b"tc")
+}
+
 fn local_name(qname: &[u8]) -> &[u8] {
     match qname.iter().position(|&b| b == b':') {
         Some(i) => &qname[i + 1..],
@@ -86,15 +105,32 @@ fn local_name(qname: &[u8]) -> &[u8] {
 /// Run-edits-only convenience over [`patch_document_xml_full`] (tests).
 #[cfg(test)]
 pub fn patch_document_xml(src: &[u8], targets: &[ResolvedTarget]) -> Vec<u8> {
-    patch_document_xml_full(src, targets, &BTreeMap::new())
+    patch_document_xml_all(src, targets, &BTreeMap::new(), &[])
 }
 
-/// As [`patch_document_xml`], plus paragraph-level structural actions keyed by
-/// `<w:p>` ordinal (Increment 2).
+/// Body-only convenience over [`patch_document_xml_all`] (tests): run targets +
+/// paragraph-level structural actions keyed by `<w:p>` ordinal.
+#[cfg(test)]
 pub fn patch_document_xml_full(
     src: &[u8],
     targets: &[ResolvedTarget],
     paras: &BTreeMap<u32, ResolvedParaTarget>,
+) -> Vec<u8> {
+    patch_document_xml_all(src, targets, paras, &[])
+}
+
+/// As [`patch_document_xml_full`], plus TABLE-CELL run targets (their own
+/// `w:tbl`/`w:tr`/`w:tc`/`w:p` locator path).
+///
+/// NOTE: the cell counters assume tables are not NESTED (a `<w:tbl>` inside a
+/// `<w:tc>`); a nested table's rows would be counted against the outer table.
+/// Nested-table cell content is therefore not patched — the bindings only ever
+/// address top-level tables.
+pub fn patch_document_xml_all(
+    src: &[u8],
+    targets: &[ResolvedTarget],
+    paras: &BTreeMap<u32, ResolvedParaTarget>,
+    cells: &[ResolvedCellTarget],
 ) -> Vec<u8> {
     let mut reader = Reader::from_reader(src);
     reader.config_mut().trim_text(false);
@@ -104,6 +140,12 @@ pub fn patch_document_xml_full(
     let mut stack: Vec<Vec<u8>> = Vec::new();
     let mut p_ord: i64 = -1;
     let mut r_ord: i64 = -1;
+    // Table-cell locator counters (see the nesting note above).
+    let mut tbl_ord: i64 = -1;
+    let mut tr_ord: i64 = -1;
+    let mut tc_ord: i64 = -1;
+    let mut cp_ord: i64 = -1;
+    let mut cr_ord: i64 = -1;
     // The paragraph currently open at body level, if it carries actions.
     let mut open_para: Option<(u32, ResolvedParaTarget)> = None;
     let mut prepended = false;
@@ -141,7 +183,46 @@ pub fn patch_document_xml_full(
                         open_para = None;
                     }
                 }
-                if ln == b"r" && parent == Some(b"p".as_ref()) {
+                // --- table-cell locator path (tbl → tr → tc → p → r) ---
+                if ln == b"tbl" && parent == Some(b"body".as_ref()) {
+                    tbl_ord += 1;
+                    tr_ord = -1;
+                }
+                if ln == b"tr" && parent == Some(b"tbl".as_ref()) {
+                    tr_ord += 1;
+                    tc_ord = -1;
+                }
+                if ln == b"tc" && parent == Some(b"tr".as_ref()) {
+                    tc_ord += 1;
+                    cp_ord = -1;
+                }
+                if ln == b"p" && parent == Some(b"tc".as_ref()) {
+                    cp_ord += 1;
+                    cr_ord = -1;
+                }
+                if ln == b"r" && parent == Some(b"p".as_ref()) && in_cell(&stack) {
+                    cr_ord += 1;
+                    if let Some(ct) = cells.iter().find(|c| {
+                        c.table_ord as i64 == tbl_ord
+                            && c.row as i64 == tr_ord
+                            && c.cell as i64 == tc_ord
+                            && c.para as i64 == cp_ord
+                            && c.run_ord as i64 == cr_ord
+                    }) {
+                        let t = ResolvedTarget {
+                            para_ord: 0,
+                            run_ord: 0,
+                            new_text: ct.new_text.clone(),
+                            new_rpr: ct.new_rpr.clone(),
+                            delete: false,
+                            insert_after: Vec::new(),
+                        };
+                        let run_open_end = reader.buffer_position() as usize;
+                        splice_run(&mut reader, src, &t, run_open_end, &mut out, &mut cursor);
+                        continue;
+                    }
+                }
+                if ln == b"r" && parent == Some(b"p".as_ref()) && !in_cell(&stack) {
                     r_ord += 1;
                     // A pending prepend lands before the first run.
                     if let Some((_, pt)) = open_para.as_ref() {

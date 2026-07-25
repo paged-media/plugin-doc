@@ -25,7 +25,9 @@
 //! `#[wasm_bindgen]` layer is a pure forwarding shim.
 
 use docx_core::DocxDocument;
-use docx_export::{apply_edits, build_bindings, DocxBindings, EditSet};
+use docx_export::{
+    apply_edits, build_bindings, diff, overlay_story_content, DocxBindings, EditSet, StoryContentIn,
+};
 use docx_import::import_docx_with_package;
 use docx_lower::ir::LoweredDoc;
 use docx_lower::lower;
@@ -103,5 +105,17 @@ impl DocSession {
         apply_edits(&mut package, &self.main_part, &self.bindings, edits)
             .map_err(|e| e.to_string())?;
         package.write().map_err(|e| e.to_string())
+    }
+
+    /// M2 edited save-back, driven by the DOC-03 structured read: overlay the
+    /// host's read-back `StoryContent` onto the import baseline lowering, diff to
+    /// an `EditSet`, and save. This is the LIVE end-to-end path (the bundle reads
+    /// `host.document.storyContent(storyId)` and forwards it here) — the seam that
+    /// makes edited save-back run without a hand-authored `EditSet`.
+    pub fn save_edited_from_content(&self, content: &StoryContentIn) -> Result<Vec<u8>, String> {
+        let baseline = self.lowered();
+        let edited = overlay_story_content(&baseline, content);
+        let edits = diff(&baseline, &edited, &self.bindings);
+        self.save_edited(&edits)
     }
 }

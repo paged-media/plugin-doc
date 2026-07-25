@@ -211,6 +211,104 @@ fn diff_drives_save_back_end_to_end() {
 }
 
 #[test]
+fn doc03_read_overlay_diff_save_round_trips() {
+    // The LIVE DOC-03 path, with the host read mocked: build a `StoryContent`
+    // mirroring the baseline (as `host.document.storyContent` would return),
+    // apply two edits to it, and drive `save_edited_from_content`.
+    use docx_export::{ParagraphContentIn, RunContentIn, StoryContentIn};
+    use docx_lower::ir::LoweredBlock;
+
+    let original = memo_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let base = docx_lower::lower(&model);
+
+    // The read-back reflects the plugin's own story: each run's characterStyle IS
+    // the plugin's char_style_id token, so it mirrors the baseline exactly...
+    let mut content = StoryContentIn {
+        self_id: "Story/doc".into(),
+        paragraphs: base
+            .story
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                LoweredBlock::Paragraph(p) => Some(ParagraphContentIn {
+                    paragraph_style: p.para_style_id.clone(),
+                    runs: p
+                        .runs
+                        .iter()
+                        .map(|r| RunContentIn {
+                            text: r.text.clone(),
+                            character_style: r.char_style_id.clone(),
+                        })
+                        .collect(),
+                }),
+                _ => None,
+            })
+            .collect(),
+    };
+    // ...then the "user" edits: change p0's text, and clear the bold-red run's
+    // style (bold + color removed).
+    content.paragraphs[0].runs[0].text = "Edited via content.".into();
+    content.paragraphs[2].runs[1].character_style = None;
+
+    let saved = session.save_edited_from_content(&content).unwrap();
+
+    let re = import_docx(&saved).unwrap();
+    assert_eq!(body_para(&re, 0).runs[0].text, "Edited via content.");
+    let p2 = body_para(&re, 2);
+    assert_eq!(p2.runs[1].text, "bold red", "text untouched");
+    assert_eq!(
+        p2.runs[1].props.bold, None,
+        "bold cleared via the read overlay"
+    );
+    assert_eq!(p2.runs[1].props.color, None, "color cleared");
+    // Untouched runs stay put.
+    assert_eq!(p2.runs[0].text, "Mix of normal and ");
+    assert_eq!(body_para(&re, 1).runs[0].text, "A Centered Heading");
+}
+
+#[test]
+fn doc03_identity_content_is_a_no_op() {
+    // A read-back identical to the baseline ⇒ no edits ⇒ verbatim save.
+    use docx_export::{ParagraphContentIn, RunContentIn, StoryContentIn};
+    use docx_lower::ir::LoweredBlock;
+
+    let original = memo_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let base = docx_lower::lower(&model);
+    let content = StoryContentIn {
+        self_id: "Story/doc".into(),
+        paragraphs: base
+            .story
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                LoweredBlock::Paragraph(p) => Some(ParagraphContentIn {
+                    paragraph_style: p.para_style_id.clone(),
+                    runs: p
+                        .runs
+                        .iter()
+                        .map(|r| RunContentIn {
+                            text: r.text.clone(),
+                            character_style: r.char_style_id.clone(),
+                        })
+                        .collect(),
+                }),
+                _ => None,
+            })
+            .collect(),
+    };
+    let saved = session.save_edited_from_content(&content).unwrap();
+    let orig_pkg = OpcPackage::read(&original).unwrap();
+    let saved_pkg = OpcPackage::read(&saved).unwrap();
+    for name in orig_pkg.file_names() {
+        assert_eq!(orig_pkg.part(name), saved_pkg.part(name), "part {name}");
+    }
+}
+
+#[test]
 fn non_patchable_target_is_skipped_not_errored() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();

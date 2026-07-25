@@ -29,12 +29,14 @@
 mod bindings;
 mod diff;
 mod edit;
+mod overlay;
 mod rpr;
 mod splice;
 
 pub use bindings::{build_bindings, BlockBinding, DocxBindings, RunBinding};
 pub use diff::diff;
 pub use edit::{EditSet, RunEdit};
+pub use overlay::{overlay_story_content, ParagraphContentIn, RunContentIn, StoryContentIn};
 
 use paged_ooxml::{OoxmlError, OpcPackage};
 use splice::{patch_document_xml, ResolvedTarget};

@@ -191,13 +191,31 @@ range ops, so it sits entirely on the contiguous side.
   multi-`<w:t>` runs; paragraph `<w:pPr>` edits; and — the one platform seam —
   the LIVE editor wiring (below).
 
+## DOC-03 — structured read + the LIVE save-back path (built; awaits the wasm publish)
+
+The live path now exists end-to-end in code. **Core** (branch) ships a structured
+read — `RequestStoryContent` → `StoryContent` (protocol 54): a story's paragraphs →
+runs → text + applied styles + direct overrides, `CanvasModel::story_content`.
+**paged.doc** consumes it: `docx-export::overlay_story_content` overlays the
+read-back onto the import baseline lowering (a run's `characterStyle` IS the
+plugin's own `char_style_id` token, since paged.doc created every style via
+`applyStyle`), then `diff → EditSet → save_edited`.
+`DocSession::save_edited_from_content(json)` + the wasm shim expose the one-call
+live path. **Verified end-to-end with a MOCK read** (`doc03_read_overlay_diff_save_
+round_trips`): read → overlay → diff → save → re-import reflects the edits; an
+identity read is a verbatim no-op.
+
+The one remaining seam is a RELEASE step, not code: core publishes
+`@paged-media/canvas-wasm` v54, plugin-sdk `sync-wire.mjs` pulls the new wire types
+and exposes `host.document.storyContent()` + `supports("document.readStory@1")`, and
+the bundle calls it → `save_edited_from_content`. Until then the SDK method is a
+reserved seam and the bundle degrades honestly (as it does for `openNative`).
+Structure-preserving edits only; table-cell content not yet round-tripped.
+
 ## Deferred (labelled, never faked)
 
-- **Edited save-back — LIVE wiring** (Increment 1 engine DONE above). The bundle
-  exporter still re-emits verbatim: it gets no document handle, and
-  `host.nativeDocument.readModel()` returns opaque core-native `.pgm` bytes this
-  isolation-clean plugin cannot diff. Needs the structured read door (DOC-03,
-  below); then diff the edited `LoweredDoc` → `EditSet` → `save_edited`.
+- **Edited save-back — LIVE editor run**: verified with a mock read (above); the
+  browser round-trip lands with the canvas-wasm v54 publish + SDK sync.
 - **Standalone true-open** — degrades to embedded placement + a diagnostic when
   `document.openNative@1` is unwired (the common case today); the `docx →
   native-bytes` producer is a future `plugin-publish` sibling.

@@ -88,6 +88,23 @@ mod wasm {
                 .save_edited(&edits)
                 .map_err(|e| JsValue::from_str(&e))
         }
+
+        /// M2 edited save-back driven by the DOC-03 read: forward the host's
+        /// `StoryContent` JSON (`host.document.storyContent(storyId)`); it is
+        /// overlaid on the import baseline, diffed, and saved. This is the LIVE
+        /// path — live once the host injects the v54 read backend (gated by the
+        /// bundle on `supports("document.readStory@1")`).
+        pub fn save_edited_from_content(&self, content_json: &str) -> Result<Vec<u8>, JsValue> {
+            let session = self
+                .session
+                .as_ref()
+                .ok_or_else(|| JsValue::from_str("no document loaded"))?;
+            let content: docx_export::StoryContentIn = serde_json::from_str(content_json)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            session
+                .save_edited_from_content(&content)
+                .map_err(|e| JsValue::from_str(&e))
+        }
     }
 
     impl Default for DocEngine {

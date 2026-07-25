@@ -148,6 +148,69 @@ fn bindings_run_counts_match_the_lowered_story() {
 }
 
 #[test]
+fn diff_of_identical_lowerings_produces_no_edits() {
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&memo_docx()).unwrap();
+    let bindings = docx_export::build_bindings(&model);
+    let base = docx_lower::lower(&model);
+    let edits = docx_export::diff(&base, &base, &bindings);
+    assert!(edits.runs.is_empty(), "identical lowerings ⇒ no edits");
+}
+
+#[test]
+fn diff_drives_save_back_end_to_end() {
+    use docx_lower::ir::{LoweredBlock, LoweredStyle, PropValue, StyleCollection, StyleProp};
+
+    let original = memo_docx();
+    let session = DocSession::load(&original).unwrap();
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&original).unwrap();
+    let bindings = docx_export::build_bindings(&model);
+    let base = docx_lower::lower(&model);
+
+    // Simulate an edit: change p0's text, and repoint the "bold red" run (block 2,
+    // run 1) at a NEW color-only synthesized style (i.e. the user removed bold).
+    let red_swatch = base
+        .swatches
+        .iter()
+        .find(|s| s.value == vec![255.0, 0.0, 0.0])
+        .expect("red swatch")
+        .id
+        .clone();
+    let mut edited = base.clone();
+    if let LoweredBlock::Paragraph(p) = &mut edited.story.blocks[0] {
+        p.runs[0].text = "Edited via diff.".into();
+    }
+    edited.styles.push(LoweredStyle {
+        id: "CharacterStyle/docx-auto-cNEW".into(),
+        name: "color only".into(),
+        collection: StyleCollection::Character,
+        based_on: None,
+        props: vec![StyleProp {
+            path: "characterFillColor".into(),
+            value: PropValue::ColorRef(red_swatch),
+        }],
+    });
+    if let LoweredBlock::Paragraph(p) = &mut edited.story.blocks[2] {
+        p.runs[1].char_style_id = Some("CharacterStyle/docx-auto-cNEW".into());
+    }
+
+    // Diff → EditSet → save-back → assert both edits landed.
+    let edits = docx_export::diff(&base, &edited, &bindings);
+    assert_eq!(edits.runs.len(), 2, "one text + one property edit");
+    let saved = session.save_edited(&edits).unwrap();
+
+    let re = import_docx(&saved).unwrap();
+    assert_eq!(body_para(&re, 0).runs[0].text, "Edited via diff.");
+    let p2 = body_para(&re, 2);
+    assert_eq!(p2.runs[1].text, "bold red", "text untouched");
+    assert_eq!(p2.runs[1].props.bold, None, "bold removed by the diff");
+    assert_eq!(
+        p2.runs[1].props.color.as_deref(),
+        Some("FF0000"),
+        "color kept"
+    );
+}
+
+#[test]
 fn non_patchable_target_is_skipped_not_errored() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();

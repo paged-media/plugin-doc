@@ -173,6 +173,13 @@ range ops, so it sits entirely on the contiguous side.
 - **Style round-trip.** A synthesized `docx-auto-cN` style projects back to a
   **direct `<w:rPr>`** on save (so Word gets no synthetic-style clutter);
   `rpr.rs` renders `RunProps → <w:rPr>` as the exact inverse of the import parse.
+- **The differ (`diff.rs`).** `diff(base, edited) → EditSet` — the seam the live
+  readback door will target (it will re-lower the edited native model to a
+  `LoweredDoc` and diff it against the import baseline). Runs are compared on their
+  RESOLVED effective formatting, not lowered style-id strings (synth `docx-auto-cN`
+  ids are positional and renumber between two lowerings); it inverts a synth style's
+  props back to `RunProps` and recovers a real `<w:rStyle>` via an import-built
+  `token → styleId` map. Structure-preserving edits only (count mismatch → skipped).
 - **Verified end-to-end** (`docx-conformance/tests/save_back.rs`): import the memo
   fixture, change one run's text + toggle bold off another, save, and assert the
   targets changed, every other part + untouched subtree byte-identical, and the

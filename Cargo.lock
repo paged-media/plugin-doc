@@ -137,6 +137,7 @@ name = "docx-export"
 version = "0.0.0"
 dependencies = [
  "docx-core",
+ "docx-lower",
  "paged-ooxml",
  "quick-xml",
  "serde",

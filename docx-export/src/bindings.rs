@@ -25,13 +25,19 @@
 //! walk `doc.body` in order). Within a paragraph, run indices replay lowering's
 //! filter (`!text.is_empty()`) so they line up 1:1 with `LoweredRun`s.
 
-use docx_core::{Block, DocxDocument, RunSource};
+use std::collections::HashMap;
+
+use docx_core::{Block, DocxDocument, RunSource, StyleKind};
 
 /// The provenance map for one document.
 #[derive(Debug, Clone, Default)]
 pub struct DocxBindings {
     /// One entry per lowered story block, in order.
     pub blocks: Vec<BlockBinding>,
+    /// Lowered character-style token → the original Word `styleId`. The differ
+    /// uses it to recover a real `<w:rStyle>` when projecting a changed run's
+    /// style back (the lowered token is lossy, so this map is the only inverse).
+    pub char_token_to_style_id: HashMap<String, String>,
 }
 
 /// A lowered story block's provenance.
@@ -102,5 +108,20 @@ pub fn build_bindings(doc: &DocxDocument) -> DocxBindings {
             Block::Table(_) => blocks.push(BlockBinding::Table),
         }
     }
-    DocxBindings { blocks }
+    let char_token_to_style_id = doc
+        .styles
+        .styles
+        .iter()
+        .filter(|s| s.kind == StyleKind::Character)
+        .map(|s| {
+            (
+                docx_lower::char_style_token(&s.style_id),
+                s.style_id.clone(),
+            )
+        })
+        .collect();
+    DocxBindings {
+        blocks,
+        char_token_to_style_id,
+    }
 }

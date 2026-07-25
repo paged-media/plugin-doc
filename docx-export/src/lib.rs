@@ -27,11 +27,13 @@
 //! serializer is never linked (the wasm-budget guard).
 
 mod bindings;
+mod diff;
 mod edit;
 mod rpr;
 mod splice;
 
 pub use bindings::{build_bindings, BlockBinding, DocxBindings, RunBinding};
+pub use diff::diff;
 pub use edit::{EditSet, RunEdit};
 
 use paged_ooxml::{OoxmlError, OpcPackage};

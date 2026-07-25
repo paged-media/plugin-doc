@@ -690,6 +690,13 @@ fn sanitize(id: &str) -> String {
         .collect()
 }
 
+/// The lowered character-style token for a Word character `style_id` (the same
+/// id `lower` mints, so save-back can build a `token → styleId` map to recover a
+/// real `w:rStyle` — `sanitize` is lossy, so the map is the only safe inverse).
+pub fn char_style_token(style_id: &str) -> String {
+    format!("{CHAR_PREFIX}{}", sanitize(style_id))
+}
+
 /// Parse `RRGGBB` into `[r, g, b]` on 0–255.
 fn parse_hex(hex: &str) -> Option<(f32, f32, f32)> {
     if hex.len() != 6 {

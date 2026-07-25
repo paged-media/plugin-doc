@@ -21,8 +21,8 @@
 //! preservation invariant.
 
 use docx_conformance::{
-    field_hyperlink_docx, hyperlink_docx, image_docx, list_docx, memo_docx, one_paragraph_docx,
-    table_docx, tier1_docx, zip_parts,
+    field_hyperlink_docx, footnote_docx, hyperlink_docx, image_docx, list_docx, memo_docx,
+    one_paragraph_docx, table_docx, tier1_docx, zip_parts,
 };
 use docx_core::{Block, ListKind, StyleKind, VMerge};
 use docx_import::import_docx;
@@ -452,6 +452,47 @@ fn field_based_hyperlinks_resolve_from_both_field_forms() {
         .diagnostics
         .iter()
         .any(|d| d.message.contains("native clickable link")));
+}
+
+#[test]
+fn footnotes_are_parsed_and_honestly_diagnosed() {
+    let doc = import_docx(&footnote_docx()).unwrap();
+    // The separator pseudo-notes are skipped; the real note is kept with its body.
+    assert_eq!(doc.notes.len(), 1, "only the real footnote");
+    let note = &doc.notes[0];
+    assert_eq!(note.id, 2);
+    assert!(!note.endnote);
+    assert_eq!(note.paragraphs[0].runs[0].text, "The note body.");
+
+    // The in-text reference run carries the note id (and no text).
+    let para = match &doc.body[0] {
+        Block::Paragraph(p) => p,
+        _ => panic!("expected a paragraph"),
+    };
+    let refs: Vec<i64> = para.runs.iter().filter_map(|r| r.note_ref).collect();
+    assert_eq!(refs, [2]);
+
+    // Lowering surfaces an honest diagnostic and does NOT inline the note text.
+    let ir = lower(&doc);
+    let msg = ir
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .find(|m| m.contains("footnote"))
+        .expect("a footnote diagnostic");
+    assert!(msg.contains("1 footnote(s)"), "{msg}");
+    assert!(msg.contains("NOT placed"), "{msg}");
+    let flow: String = ir
+        .story
+        .paragraphs()
+        .iter()
+        .flat_map(|p| p.runs.iter())
+        .map(|r| r.text.as_str())
+        .collect();
+    assert!(
+        !flow.contains("The note body."),
+        "note text must not be faked into the flow: {flow}"
+    );
 }
 
 #[test]

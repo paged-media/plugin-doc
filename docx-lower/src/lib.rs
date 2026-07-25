@@ -131,6 +131,42 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
         ctx.diagnostics.push(Diagnostic::info(msg, 3));
     }
 
+    // Footnotes / endnotes: the references and bodies are PARSED and preserved in
+    // the source package, but the native model has no note construct (there is no
+    // "insert footnote" mutation and no page-bottom note area), so nothing is
+    // placed. Say so rather than dropping them silently — and never fake a
+    // rendering by inlining note text into the flow.
+    if !doc.notes.is_empty() {
+        let footnotes = doc.notes.iter().filter(|n| !n.endnote).count();
+        let endnotes = doc.notes.len() - footnotes;
+        let refs: usize = doc
+            .body
+            .iter()
+            .filter_map(|b| match b {
+                Block::Paragraph(p) => Some(p),
+                _ => None,
+            })
+            .flat_map(|p| p.runs.iter())
+            .filter(|r| r.note_ref.is_some())
+            .count();
+        let mut msg = String::new();
+        if footnotes > 0 {
+            msg.push_str(&format!("{footnotes} footnote(s)"));
+        }
+        if endnotes > 0 {
+            if !msg.is_empty() {
+                msg.push_str(" + ");
+            }
+            msg.push_str(&format!("{endnotes} endnote(s)"));
+        }
+        msg.push_str(&format!(
+            " parsed ({refs} in-text reference(s)); the note text is preserved in \
+             the source .docx and round-trips on save, but is NOT placed on the \
+             page — the native model has no footnote construct yet"
+        ));
+        ctx.diagnostics.push(Diagnostic::info(msg, 3));
+    }
+
     let section = lower_section(doc.sections.first());
     let styles = ctx.ordered_styles();
 

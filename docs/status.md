@@ -313,3 +313,21 @@ unchanged.
 patched, and the locator assumes tables are not NESTED — a `<w:tbl>` inside a
 `<w:tc>` would mis-count, so nested-table cells are never addressed by the
 bindings.
+
+## Read-path fidelity — footnotes / endnotes
+
+`w:footnoteReference` / `w:endnoteReference` runs were silently dropped (they fell
+into the importer's catch-all with no diagnostic). Now they are modelled:
+`docx-import` resolves the `footnotes`/`endnotes` parts through the document rels,
+parses each note's body paragraphs into `docx-core::Note` (skipping Word's
+`separator` / `continuationSeparator` pseudo-notes), and stamps the referencing
+run with `note_ref` (the `w:id`).
+
+Lowering emits an **honest diagnostic** naming the footnote/endnote counts and the
+number of in-text references, and states plainly that the note text is preserved
+in the source `.docx` (so it round-trips on save) but is **not placed on the page**
+— the native model has no footnote construct and there is no "insert footnote"
+mutation. Note text is deliberately NOT inlined into the flow; a conformance test
+asserts it never appears there, so the gap stays visible rather than faked.
+
+Verified through the real wasm artifact (`footnote` fixture).

@@ -26,7 +26,7 @@
 //! an unparseable main document part is a hard error.
 
 use docx_core::{
-    Block, CellPath, DocxDocument, Image, Justification, ListKind, ListMarker, ParaProps,
+    Block, CellPath, DocxDocument, Image, Justification, ListKind, ListMarker, Note, ParaProps,
     Paragraph, Run, RunProps, RunSource, Section, Style, StyleCatalog, StyleKind, TabStop,
     VertAlign,
 };
@@ -137,7 +137,7 @@ pub fn import_docx_with_package(
 
     // Body mapping borrows the package (image resolution); scope the borrow so
     // the package can be moved into the return value once mapping is done.
-    let (body, sections) = {
+    let (body, sections, notes) = {
         let doc_rels = pkg
             .part(&rels::rels_part_name(&main_part))
             .map(rels::Relationships::parse)
@@ -150,19 +150,105 @@ pub fn import_docx_with_package(
                 base_dir: part_dir(&main_part).to_string(),
             },
         };
-        wml_doc
+        let (body, sections) = wml_doc
             .body
             .as_deref()
             .map(|b| map_body(b, &ctx))
-            .unwrap_or_else(|| (Vec::new(), Vec::new()))
+            .unwrap_or_else(|| (Vec::new(), Vec::new()));
+        let notes = map_notes(&pkg, &main_part, &ctx);
+        (body, sections, notes)
     };
 
     let doc = DocxDocument {
+        notes,
         body,
         styles,
         sections,
     };
     Ok((doc, pkg, main_part))
+}
+
+/// Parse the footnotes + endnotes parts (both optional) into `docx-core` notes.
+/// Word ships two SEPARATOR pseudo-notes (`w:type` separator /
+/// continuationSeparator, conventionally ids -1 and 0) that carry no real
+/// content — those are skipped.
+fn map_notes(pkg: &OpcPackage, main_part: &str, ctx: &ImportCtx) -> Vec<Note> {
+    fn is_separator(t: &Option<wml::FootnoteEndnoteValues>) -> bool {
+        matches!(
+            t,
+            Some(wml::FootnoteEndnoteValues::Separator)
+                | Some(wml::FootnoteEndnoteValues::ContinuationSeparator)
+                | Some(wml::FootnoteEndnoteValues::ContinuationNotice)
+        )
+    }
+    let mut out = Vec::new();
+
+    if let Some(name) = note_part(pkg, main_part, "/footnotes") {
+        if let Some(parsed) = pkg
+            .part(&name)
+            .and_then(|b| parse_root::<wml::Footnotes>(&name, b).ok())
+        {
+            for f in &parsed.footnote {
+                if is_separator(&f.r#type) {
+                    continue;
+                }
+                out.push(Note {
+                    id: f.id,
+                    endnote: false,
+                    paragraphs: note_paragraphs(&f.footnote_choice, ctx),
+                });
+            }
+        }
+    }
+    if let Some(name) = note_part(pkg, main_part, "/endnotes") {
+        if let Some(parsed) = pkg
+            .part(&name)
+            .and_then(|b| parse_root::<wml::Endnotes>(&name, b).ok())
+        {
+            for e in &parsed.endnote {
+                if is_separator(&e.r#type) {
+                    continue;
+                }
+                out.push(Note {
+                    id: e.id,
+                    endnote: true,
+                    paragraphs: endnote_paragraphs(&e.endnote_choice, ctx),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// A footnote's body paragraphs. Cell provenance is `None` and the body ordinal
+/// is 0: note content lives in its own part, so it is not save-back patchable.
+fn note_paragraphs(choices: &[wml::FootnoteChoice], ctx: &ImportCtx) -> Vec<Paragraph> {
+    choices
+        .iter()
+        .filter_map(|c| match c {
+            wml::FootnoteChoice::Paragraph(p) => Some(map_paragraph(p, ctx, 0, None)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An endnote's body paragraphs (the endnote choice is a distinct generated enum).
+fn endnote_paragraphs(choices: &[wml::EndnoteChoice], ctx: &ImportCtx) -> Vec<Paragraph> {
+    choices
+        .iter()
+        .filter_map(|c| match c {
+            wml::EndnoteChoice::Paragraph(p) => Some(map_paragraph(p, ctx, 0, None)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A notes part name (via the main document's `.rels`), by relationship suffix.
+fn note_part(pkg: &OpcPackage, main_part: &str, suffix: &str) -> Option<String> {
+    let rels_bytes = pkg.part(&rels::rels_part_name(main_part))?;
+    let rels = rels::Relationships::parse(rels_bytes);
+    let r = rels.by_type_suffix(suffix)?;
+    Some(resolve_target(part_dir(main_part), &r.target))
 }
 
 /// The numbering part name (via the main document's `.rels`).
@@ -575,6 +661,7 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
     }
     let mut text = String::new();
     let mut image = None;
+    let mut note_ref = None;
     for c in &r.run_choice {
         match c {
             wml::RunChoice::Text(t) => {
@@ -590,6 +677,10 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
                     image = map_drawing(d, ctx);
                 }
             }
+            // A footnote/endnote reference mark — the run carries no text; the
+            // note body lives in the notes part, keyed by this id.
+            wml::RunChoice::FootnoteReference(f) => note_ref = Some(f.id),
+            wml::RunChoice::EndnoteReference(e) => note_ref = Some(e.id),
             _ => {}
         }
     }
@@ -601,6 +692,7 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
         hyperlink: None,
         // The caller (map_paragraph) stamps the real provenance from context.
         source: None,
+        note_ref,
     }
 }
 

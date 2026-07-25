@@ -39,6 +39,10 @@ use serde::{Deserialize, Serialize};
 /// sections (page geometry).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DocxDocument {
+    /// Footnotes + endnotes from the notes parts, keyed by `w:id`
+    /// ([`Run::note_ref`]). Empty when the document has none.
+    #[serde(default)]
+    pub notes: Vec<Note>,
     /// Body content in document order.
     pub body: Vec<Block>,
     /// The style catalog from `styles.xml` (`docDefaults` + named styles).
@@ -98,6 +102,18 @@ pub struct Paragraph {
     pub source_cell: Option<CellPath>,
 }
 
+/// A footnote or endnote (`w:footnote` / `w:endnote` in the notes part), keyed by
+/// the `w:id` its in-text reference carries.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Note {
+    /// `@w:id` — matches [`Run::note_ref`].
+    pub id: i64,
+    /// `true` for an endnote, `false` for a footnote.
+    pub endnote: bool,
+    /// The note's body paragraphs.
+    pub paragraphs: Vec<Paragraph>,
+}
+
 /// A list marker, resolved from `w:numPr` + `numbering.xml` at import time so the
 /// lowering stays pure (no `numbering.xml` access downstream).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -155,6 +171,11 @@ pub struct Run {
     /// `None` on runs not produced by the importer (e.g. test literals).
     #[serde(default)]
     pub source: Option<RunSource>,
+    /// When this run carries a footnote/endnote reference (`w:footnoteReference`
+    /// / `w:endnoteReference`), the referenced note's `w:id` — resolvable against
+    /// [`DocxDocument::notes`].
+    #[serde(default)]
+    pub note_ref: Option<i64>,
 }
 
 /// An inline image (`w:drawing` → `wp:inline`/`wp:anchor` → a picture blip),

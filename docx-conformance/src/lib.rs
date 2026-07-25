@@ -349,6 +349,46 @@ pub fn field_hyperlink_docx() -> Vec<u8> {
     ])
 }
 
+/// A document with a footnote: an in-text `w:footnoteReference` plus a
+/// `word/footnotes.xml` carrying the note body (and Word's two separator
+/// pseudo-notes, which must be skipped).
+pub fn footnote_docx() -> Vec<u8> {
+    let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>
+</Types>"#;
+    let doc_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>
+</Relationships>"#;
+    let document = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">Body with a note</w:t></w:r>
+      <w:r><w:footnoteReference w:id="2"/></w:r>
+      <w:r><w:t xml:space="preserve"> and more.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+    let footnotes = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+  <w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+  <w:footnote w:id="2"><w:p><w:r><w:t>The note body.</w:t></w:r></w:p></w:footnote>
+</w:footnotes>"#;
+    zip_parts(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", doc_rels.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/footnotes.xml", footnotes.as_bytes()),
+    ])
+}
+
 /// The smallest well-formed document: one paragraph, one run, no styles part.
 pub fn one_paragraph_docx() -> Vec<u8> {
     let document = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

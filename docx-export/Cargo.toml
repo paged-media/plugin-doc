@@ -1,0 +1,17 @@
+[package]
+name = "docx-export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "paged.doc M2 edited save-back: native (edited) Lowered IR + the retained OOXML → a byte-level TARGETED PATCH of word/document.xml (only changed w:t/w:rPr subtrees rewritten; every other part + untouched subtree byte-identical). quick-xml as a locator only — never links the ooxmlsdk serializer."
+
+[lints]
+workspace = true
+
+[dependencies]
+docx-core.workspace = true
+paged-ooxml.workspace = true
+quick-xml.workspace = true
+serde.workspace = true

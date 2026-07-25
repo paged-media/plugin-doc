@@ -117,6 +117,7 @@ name = "docx-conformance"
 version = "0.0.0"
 dependencies = [
  "docx-core",
+ "docx-export",
  "docx-import",
  "docx-js",
  "docx-lower",
@@ -128,6 +129,16 @@ dependencies = [
 name = "docx-core"
 version = "0.0.0"
 dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "docx-export"
+version = "0.0.0"
+dependencies = [
+ "docx-core",
+ "paged-ooxml",
+ "quick-xml",
  "serde",
 ]
 
@@ -145,8 +156,10 @@ version = "0.0.0"
 dependencies = [
  "console_error_panic_hook",
  "docx-core",
+ "docx-export",
  "docx-import",
  "docx-lower",
+ "paged-ooxml",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",

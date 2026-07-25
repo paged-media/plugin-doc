@@ -17,6 +17,8 @@ workspace = true
 docx-core.workspace = true
 docx-import.workspace = true
 docx-lower.workspace = true
+docx-export.workspace = true
+paged-ooxml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

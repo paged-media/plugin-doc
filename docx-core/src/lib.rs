@@ -71,6 +71,11 @@ pub struct Paragraph {
     /// `w:pPr/w:numPr` resolved through `numbering.xml` — the list marker this
     /// paragraph belongs to, if any.
     pub list: Option<ListMarker>,
+    /// Provenance for M2 save-back: this paragraph's ordinal among the direct
+    /// `<w:p>` children of `<w:body>` (0-based). `0` for table-cell paragraphs
+    /// (which are not body-level and are non-patchable in the current increment).
+    #[serde(default)]
+    pub source_para_ord: u32,
 }
 
 /// A list marker, resolved from `w:numPr` + `numbering.xml` at import time so the
@@ -94,6 +99,21 @@ pub enum ListKind {
     Numbered,
 }
 
+/// Where a run came from in `word/document.xml` — the provenance the M2 save-back
+/// patcher needs to locate the exact `<w:r>` to rewrite. Only a `DirectRun`
+/// (a direct `<w:r>` child of the `<w:p>`, at ordinal `n`) is patchable in the
+/// current increment; runs flattened out of `<w:hyperlink>`/`<w:fldSimple>`/complex
+/// fields sit on a different locator path and are marked non-patchable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RunSource {
+    /// The `n`-th direct `<w:r>` child of the paragraph (0-based).
+    DirectRun(u32),
+    /// Flattened out of a `<w:hyperlink>` element.
+    Hyperlink,
+    /// Flattened out of a `<w:fldSimple>` or a complex `fldChar` field.
+    Field,
+}
+
 /// A Word run (`w:r`): direct character formatting plus its text.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Run {
@@ -111,6 +131,10 @@ pub struct Run {
     /// underline on lowering; the clickable link itself is preserved in the
     /// source `.docx` (a native clickable-hyperlink door is future work).
     pub hyperlink: Option<String>,
+    /// Provenance for M2 save-back: which source `<w:r>` this run came from.
+    /// `None` on runs not produced by the importer (e.g. test literals).
+    #[serde(default)]
+    pub source: Option<RunSource>,
 }
 
 /// An inline image (`w:drawing` → `wp:inline`/`wp:anchor` → a picture blip),

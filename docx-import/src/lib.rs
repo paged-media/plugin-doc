@@ -27,7 +27,7 @@
 
 use docx_core::{
     Block, DocxDocument, Image, Justification, ListKind, ListMarker, ParaProps, Paragraph, Run,
-    RunProps, Section, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
+    RunProps, RunSource, Section, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
@@ -103,6 +103,16 @@ fn mime_for(part_name: &str) -> String {
 
 /// Import a `.docx`/`.dotx` package into the semantic model.
 pub fn import_docx(bytes: &[u8]) -> Result<DocxDocument, OoxmlError> {
+    import_docx_with_package(bytes).map(|(doc, _pkg, _main)| doc)
+}
+
+/// Import a `.docx`/`.dotx` and ALSO return the retained [`OpcPackage`] and the
+/// main-document part name — the two things M2 edited save-back needs to patch
+/// `word/document.xml` in place and re-emit every other part verbatim. The plain
+/// [`import_docx`] discards both.
+pub fn import_docx_with_package(
+    bytes: &[u8],
+) -> Result<(DocxDocument, OpcPackage, String), OoxmlError> {
     let pkg = OpcPackage::read(bytes)?;
 
     // Resolve the main document part via the root relationships.
@@ -124,31 +134,34 @@ pub fn import_docx(bytes: &[u8]) -> Result<DocxDocument, OoxmlError> {
         .map(|n| NumberingTable::from_numbering(&n))
         .unwrap_or_default();
 
-    // The main document's rels resolve `r:embed` image refs to media parts.
-    let doc_rels = pkg
-        .part(&rels::rels_part_name(&main_part))
-        .map(rels::Relationships::parse)
-        .unwrap_or_default();
-    let ctx = ImportCtx {
-        numbering,
-        images: ImageResolver {
-            rels: doc_rels,
-            package: &pkg,
-            base_dir: part_dir(&main_part).to_string(),
-        },
+    // Body mapping borrows the package (image resolution); scope the borrow so
+    // the package can be moved into the return value once mapping is done.
+    let (body, sections) = {
+        let doc_rels = pkg
+            .part(&rels::rels_part_name(&main_part))
+            .map(rels::Relationships::parse)
+            .unwrap_or_default();
+        let ctx = ImportCtx {
+            numbering,
+            images: ImageResolver {
+                rels: doc_rels,
+                package: &pkg,
+                base_dir: part_dir(&main_part).to_string(),
+            },
+        };
+        wml_doc
+            .body
+            .as_deref()
+            .map(|b| map_body(b, &ctx))
+            .unwrap_or_else(|| (Vec::new(), Vec::new()))
     };
 
-    let (body, sections) = wml_doc
-        .body
-        .as_deref()
-        .map(|b| map_body(b, &ctx))
-        .unwrap_or_else(|| (Vec::new(), Vec::new()));
-
-    Ok(DocxDocument {
+    let doc = DocxDocument {
         body,
         styles,
         sections,
-    })
+    };
+    Ok((doc, pkg, main_part))
 }
 
 /// The numbering part name (via the main document's `.rels`).
@@ -273,9 +286,16 @@ fn numbering_sample(fmt: &wml::NumberFormatValues) -> &'static str {
 
 fn map_body(body: &wml::Body, ctx: &ImportCtx) -> (Vec<Block>, Vec<Section>) {
     let mut blocks = Vec::new();
+    // Ordinal among the direct `<w:p>` children of `<w:body>` — the save-back
+    // patcher's paragraph key. Only body paragraphs advance it (tables and any
+    // dropped body child do not), matching "the Nth `<w:p>` under `<w:body>`".
+    let mut para_ord = 0u32;
     for choice in &body.body_choice {
         match choice {
-            wml::BodyChoice::Paragraph(p) => blocks.push(Block::Paragraph(map_paragraph(p, ctx))),
+            wml::BodyChoice::Paragraph(p) => {
+                blocks.push(Block::Paragraph(map_paragraph(p, ctx, para_ord)));
+                para_ord += 1;
+            }
             wml::BodyChoice::Table(t) => {
                 blocks.push(Block::Table(map_table(t, ctx)));
             }
@@ -290,7 +310,7 @@ fn map_body(body: &wml::Body, ctx: &ImportCtx) -> (Vec<Block>, Vec<Section>) {
     (blocks, sections)
 }
 
-fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx) -> Paragraph {
+fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx, para_ord: u32) -> Paragraph {
     let (style_id, props) = match p.paragraph_properties.as_deref() {
         Some(pp) => (
             pp.paragraph_style_id.as_ref().map(|s| s.val.clone()),
@@ -326,9 +346,17 @@ fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx) -> Paragraph {
     // A run bearing a `fldChar`/`instrText` is a control run (no display text);
     // runs in an active HYPERLINK field's result become links.
     let mut fields: Vec<FieldFrame> = Vec::new();
+    // Ordinal of the source `<w:r>` among the paragraph's DIRECT children — the
+    // key the save-back patcher locates on. EVERY `ParagraphChoice::WRun`
+    // consumes one (control/field-char runs included), so the count tracks the
+    // real XML `<w:r>` child index; `<w:hyperlink>`/`<w:fldSimple>`-wrapped runs
+    // sit on a different path and are marked non-patchable instead.
+    let mut wrun_ord = 0u32;
     for choice in &p.paragraph_choice {
         match choice {
             wml::ParagraphChoice::WRun(r) => {
+                let ord = wrun_ord;
+                wrun_ord += 1;
                 if let Some(kind) = run_field_char(r) {
                     match kind {
                         wml::FieldCharValues::Begin => fields.push(FieldFrame::default()),
@@ -351,6 +379,7 @@ fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx) -> Paragraph {
                     continue;
                 }
                 let mut run = map_run(r, ctx);
+                run.source = Some(RunSource::DirectRun(ord));
                 if let Some(f) = fields.last() {
                     if f.separated {
                         if let Some(url) = &f.result_url {
@@ -366,6 +395,7 @@ fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx) -> Paragraph {
                     if let wml::HyperlinkChoice::WRun(r) = hc {
                         let mut run = map_run(r, ctx);
                         run.hyperlink = target.clone();
+                        run.source = Some(RunSource::Hyperlink);
                         runs.push(run);
                     }
                 }
@@ -378,6 +408,7 @@ fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx) -> Paragraph {
                     if let wml::SimpleFieldChoice::WRun(r) = c {
                         let mut run = map_run(r, ctx);
                         run.hyperlink = url.clone();
+                        run.source = Some(RunSource::Field);
                         runs.push(run);
                     }
                 }
@@ -391,6 +422,7 @@ fn map_paragraph(p: &wml::Paragraph, ctx: &ImportCtx) -> Paragraph {
         props,
         runs,
         list,
+        source_para_ord: para_ord,
     }
 }
 
@@ -445,7 +477,9 @@ fn map_cell(c: &wml::TableCell, ctx: &ImportCtx) -> docx_core::TableCell {
         .table_cell_choice
         .iter()
         .filter_map(|cc| match cc {
-            wml::TableCellChoice::Paragraph(p) => Some(map_paragraph(p, ctx)),
+            // Table-cell paragraphs are not body-level; `0` is a placeholder —
+            // cell content is non-patchable in the current save-back increment.
+            wml::TableCellChoice::Paragraph(p) => Some(map_paragraph(p, ctx, 0)),
             _ => None,
         })
         .collect();
@@ -541,6 +575,8 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
         text,
         image,
         hyperlink: None,
+        // The caller (map_paragraph) stamps the real provenance from context.
+        source: None,
     }
 }
 

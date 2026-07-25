@@ -15,6 +15,16 @@ OUT=packages/doc-bundle/bin
 BUDGET=$((8 * 1024 * 1024))
 mkdir -p "$OUT"
 
+# Budget guard: the save-back patcher (docx-export) MUST stay a byte-level splice
+# and never call the ooxmlsdk serializer — the first `write_to`/`to_xml`/
+# `serialize_root` monomorphization links the whole WML write codegen and blows
+# the 8 MiB budget. Fail fast on an actual call (comments/descriptions excluded).
+if grep -rnE 'serialize_root\(|\.write_to\(|\.to_xml\(' docx-export/src/ >/dev/null; then
+  echo "error: docx-export calls the ooxmlsdk serializer — save-back must byte-splice" >&2
+  grep -rnE 'serialize_root\(|\.write_to\(|\.to_xml\(' docx-export/src/ >&2
+  exit 1
+fi
+
 cargo build --release --target wasm32-unknown-unknown -p docx-js
 
 # Pin check: wasm-bindgen-cli must match the Cargo.lock wasm-bindgen.

@@ -19,14 +19,17 @@
 //! The plain-Rust engine core behind the wasm surface.
 //!
 //! `DocSession` holds a loaded `.docx` (its retained bytes for the preservation
-//! invariant, its parsed semantic model, and the lowering). All real work lives
-//! here so it is native-testable; `lib.rs`'s `#[wasm_bindgen]` layer is a pure
-//! forwarding shim.
+//! invariant, its parsed semantic model, the lowering, and — for M2 edited
+//! save-back — the retained OPC package + the native↔OOXML provenance bindings).
+//! All real work lives here so it is native-testable; `lib.rs`'s
+//! `#[wasm_bindgen]` layer is a pure forwarding shim.
 
 use docx_core::DocxDocument;
-use docx_import::import_docx;
+use docx_export::{apply_edits, build_bindings, DocxBindings, EditSet};
+use docx_import::import_docx_with_package;
 use docx_lower::ir::LoweredDoc;
 use docx_lower::lower;
+use paged_ooxml::OpcPackage;
 
 /// A loaded Word document session.
 pub struct DocSession {
@@ -35,16 +38,28 @@ pub struct DocSession {
     source: Vec<u8>,
     /// The parsed semantic model.
     model: DocxDocument,
+    /// The retained OPC package — the save-back patch target (`set_part` +
+    /// `write`, untouched parts re-emitted byte-identical).
+    package: OpcPackage,
+    /// The main document part name (e.g. `word/document.xml`).
+    main_part: String,
+    /// The native↔OOXML provenance map for edited save-back.
+    bindings: DocxBindings,
 }
 
 impl DocSession {
     /// Load a `.docx`/`.dotx` package. Returns a human-readable error string on a
     /// hard failure (unreadable container / unparseable main document).
     pub fn load(bytes: &[u8]) -> Result<DocSession, String> {
-        let model = import_docx(bytes).map_err(|e| e.to_string())?;
+        let (model, package, main_part) =
+            import_docx_with_package(bytes).map_err(|e| e.to_string())?;
+        let bindings = build_bindings(&model);
         Ok(DocSession {
             source: bytes.to_vec(),
             model,
+            package,
+            main_part,
+            bindings,
         })
     }
 
@@ -68,9 +83,25 @@ impl DocSession {
         self.model.body.len()
     }
 
-    /// Zero-edit save-back: re-emit the retained source verbatim. (Edited
-    /// save-back — projecting native changes back to WordprocessingML — is M2.)
+    /// Zero-edit save-back: re-emit the retained source verbatim.
     pub fn save_verbatim(&self) -> Vec<u8> {
         self.source.clone()
+    }
+
+    /// M2 edited save-back: patch the given run edits into the retained package
+    /// (only the changed `<w:t>`/`<w:rPr>` subtrees rewritten; every other part +
+    /// untouched subtree byte-identical) and return the saved `.docx` bytes.
+    /// Non-patchable edits are skipped. A cheap clone of the package keeps the
+    /// session reusable for a subsequent save.
+    ///
+    /// DEFERRED (RFI DOC-03): the `EditSet` here is supplied by the caller
+    /// (tests today). Wiring it from the LIVE editor needs a structured
+    /// whole-document read door — `host.nativeDocument.readModel()` returns
+    /// opaque core-native bytes this isolation-clean plugin cannot diff.
+    pub fn save_edited(&self, edits: &EditSet) -> Result<Vec<u8>, String> {
+        let mut package = self.package.clone();
+        apply_edits(&mut package, &self.main_part, &self.bindings, edits)
+            .map_err(|e| e.to_string())?;
+        package.write().map_err(|e| e.to_string())
     }
 }

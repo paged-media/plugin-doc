@@ -1,0 +1,163 @@
+/*
+ * This file is part of paged (https://paged.media).
+ *
+ * paged is free software: you may redistribute it and/or modify it under the
+ * terms of the GNU Affero General Public License, version 3, as published by
+ * the Free Software Foundation, OR under the Paged Media Enterprise License
+ * (PMEL), a commercial license available from And The Next GmbH. Full
+ * copyright and license information is available in LICENSE.md, distributed
+ * with this source code.
+ *
+ * paged is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the licenses for details.
+ *
+ *  @copyright  Copyright (c) And The Next GmbH
+ *  @license    AGPL-3.0-only OR Paged Media Enterprise License (PMEL)
+ */
+
+//! M2 edited save-back vertical slice: a `.docx` imports, two run edits (a text
+//! change and a property change) are applied, and the saved package is asserted
+//! to (a) carry exactly those edits, (b) leave every other part AND every
+//! untouched subtree of `word/document.xml` byte-identical, and (c) round-trip
+//! through re-import. The `EditSet` is hand-authored here — the LIVE editor
+//! wiring is the deferred DOC-03 seam.
+
+use docx_conformance::memo_docx;
+use docx_core::{Block, RunProps};
+use docx_export::{EditSet, RunEdit};
+use docx_import::import_docx;
+use docx_js::DocSession;
+use paged_ooxml::OpcPackage;
+
+fn body_para(doc: &docx_core::DocxDocument, i: usize) -> &docx_core::Paragraph {
+    match &doc.body[i] {
+        Block::Paragraph(p) => p,
+        _ => panic!("body[{i}] is not a paragraph"),
+    }
+}
+
+#[test]
+fn edited_save_back_patches_targets_and_preserves_everything_else() {
+    let original = memo_docx();
+    let session = DocSession::load(&original).unwrap();
+
+    // Edit 1: replace p0's only run text. Edit 2: toggle bold OFF the "bold red"
+    // run (p2, run 1) — its synthesized bold+red style projects to a direct
+    // `<w:rPr>` carrying only the color.
+    let edits = EditSet {
+        runs: vec![
+            RunEdit::text(0, 0, "Edited body text."),
+            RunEdit::props(
+                2,
+                1,
+                RunProps {
+                    color: Some("FF0000".into()),
+                    ..Default::default()
+                },
+            ),
+        ],
+    };
+    let saved = session.save_edited(&edits).unwrap();
+
+    let saved_pkg = OpcPackage::read(&saved).unwrap();
+    let doc_xml =
+        std::str::from_utf8(saved_pkg.part("word/document.xml").expect("document.xml")).unwrap();
+
+    // (a) the two targets changed.
+    assert!(doc_xml.contains(">Edited body text.<"), "p0 text replaced");
+    assert!(!doc_xml.contains(">Plain body text.<"), "old p0 text gone");
+    assert!(
+        doc_xml.contains(r#"<w:rPr><w:color w:val="FF0000"/></w:rPr><w:t>bold red</w:t>"#),
+        "bold dropped, color kept, text intact:\n{doc_xml}"
+    );
+    assert!(
+        !doc_xml.contains("<w:b/>"),
+        "no bold toggle remains anywhere"
+    );
+
+    // (b) preservation — every OTHER part decompressed-identical.
+    let orig_pkg = OpcPackage::read(&original).unwrap();
+    for name in orig_pkg.file_names() {
+        if name == "word/document.xml" {
+            continue;
+        }
+        assert_eq!(
+            orig_pkg.part(name),
+            saved_pkg.part(name),
+            "part {name} must be byte-identical"
+        );
+    }
+    // ...and within document.xml, every untouched subtree survives verbatim.
+    assert!(doc_xml.contains(r#"<w:pStyle w:val="Heading1"/>"#));
+    assert!(doc_xml.contains(">A Centered Heading<"));
+    assert!(doc_xml.contains("<w:sectPr>"));
+    assert!(
+        doc_xml.contains(">Mix of normal and <"),
+        "p2 run 0 untouched"
+    );
+    assert!(doc_xml.contains("> text.<"), "p2 run 2 untouched");
+
+    // (c) round-trip: re-import reflects exactly the edits and nothing else.
+    let re = import_docx(&saved).unwrap();
+    assert_eq!(body_para(&re, 0).runs[0].text, "Edited body text.");
+    assert_eq!(body_para(&re, 1).runs[0].text, "A Centered Heading");
+    let p2 = body_para(&re, 2);
+    assert_eq!(p2.runs[0].text, "Mix of normal and ");
+    assert_eq!(p2.runs[1].text, "bold red");
+    assert_eq!(p2.runs[1].props.bold, None, "bold toggled off");
+    assert_eq!(
+        p2.runs[1].props.color.as_deref(),
+        Some("FF0000"),
+        "color kept"
+    );
+    assert_eq!(p2.runs[2].text, " text.");
+}
+
+#[test]
+fn zero_edit_save_back_still_byte_identical() {
+    let original = memo_docx();
+    let session = DocSession::load(&original).unwrap();
+    // An empty edit set patches nothing; verbatim carry-through holds.
+    let saved = session.save_edited(&EditSet::default()).unwrap();
+    let orig_pkg = OpcPackage::read(&original).unwrap();
+    let saved_pkg = OpcPackage::read(&saved).unwrap();
+    for name in orig_pkg.file_names() {
+        assert_eq!(orig_pkg.part(name), saved_pkg.part(name), "part {name}");
+    }
+}
+
+#[test]
+fn bindings_run_counts_match_the_lowered_story() {
+    // `build_bindings` replays lowering's `!text.is_empty()` filter; if it drifts,
+    // `(block, run)` coordinates would silently mis-resolve. Assert alignment.
+    let (model, _pkg, _main) = docx_import::import_docx_with_package(&memo_docx()).unwrap();
+    let bindings = docx_export::build_bindings(&model);
+    let lowered = docx_lower::lower(&model);
+    assert_eq!(bindings.blocks.len(), lowered.story.blocks.len());
+    for (i, block) in lowered.story.blocks.iter().enumerate() {
+        if let docx_lower::ir::LoweredBlock::Paragraph(p) = block {
+            match &bindings.blocks[i] {
+                docx_export::BlockBinding::Paragraph { runs, .. } => {
+                    assert_eq!(runs.len(), p.runs.len(), "run-count drift at block {i}");
+                }
+                _ => panic!("block {i} should bind as a paragraph"),
+            }
+        }
+    }
+}
+
+#[test]
+fn non_patchable_target_is_skipped_not_errored() {
+    let original = memo_docx();
+    let session = DocSession::load(&original).unwrap();
+    // Out-of-range block/run resolves to nothing → skipped, document unchanged.
+    let edits = EditSet {
+        runs: vec![RunEdit::text(99, 0, "nowhere")],
+    };
+    let saved = session.save_edited(&edits).unwrap();
+    let saved_pkg = OpcPackage::read(&saved).unwrap();
+    let doc_xml = std::str::from_utf8(saved_pkg.part("word/document.xml").unwrap()).unwrap();
+    assert!(doc_xml.contains(">Plain body text.<"), "unchanged");
+    assert!(!doc_xml.contains("nowhere"));
+}

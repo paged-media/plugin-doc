@@ -71,6 +71,23 @@ mod wasm {
                 .map(|s| s.save_verbatim())
                 .ok_or_else(|| JsValue::from_str("no document loaded"))
         }
+
+        /// M2 edited save-back: apply a JSON `EditSet` (keyed by lowered story
+        /// `(block, run)` coordinates) as a targeted patch and return the saved
+        /// `.docx` bytes. DEFERRED (RFI DOC-03): the editor cannot yet supply
+        /// this — `host.nativeDocument.readModel()` hands back opaque core-native
+        /// bytes, so today the `EditSet` is produced only by native tests.
+        pub fn save_edited(&self, edits_json: &str) -> Result<Vec<u8>, JsValue> {
+            let session = self
+                .session
+                .as_ref()
+                .ok_or_else(|| JsValue::from_str("no document loaded"))?;
+            let edits: docx_export::EditSet =
+                serde_json::from_str(edits_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            session
+                .save_edited(&edits)
+                .map_err(|e| JsValue::from_str(&e))
+        }
     }
 
     impl Default for DocEngine {

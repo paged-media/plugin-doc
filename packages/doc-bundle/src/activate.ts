@@ -111,6 +111,14 @@ export function activate(host: BundleHost): BundleHandle {
         title: "Word document (.docx)",
         extension: ".docx",
         mimeType: DOCX_MIME,
+        // Zero-edit passthrough. The M2 edited-save-back ENGINE exists and is
+        // proven (docx-js `save_edited` byte-splices a targeted patch; see
+        // docx-conformance tests/save_back.rs), but wiring it here is DEFERRED
+        // (RFI DOC-03): the exporter hook gets no document handle and
+        // `host.nativeDocument.readModel()` returns opaque core-native bytes this
+        // isolation-clean plugin cannot diff into an EditSet. When a structured
+        // whole-document read door lands, diff the edited LoweredDoc against the
+        // import baseline → EditSet → `engine.save_edited(...)`.
         export: () =>
           last ? { bytes: last.source, fileName: last.fileName } : null,
       }).dispose,

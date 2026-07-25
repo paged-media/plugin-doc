@@ -154,10 +154,43 @@ two conventions diverge inside core today (a pre-existing split worth an RFI not
 paged.doc issues a single `insertText` at the base offset then contiguous-char
 range ops, so it sits entirely on the contiguous side.
 
+## M2 — edited save-back, Increment 1 (the targeted-patch spine)
+
+- **The engine exists and is proven.** `docx-js` `save_edited(EditSet)` writes run
+  edits back into the retained `.docx` as a **byte-level targeted patch**: only the
+  changed `<w:t>`/`<w:rPr>` subtrees are rewritten; every other part AND every
+  untouched subtree of `word/document.xml` stays **byte-identical**. New crate
+  `docx-export` (`splice.rs`) uses quick-xml purely as a *locator* — it computes
+  the source byte ranges to replace, raw-copies everything outside them, and splices
+  hand-built fragments into the holes (byte-identity by construction). It never
+  calls the ooxmlsdk serializer (`build-wasm.sh` guards this — linking `write_to`
+  would blow the budget; wasm is 8.12 MiB / 8 MiB budget).
+- **Provenance.** `docx-import` stamps each run's source `<w:r>` ordinal
+  (`Run.source`) and each paragraph's body ordinal (`Paragraph.source_para_ord`);
+  `docx-export::build_bindings` projects them onto lowered story `(block, run)`
+  coordinates (replaying lowering's empty-run filter — a conformance test guards
+  against drift). `DocSession` now retains the `OpcPackage` + bindings.
+- **Style round-trip.** A synthesized `docx-auto-cN` style projects back to a
+  **direct `<w:rPr>`** on save (so Word gets no synthetic-style clutter);
+  `rpr.rs` renders `RunProps → <w:rPr>` as the exact inverse of the import parse.
+- **Verified end-to-end** (`docx-conformance/tests/save_back.rs`): import the memo
+  fixture, change one run's text + toggle bold off another, save, and assert the
+  targets changed, every other part + untouched subtree byte-identical, and the
+  edits survive a re-import round-trip. Plus `splice`/`rpr` unit tests (exact
+  byte-identity) and the drift guard.
+- **Covered:** run text change + run property change on direct `<w:r>` children.
+  **Deferred (labelled):** structural insert/delete of paragraphs/runs/tables;
+  editing hyperlink/field runs and table-cell content (non-patchable bindings);
+  multi-`<w:t>` runs; paragraph `<w:pPr>` edits; and — the one platform seam —
+  the LIVE editor wiring (below).
+
 ## Deferred (labelled, never faked)
 
-- **Edited save-back** (native → WordprocessingML projection, targeted patch) —
-  **M2**. The exporter re-emits the retained package verbatim (zero-edit only).
+- **Edited save-back — LIVE wiring** (Increment 1 engine DONE above). The bundle
+  exporter still re-emits verbatim: it gets no document handle, and
+  `host.nativeDocument.readModel()` returns opaque core-native `.pgm` bytes this
+  isolation-clean plugin cannot diff. Needs the structured read door (DOC-03,
+  below); then diff the edited `LoweredDoc` → `EditSet` → `save_edited`.
 - **Standalone true-open** — degrades to embedded placement + a diagnostic when
   `document.openNative@1` is unwired (the common case today); the `docx →
   native-bytes` producer is a future `plugin-publish` sibling.
@@ -176,5 +209,11 @@ range ops, so it sits entirely on the contiguous side.
   (conditional — live only when the editor injects a `NativeDocumentBackend`). The
   base-idea listed them as missing; they landed after it was drafted. The importer
   declares `openNative`/`readNative` and probes `host.supports(...)`.
+- **DOC-03 — structured whole-document read (NEW ask, M2 blocker).** `readModel`
+  returns the core-owned `.pgm` model bytes, which an isolation-clean plugin cannot
+  parse or diff. Edited save-back needs the edited stories' **text + styles** back
+  in a structured form (JSON, or re-lowered to the plugin's `LoweredDoc`), so the
+  plugin can diff against its import baseline and produce an `EditSet`. Until then
+  the save-back engine (proven) runs test-driven only.
 - **DOC-04** (Word-reference fidelity harness), **DOC-05** (ratify embed-or-open as
   a platform pattern), **DOC-06** (C-1 per-glyph faithful text) remain open.

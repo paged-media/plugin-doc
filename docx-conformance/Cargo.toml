@@ -19,3 +19,4 @@ zip.workspace = true
 
 [dev-dependencies]
 docx-js.workspace = true
+docx-export.workspace = true

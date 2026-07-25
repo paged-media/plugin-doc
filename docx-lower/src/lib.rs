@@ -713,6 +713,7 @@ mod tests {
             image: None,
             hyperlink: None,
             text: text.into(),
+            ..Default::default()
         }
     }
 
@@ -757,6 +758,7 @@ mod tests {
                 ),
             ],
             list: None,
+            source_para_ord: 0,
         }));
 
         let lowered = lower(&doc);

@@ -13,6 +13,7 @@ members = [
     "docx-core",
     "docx-import",
     "docx-lower",
+    "docx-export",
     "docx-js",
     "docx-conformance",
 ]
@@ -47,6 +48,7 @@ paged-ooxml = { path = "paged-ooxml" }
 docx-core = { path = "docx-core" }
 docx-import = { path = "docx-import" }
 docx-lower = { path = "docx-lower" }
+docx-export = { path = "docx-export" }
 docx-js = { path = "docx-js" }
 
 [workspace.lints.clippy]

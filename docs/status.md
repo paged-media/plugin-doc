@@ -75,10 +75,16 @@ conformance fixture).
   (`{insert, cells(tableId)}`), which the bundle executes in order.
 - Verified end-to-end through the real wasm artifact (`table_docx`): block order,
   grid, widths, gridSpan, and vMerge all lower correctly.
-- **Honest limitations:** cell-internal paragraph/character *styling* is not
-  applied (`applyStyle` carries no cell qualifier — cell text pours at the
-  default); and the exact story offset past a table (`TABLE_FOOTPRINT`) is a
-  conservative constant refined during editor integration.
+- **Cell-internal styling — CLOSED (core door, protocol 55).** `applyStyle` used
+  to carry no cell qualifier, so cell text could only pour at the default
+  formatting. `Mutation::ApplyStyle` (and `Operation::ApplyStyle`) now take an
+  optional `cell` address, and the appliers walk that cell's own paragraph stream
+  instead of the story body; `buildTableCells` emits cell-qualified `applyStyle`
+  ops for each cell run/paragraph, offsets cell-local. A host below v55 rejects
+  the op and cell text keeps its default formatting (honest degrade — never wrong
+  styling).
+- **Honest limitation:** the exact story offset past a table (`TABLE_FOOTPRINT`)
+  is still a conservative constant refined during editor integration.
 
 ## Tier-2 — inline images (with a core door)
 

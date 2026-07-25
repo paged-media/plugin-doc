@@ -164,6 +164,24 @@ describe("tables", () => {
     });
   });
 
+  it("cell runs get a CELL-qualified applyStyle (v55)", () => {
+    const ir = tableIr();
+    const table = (ir.story.blocks[1] as unknown) as import("../src/lowered.js").LoweredTable;
+    // Style the first cell's run so the builder has something to apply.
+    table.cells[0].paragraphs[0].runs[0].charStyleId = "CharacterStyle/docx-auto-c1";
+    const batch = buildTableCells(table, "Story/u1", "Table/u1");
+    const ops = (batch.args as { ops: Array<{ op: string; args: Record<string, unknown> }> }).ops;
+    const styled = ops.find((o) => o.op === "applyStyle");
+    expect(styled?.args).toEqual({
+      storyId: "Story/u1",
+      start: 0,
+      end: "Merged".length,
+      style: "CharacterStyle/docx-auto-c1",
+      scope: "character",
+      cell: { tableId: "Table/u1", row: 0, col: 0 },
+    });
+  });
+
   it("buildStory splits blocks into text/table/text steps", () => {
     const steps = buildStory(tableIr(), "Story/u1");
     expect(steps.map((s) => s.kind)).toEqual(["text", "table", "text"]);

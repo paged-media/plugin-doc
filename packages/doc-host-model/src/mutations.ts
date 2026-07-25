@@ -180,6 +180,24 @@ function applyStyleOp(
   return { op: "applyStyle", args: { storyId, start, end, style, scope } } as Mutation;
 }
 
+/** A CELL-qualified `applyStyle` (core protocol v55). The `cell` arg postdates
+ *  the published plugin-api Mutation union, so cast via `unknown` — the same
+ *  pattern the v52/v53 ops use. A host below v55 rejects the op and the cell text
+ *  simply keeps its default formatting (honest degrade, no wrong styling). */
+function applyStyleInCell(
+  storyId: string,
+  start: number,
+  end: number,
+  style: string,
+  scope: "paragraph" | "character",
+  cell: { tableId: string; row: number; col: number },
+): Mutation {
+  return {
+    op: "applyStyle",
+    args: { storyId, start, end, style, scope, cell },
+  } as unknown as Mutation;
+}
+
 // ---------------------------------------------------------------------------
 // Tables
 
@@ -214,10 +232,30 @@ export function buildTableCells(table: LoweredTable, storyId: string, tableId: s
   for (const cell of table.cells) {
     const text = cellText(cell);
     if (text.length > 0) {
+      const addr = { tableId, row: cell.row, col: cell.col };
       ops.push({
         op: "insertText",
-        args: { storyId, offset: 0, text, cell: { tableId, row: cell.row, col: cell.col } },
+        args: { storyId, offset: 0, text, cell: addr },
       } as Mutation);
+      // v55 — style the cell's runs. `applyStyle` gained a cell qualifier, so
+      // cell text no longer has to pour at the default formatting. Offsets are
+      // CELL-LOCAL and contiguous, computed over the same joined text
+      // `cellText` produced (paragraphs joined by the consumed `\n`).
+      let offset = 0;
+      cell.paragraphs.forEach((para, pIdx) => {
+        const paraStart = offset;
+        for (const run of para.runs) {
+          const runStart = offset;
+          offset += codePointLen(run.text);
+          if (run.charStyleId) {
+            ops.push(applyStyleInCell(storyId, runStart, offset, run.charStyleId, "character", addr));
+          }
+        }
+        if (para.paraStyleId && offset > paraStart) {
+          ops.push(applyStyleInCell(storyId, paraStart, offset, para.paraStyleId, "paragraph", addr));
+        }
+        void pIdx;
+      });
     }
     if (cell.rowSpan > 1 || cell.colSpan > 1) {
       ops.push({

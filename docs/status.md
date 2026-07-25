@@ -225,10 +225,21 @@ reverted (a wire sync from an unpublished build must never be committed — the 
 compares against the published package), so the shipped state stays honest. Net:
 when v54 publishes, the adapter is a proven ~6-line swap.
 
+**The bundle is wired for it.** The exporter now attempts the live path: probe
+`supports("document.readStory@1")` → `host.document.storyContent(storyId)` →
+`engine.saveEditedFromContent(content)` (the storyId is captured at placement and
+carried on `LastDoc`). It degrades honestly at every step — no read door, no story
+id, or a failing save all fall back to the verbatim source rather than exporting
+something wrong. (The `storyContent` call goes through a narrow cast until the
+plugin-api canary carrying it publishes — the same pattern the v52/v53 mutation
+ops use.)
+
 ## Deferred (labelled, never faked)
 
-- **Edited save-back — LIVE editor run**: verified with a mock read (above); the
-  browser round-trip lands with the canvas-wasm v54 publish + SDK sync.
+- **Edited save-back — LIVE editor run**: the full chain is built and wired; the
+  engine side is verified with a mock read and the SDK adapter swap is
+  pre-verified against a local v54 build. The in-browser round-trip lands with the
+  canvas-wasm v54 publish + SDK sync (a release step, not code).
 - **Standalone true-open** — degrades to embedded placement + a diagnostic when
   `document.openNative@1` is unwired (the common case today); the `docx →
   native-bytes` producer is a future `plugin-publish` sibling.

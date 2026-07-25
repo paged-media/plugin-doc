@@ -40,6 +40,7 @@ interface WasmDocEngine {
   lowered_json(): string;
   block_count(): number;
   save_verbatim(): Uint8Array;
+  save_edited_from_content(contentJson: string): Uint8Array;
   free(): void;
 }
 
@@ -79,6 +80,17 @@ export class DocEngine {
   /** Zero-edit save-back (verbatim carry-through of the retained package). */
   saveVerbatim(): Uint8Array {
     return this.inner.save_verbatim();
+  }
+
+  /**
+   * M2 edited save-back (DOC-03): hand the host's structured read-back of the
+   * story (`host.document.storyContent(storyId)`) to the engine, which overlays
+   * it on the import baseline, diffs, and writes a TARGETED patch — only the
+   * changed `w:t`/`w:rPr` are rewritten, every other part and untouched subtree
+   * stays byte-identical.
+   */
+  saveEditedFromContent(content: unknown): Uint8Array {
+    return this.inner.save_edited_from_content(JSON.stringify(content));
   }
 
   dispose(): void {

@@ -60,11 +60,19 @@ async function resolveStoryId(
  * atomic batch, then stamp the binding + persist the source `.docx` as a part.
  * Returns the created frame id, or `null` if a read door was unavailable.
  */
+/** What a successful placement produced: the host frame and (when the frame's
+ *  story resolved) its story id — the address the DOC-03 read-back uses to pull
+ *  the EDITED content for save-back. */
+export interface PlacedDoc {
+  frameId: ElementId;
+  storyId: string | null;
+}
+
 export async function placeEmbedded(
   host: BundleHost,
   ir: LoweredDoc,
   source: Uint8Array,
-): Promise<ElementId | null> {
+): Promise<PlacedDoc | null> {
   const pages = await host.document.collection<{ id: PageId }>("pages");
   const pageId = pages[0]?.id;
   if (!pageId) {
@@ -100,7 +108,7 @@ export async function placeEmbedded(
     host.log.warn(
       "paged.doc: could not resolve the frame's story (hitTest returned no story)",
     );
-    return frameId;
+    return { frameId, storyId: null };
   }
 
   // 1. Style catalog + swatches (must exist before applyStyle references them).
@@ -145,5 +153,5 @@ export async function placeEmbedded(
   }));
   host.diagnostics.set(DIAGNOSTICS_KEY, diags);
 
-  return frameId;
+  return { frameId, storyId };
 }

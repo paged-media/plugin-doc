@@ -30,11 +30,13 @@ const PANEL_ID = "media.paged.doc.panel.outline";
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-/** The last-imported source, so the exporter can re-emit it verbatim (Tier-0
- *  zero-edit save-back; edited save-back is M2). */
+/** The last-imported document: its source bytes (the preservation carrier the
+ *  exporter re-emits) plus the story it was poured into — the address the DOC-03
+ *  read-back uses to pull the EDITED content for save-back. */
 interface LastDoc {
   fileName: string;
   source: Uint8Array;
+  storyId: string | null;
 }
 
 export function activate(host: BundleHost): BundleHandle {
@@ -47,8 +49,8 @@ export function activate(host: BundleHost): BundleHandle {
     try {
       engine.loadDocx(bytes);
       const ir = engine.lowered();
-      last = { fileName: name, source: bytes };
-      await placeEmbedded(host, ir, bytes);
+      const placed = await placeEmbedded(host, ir, bytes);
+      last = { fileName: name, source: bytes, storyId: placed?.storyId ?? null };
       host.shell.openPanel(PANEL_ID);
       // Standalone "open as the whole canvas" needs the docx->native-bytes
       // producer (deferred); when that + host.nativeDocument.open are wired we
@@ -60,6 +62,57 @@ export function activate(host: BundleHost): BundleHandle {
       }
     } finally {
       engine.dispose();
+    }
+  }
+
+  /**
+   * Produce the bytes to save. M2 edited save-back (DOC-03): when the host has
+   * the structured story read, pull the EDITED story back, let the engine overlay
+   * it on the import baseline, diff, and write a TARGETED patch (only changed
+   * `w:t`/`w:rPr` rewritten; every other part + untouched subtree byte-identical).
+   *
+   * Degrades honestly at every step — no read door, no story id, or a failing
+   * save all fall back to the verbatim source rather than exporting something
+   * wrong. (A host without the v54 read reports `readStory@1` false; the SDK's
+   * reserved member is never called.)
+   */
+  async function exportDocx(): Promise<{
+    bytes: Uint8Array;
+    fileName: string;
+  } | null> {
+    if (!last) return null;
+    const verbatim = { bytes: last.source, fileName: last.fileName };
+    if (!host.supports("document.readStory@1") || !last.storyId) {
+      return verbatim;
+    }
+    try {
+      // `storyContent` is a v54 read; it postdates the PUBLISHED plugin-api
+      // canary this bundle builds against (it exists on plugin-sdk main), so
+      // reach it through a narrow cast — the same pattern the v52/v53 mutation
+      // ops use. Drop the cast when the canary carrying it publishes. Guarded by
+      // the `readStory@1` probe above, so an older host never reaches this.
+      const readStory = (
+        host.document as unknown as {
+          storyContent(storyId: string): Promise<unknown | null>;
+        }
+      ).storyContent;
+      const content = await readStory.call(host.document, last.storyId);
+      if (!content) return verbatim;
+      const engine = await DocEngine.boot();
+      try {
+        engine.loadDocx(last.source);
+        return {
+          bytes: engine.saveEditedFromContent(content),
+          fileName: last.fileName,
+        };
+      } finally {
+        engine.dispose();
+      }
+    } catch (err) {
+      host.log.warn(
+        `paged.doc: edited save-back failed, exporting the unedited source: ${String(err)}`,
+      );
+      return verbatim;
     }
   }
 
@@ -111,16 +164,7 @@ export function activate(host: BundleHost): BundleHandle {
         title: "Word document (.docx)",
         extension: ".docx",
         mimeType: DOCX_MIME,
-        // Zero-edit passthrough. The M2 edited-save-back ENGINE exists and is
-        // proven (docx-js `save_edited` byte-splices a targeted patch; see
-        // docx-conformance tests/save_back.rs), but wiring it here is DEFERRED
-        // (RFI DOC-03): the exporter hook gets no document handle and
-        // `host.nativeDocument.readModel()` returns opaque core-native bytes this
-        // isolation-clean plugin cannot diff into an EditSet. When a structured
-        // whole-document read door lands, diff the edited LoweredDoc against the
-        // import baseline → EditSet → `engine.save_edited(...)`.
-        export: () =>
-          last ? { bytes: last.source, fileName: last.fileName } : null,
+        export: () => exportDocx(),
       }).dispose,
     );
   }

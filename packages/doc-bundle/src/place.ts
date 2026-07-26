@@ -85,8 +85,16 @@ export async function placeEmbedded(
   ir: LoweredDoc,
   source: Uint8Array,
 ): Promise<PlacedDoc | null> {
-  const pages = await host.document.collection<{ id: PageId }>("pages");
-  const pageId = pages[0]?.id;
+  // The pages collection carries `selfId`, NOT `id` — reading `.id` yielded
+  // undefined on every real host, so placement always bailed with "no page to
+  // place into" and nothing was ever inserted. It went unnoticed because the
+  // Rust tests drive the pour directly and the bundle had never run in the
+  // editor. Prefer the ACTIVE page (a designer places into the page they are
+  // looking at), falling back to the first — the same resolution paged.web and
+  // paged.sheet use.
+  const meta = await host.document.meta();
+  const pages = await host.document.collection<{ selfId: string }>("pages");
+  const pageId: PageId | null = meta.activePage ?? pages[0]?.selfId ?? null;
   if (!pageId) {
     host.log.warn("paged.doc: no page to place into");
     return null;
@@ -139,10 +147,32 @@ export async function placeEmbedded(
   let textOffset = 0;
   for (const step of buildStory(ir, storyId)) {
     if (step.kind === "text") {
-      await host.document.mutate({
-        op: "batch",
-        args: { ops: step.mutations(textOffset, styleOffset) },
-      });
+      // SEQUENTIAL, not one `batch` — see RFI DOC-04. The engine keeps text
+      // edits in a different lane from element edits: `Mutation::Batch`
+      // translates its children to `paged_mutate::Operation`, and InsertText /
+      // DeleteRange have no Operation form (they route through paged-canvas's
+      // own TextOp). So a batch carrying any text op fails translation and the
+      // whole thing is rejected with `notImplemented: Mutation::Batch` — which
+      // is exactly what the first live run of this plugin hit: a frame
+      // appeared, empty, and nothing said why.
+      //
+      // Cost of pouring op-by-op: the placement is no longer ONE undo step and
+      // is not atomic, so a mid-pour rejection leaves a partly-poured frame.
+      // We report that rather than hide it. Restore the batch when the engine
+      // can carry text ops in one.
+      for (const op of step.mutations(textOffset, styleOffset)) {
+        const poured = await host.document.mutate(op);
+        // A rejected pour used to pass unnoticed: the frame still appeared, so
+        // the document looked "placed" while being empty. Say so (ADR-007 —
+        // never a silent drop).
+        if (!poured.applied) {
+          host.log.warn(
+            `paged.doc: the engine rejected a pour op (${
+              (op as { op?: string }).op ?? "?"
+            }): ${JSON.stringify(poured.error)}`,
+          );
+        }
+      }
       styleOffset += step.length;
       textOffset += step.byteLength;
     } else {

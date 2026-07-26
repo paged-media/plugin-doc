@@ -11,6 +11,7 @@
       "readNative": true,
       "openNative": true
     },
+    "rendering": ["hitTest"],
     "editContext": ["wordDocument"],
     "clipboard": "none",
     "wasm": [

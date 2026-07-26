@@ -541,3 +541,52 @@ anyway. Recorded as the natural follow-on once headers/footers can be poured.
 Verified through the real wasm (`headerfield` fixture): flow reads
 `"Printed on 23 July 2026, page 7."`, both diagnostics precise, header/footer text
 absent from the body.
+
+## HOST INTEGRATION — the round-trip runs in the editor (2026-07-26)
+
+The plugin had never been loaded by the editor. Everything above was verified in
+Rust against in-memory packages and, for save-back, a MOCK story read. This pass
+wired `@paged-media/doc` into `apps/canvas` and drove the whole chain — importer
+→ native lowering → engine mutation → DOC-03 structured read → diff → byte-splice
+patch → exporter — in a real browser, against a locally built canvas-wasm at
+protocol 55.
+
+**It did not work.** Three defects, none of which any Rust test could have caught,
+because each lives exactly at the host seam:
+
+1. **Nothing was ever placed.** `placeEmbedded` read `pages[0].id`, but the pages
+   collection carries `selfId`. The id was `undefined` on every real host, so
+   placement bailed with "no page to place into" — on the FIRST line of the first
+   host call. Now resolves `meta.activePage ?? pages[0].selfId`, the same way
+   paged.web and paged.sheet do.
+2. **`hitTest` was undeclared.** The manifest never listed
+   `capabilities.rendering: ["hitTest"]`, and manifest capabilities are ENFORCED
+   (trust-line W0.11) — so resolving the frame's story threw
+   `PluginCapabilityError`. Declared.
+3. **The text pour was rejected, silently.** The engine answered
+   `notImplemented: Mutation::Batch`: text ops and element ops live in two lanes,
+   and `Batch` only translates the element one (RFI **C-14**). The pour now runs
+   op-by-op — which costs atomicity and one-undo-step, and says so — and a
+   rejected op is now reported instead of leaving an empty frame that looks
+   placed.
+
+With those fixed the round-trip is REAL, and pinned by a DTP journey in the
+editor (`tests/journey/plugins/doc.journey.spec.ts`): open `doc-memo.docx`
+(docx-conformance's `memo_docx()`, dumped by the new `dump-fixture` example),
+assert it lowers into a native story (66 characters, 3 paragraphs) and paints,
+edit it with a real `insertText` engine mutation, save it back through the host
+exporter, and assert BOTH halves of the promise —
+
+- the edit reached `word/document.xml`, and the heading, the direct-formatted
+  bold-red run and `<w:sectPr>` are all still there, and
+- `customXml/unknown.txt` and `word/styles.xml` are **byte-identical** to the
+  source: the preservation invariant, measured rather than asserted.
+
+The journey was mutation-tested (drop `document.readStory@1` from the SDK's
+feature set → the exporter degrades to verbatim → the test goes red), so it is
+proving the save-back rather than passing by construction.
+
+STILL LOCAL, not committed: the editor wiring depends on two publishes — the
+canvas-wasm v55 release (DOC-03 read + cell-qualified applyStyle) and a
+`@paged-media/doc` canary. Until both land, this runs only under
+`~/paged/sync-wasm.sh` + `link:` overrides.

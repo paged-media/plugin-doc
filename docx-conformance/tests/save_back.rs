@@ -61,7 +61,7 @@ fn edited_save_back_patches_targets_and_preserves_everything_else() {
             ),
         ],
     };
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
 
     let saved_pkg = OpcPackage::read(&saved).unwrap();
     let doc_xml =
@@ -122,7 +122,7 @@ fn zero_edit_save_back_still_byte_identical() {
     let original = memo_docx();
     let session = DocSession::load(&original).unwrap();
     // An empty edit set patches nothing; verbatim carry-through holds.
-    let saved = session.save_edited(&EditSet::default()).unwrap();
+    let (saved, _skips) = session.save_edited(&EditSet::default()).unwrap();
     let orig_pkg = OpcPackage::read(&original).unwrap();
     let saved_pkg = OpcPackage::read(&saved).unwrap();
     for name in orig_pkg.file_names() {
@@ -199,7 +199,7 @@ fn diff_drives_save_back_end_to_end() {
     // Diff → EditSet → save-back → assert both edits landed.
     let edits = docx_export::diff(&base, &edited, &bindings);
     assert_eq!(edits.runs.len(), 2, "one text + one property edit");
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
 
     let re = import_docx(&saved).unwrap();
     assert_eq!(body_para(&re, 0).runs[0].text, "Edited via diff.");
@@ -255,7 +255,7 @@ fn doc03_read_overlay_diff_save_round_trips() {
     content.paragraphs[0].runs[0].text = "Edited via content.".into();
     content.paragraphs[2].runs[1].character_style = None;
 
-    let saved = session.save_edited_from_content(&content).unwrap();
+    let (saved, _skips) = session.save_edited_from_content(&content).unwrap();
 
     let re = import_docx(&saved).unwrap();
     assert_eq!(body_para(&re, 0).runs[0].text, "Edited via content.");
@@ -303,7 +303,7 @@ fn doc03_identity_content_is_a_no_op() {
             })
             .collect(),
     };
-    let saved = session.save_edited_from_content(&content).unwrap();
+    let (saved, _skips) = session.save_edited_from_content(&content).unwrap();
     let orig_pkg = OpcPackage::read(&original).unwrap();
     let saved_pkg = OpcPackage::read(&saved).unwrap();
     for name in orig_pkg.file_names() {
@@ -353,7 +353,7 @@ fn structural_edits_insert_and_delete_runs_and_paragraphs() {
         character_style: None,
     });
 
-    let saved = session.save_edited_from_content(&content).unwrap();
+    let (saved, _skips) = session.save_edited_from_content(&content).unwrap();
     let re = import_docx(&saved).unwrap();
     let p2 = body_para(&re, 2);
     let texts: Vec<&str> = p2.runs.iter().map(|r| r.text.as_str()).collect();
@@ -396,7 +396,7 @@ fn structural_paragraph_delete_and_append() {
             },
         ],
     };
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
     let re = import_docx(&saved).unwrap();
     let texts: Vec<String> = re
         .body
@@ -445,7 +445,7 @@ fn table_cell_text_round_trips() {
         cells: vec![CellRunEdit::text(block, 0, 0, 0, "PATCHED CELL")],
         ..Default::default()
     };
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
 
     // The cell text changed...
     let re_model = docx_import::import_docx(&saved).unwrap();
@@ -509,7 +509,7 @@ fn table_cell_diff_drives_save_back() {
     let edits = docx_export::diff(&base, &edited, &bindings);
     assert_eq!(edits.cells.len(), 1, "one cell edit: {:?}", edits.cells);
 
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
     let re = docx_lower::lower(&docx_import::import_docx(&saved).unwrap());
     if let docx_lower::ir::LoweredBlock::Table(t) = &re.story.blocks[1] {
         assert_eq!(t.cells[1].paragraphs[0].runs[0].text, "via diff");
@@ -544,7 +544,7 @@ fn paragraph_property_edits_rewrite_the_ppr() {
         ],
         ..Default::default()
     };
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
 
     let re = import_docx(&saved).unwrap();
     let p0 = body_para(&re, 0);
@@ -598,7 +598,7 @@ fn diff_detects_a_paragraph_style_change() {
     );
     assert_eq!(edits.paragraphs[0].block, 1);
 
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
     let re = import_docx(&saved).unwrap();
     assert_ne!(
         body_para(&re, 1).style_id.as_deref(),
@@ -626,7 +626,7 @@ fn hyperlink_display_text_is_editable_and_keeps_its_target() {
         runs: vec![RunEdit::text(0, 1, "the Paged site")],
         ..Default::default()
     };
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
 
     let re = import_docx(&saved).unwrap();
     let para = match &re.body[0] {
@@ -671,7 +671,7 @@ fn field_hyperlink_runs_are_editable_in_both_forms() {
         ],
         ..Default::default()
     };
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
 
     let re = import_docx(&saved).unwrap();
     let para = match &re.body[0] {
@@ -727,7 +727,7 @@ fn table_rows_can_be_deleted_and_inserted() {
         ],
         ..Default::default()
     };
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
 
     let re = docx_lower::lower(&docx_import::import_docx(&saved).unwrap());
     let after = re
@@ -808,7 +808,7 @@ fn diff_derives_a_row_deletion() {
         edits.structural
     );
 
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
     let re = docx_lower::lower(&docx_import::import_docx(&saved).unwrap());
     if let LoweredBlock::Table(t) = &re.story.blocks[1] {
         assert_eq!(t.rows, 2, "the row was removed from the source");
@@ -834,7 +834,7 @@ fn deleting_a_middle_paragraph_preserves_the_survivors() {
     edited.story.blocks.remove(1); // drop the heading
 
     let edits = docx_export::diff(&base, &edited, &bindings);
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
     let re = import_docx(&saved).unwrap();
 
     let paras: Vec<&docx_core::Paragraph> = re
@@ -897,7 +897,7 @@ fn deleting_a_middle_row_preserves_the_surviving_rows() {
     }
 
     let edits = docx_export::diff(&base, &edited, &bindings);
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
     let re = docx_lower::lower(&docx_import::import_docx(&saved).unwrap());
     let t = re
         .story
@@ -965,7 +965,7 @@ fn columns_can_be_inserted_and_deleted_on_a_uniform_grid() {
 
     // Add a column after col 0 — the grid AND every row must grow together.
     let session = DocSession::load(&original).unwrap();
-    let grown = session
+    let (grown, _skips) = session
         .save_edited(&EditSet {
             structural: vec![StructuralEdit::InsertColumn {
                 block: 0,
@@ -994,7 +994,7 @@ fn columns_can_be_inserted_and_deleted_on_a_uniform_grid() {
     assert_eq!(row0, ["R0C0", "NEW", "R0C1"], "inserted after col 0");
 
     // Remove column 1 from the ORIGINAL — grid and rows shrink together.
-    let shrunk = DocSession::load(&original)
+    let (shrunk, _skips) = DocSession::load(&original)
         .unwrap()
         .save_edited(&EditSet {
             structural: vec![StructuralEdit::DeleteColumn { block: 0, col: 1 }],
@@ -1031,12 +1031,19 @@ fn column_ops_are_refused_on_a_gridspan_table() {
 
     let original = table_docx();
     let session = DocSession::load(&original).unwrap();
-    let saved = session
+    let (saved, skips) = session
         .save_edited(&EditSet {
             structural: vec![StructuralEdit::DeleteColumn { block: 1, col: 0 }],
             ..Default::default()
         })
         .unwrap();
+    // The refusal is TOLD, not silent (the diagnostics ledger).
+    assert_eq!(skips.len(), 1, "one skip note for the refused column op");
+    assert!(
+        skips[0].contains("gridSpan"),
+        "the note names the gridSpan ambiguity: {}",
+        skips[0]
+    );
     // Skipped ⇒ nothing was patched at all: every part byte-identical.
     let a = OpcPackage::read(&original).unwrap();
     let b = OpcPackage::read(&saved).unwrap();
@@ -1062,7 +1069,7 @@ fn a_nested_table_does_not_misdirect_outer_cell_edits() {
         cells: vec![CellRunEdit::text(0, 1, 0, 0, "PATCHED")],
         ..Default::default()
     };
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
 
     let pkg = OpcPackage::read(&saved).unwrap();
     let xml = std::str::from_utf8(pkg.part("word/document.xml").unwrap()).unwrap();
@@ -1091,7 +1098,7 @@ fn non_patchable_target_is_skipped_not_errored() {
         paragraphs: vec![],
         runs: vec![RunEdit::text(99, 0, "nowhere")],
     };
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
     let saved_pkg = OpcPackage::read(&saved).unwrap();
     let doc_xml = std::str::from_utf8(saved_pkg.part("word/document.xml").unwrap()).unwrap();
     assert!(doc_xml.contains(">Plain body text.<"), "unchanged");

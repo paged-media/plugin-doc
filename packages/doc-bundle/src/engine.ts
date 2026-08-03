@@ -41,6 +41,7 @@ interface WasmDocEngine {
   block_count(): number;
   save_verbatim(): Uint8Array;
   save_edited_from_content(contentJson: string): Uint8Array;
+  last_save_skips(): string;
   free(): void;
 }
 
@@ -91,6 +92,17 @@ export class DocEngine {
    */
   saveEditedFromContent(content: unknown): Uint8Array {
     return this.inner.save_edited_from_content(JSON.stringify(content));
+  }
+
+  /** The refusal ledger of the last `saveEditedFromContent` — every edit
+   *  the patcher SKIPPED rather than risk corrupting the document
+   *  (non-patchable runs, gridSpan column ops, …). Empty when clean. */
+  lastSaveSkips(): string[] {
+    try {
+      return JSON.parse(this.inner.last_save_skips()) as string[];
+    } catch {
+      return [];
+    }
   }
 
   dispose(): void {

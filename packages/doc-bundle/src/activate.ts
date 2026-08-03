@@ -115,10 +115,17 @@ export function activate(host: BundleHost): BundleHandle {
       const engine = await DocEngine.boot();
       try {
         engine.loadDocx(last.source);
-        return {
-          bytes: engine.saveEditedFromContent(content),
-          fileName: last.fileName,
-        };
+        const bytes = engine.saveEditedFromContent(content);
+        // Save-back refusal feedback (ADR-007 posture): the patcher's skip
+        // ledger — edits refused rather than risking corruption (gridSpan
+        // column ops, non-patchable runs) — reaches the Problems panel
+        // instead of dying silently in the engine.
+        const skips = engine.lastSaveSkips();
+        host.diagnostics.set(
+          "media.paged.doc/save-back",
+          skips.map((message) => ({ severity: "warning" as const, message })),
+        );
+        return { bytes, fileName: last.fileName };
       } finally {
         engine.dispose();
       }

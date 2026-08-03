@@ -87,7 +87,7 @@ fn edited_save_back_patches_only_the_target__feat__plugin_doc_save_back() {
         runs: vec![RunEdit::text(0, 0, "Evidence edit.")],
         ..Default::default()
     };
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
 
     let re = import_docx(&saved).unwrap();
     let Block::Paragraph(p0) = &re.body[0] else {
@@ -113,7 +113,7 @@ fn save_back_reaches_table_cells__feat__plugin_doc_save_back() {
         cells: vec![docx_export::CellRunEdit::text(1, 0, 0, 0, "cell evidence")],
         ..Default::default()
     };
-    let saved = session.save_edited(&edits).unwrap();
+    let (saved, _skips) = session.save_edited(&edits).unwrap();
     let ir = docx_lower::lower(&import_docx(&saved).unwrap());
     let table = ir
         .story

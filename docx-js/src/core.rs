@@ -100,11 +100,12 @@ impl DocSession {
     /// (tests today). Wiring it from the LIVE editor needs a structured
     /// whole-document read door — `host.nativeDocument.readModel()` returns
     /// opaque core-native bytes this isolation-clean plugin cannot diff.
-    pub fn save_edited(&self, edits: &EditSet) -> Result<Vec<u8>, String> {
+    pub fn save_edited(&self, edits: &EditSet) -> Result<(Vec<u8>, Vec<String>), String> {
         let mut package = self.package.clone();
-        apply_edits(&mut package, &self.main_part, &self.bindings, edits)
+        let skips = apply_edits(&mut package, &self.main_part, &self.bindings, edits)
             .map_err(|e| e.to_string())?;
-        package.write().map_err(|e| e.to_string())
+        let bytes = package.write().map_err(|e| e.to_string())?;
+        Ok((bytes, skips))
     }
 
     /// M2 edited save-back, driven by the DOC-03 structured read: overlay the
@@ -112,7 +113,10 @@ impl DocSession {
     /// an `EditSet`, and save. This is the LIVE end-to-end path (the bundle reads
     /// `host.document.storyContent(storyId)` and forwards it here) — the seam that
     /// makes edited save-back run without a hand-authored `EditSet`.
-    pub fn save_edited_from_content(&self, content: &StoryContentIn) -> Result<Vec<u8>, String> {
+    pub fn save_edited_from_content(
+        &self,
+        content: &StoryContentIn,
+    ) -> Result<(Vec<u8>, Vec<String>), String> {
         let baseline = self.lowered();
         let edited = overlay_story_content(&baseline, content);
         let edits = diff(&baseline, &edited, &self.bindings);

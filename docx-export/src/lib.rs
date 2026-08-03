@@ -47,20 +47,27 @@ use splice::{
 };
 
 /// Apply `edits` to `pkg`'s main document part in place. Non-patchable targets
-/// (tables, hyperlink/field runs, out-of-range indices) are silently skipped —
-/// the caller surfaces them as diagnostics. A no-op edit set leaves `pkg`
-/// untouched. On success the main part is dirtied; `pkg.write()` then yields the
-/// saved `.docx` bytes.
+/// (tables, hyperlink/field runs, out-of-range indices, non-uniform-grid
+/// column ops) are skipped WITH a note — the returned `Vec<String>` is the
+/// refusal ledger the caller surfaces as diagnostics (previously the doc
+/// comment promised this and nothing carried it). A no-op edit set leaves
+/// `pkg` untouched. On success the main part is dirtied; `pkg.write()` then
+/// yields the saved `.docx` bytes.
 pub fn apply_edits(
     pkg: &mut OpcPackage,
     main_part: &str,
     bindings: &DocxBindings,
     edits: &EditSet,
-) -> Result<(), OoxmlError> {
+) -> Result<Vec<String>, OoxmlError> {
+    let mut skips: Vec<String> = Vec::new();
     let mut targets: Vec<ResolvedTarget> = Vec::new();
     for e in &edits.runs {
         let Some(addr) = bindings.resolve(e.block, e.run) else {
-            continue; // non-patchable — skipped
+            skips.push(format!(
+                "run edit skipped: block {} run {} is not patchable",
+                e.block, e.run
+            ));
+            continue;
         };
         if e.new_text.is_none() && e.new_props.is_none() {
             continue;
@@ -95,6 +102,9 @@ pub fn apply_edits(
         match s {
             StructuralEdit::DeleteRun { block, run } => {
                 let Some(a) = bindings.resolve(*block, *run) else {
+                    skips.push(format!(
+                        "delete-run skipped: block {block} run {run} is not patchable"
+                    ));
                     continue;
                 };
                 match targets.iter_mut().find(|t| {
@@ -121,6 +131,9 @@ pub fn apply_edits(
                     // After an existing run.
                     Some(run) => {
                         let Some(a) = bindings.resolve(*block, *run) else {
+                            skips.push(format!(
+                                "insert-run skipped: block {block} run {run} is not patchable"
+                            ));
                             continue;
                         };
                         match targets.iter_mut().find(|t| {
@@ -140,6 +153,9 @@ pub fn apply_edits(
                     // At the paragraph's start.
                     None => {
                         let Some(p) = bindings.para_ord(*block) else {
+                            skips.push(format!(
+                                "insert-run skipped: block {block} is not a body paragraph"
+                            ));
                             continue;
                         };
                         paras.entry(p).or_default().prepend_runs.push(frag);
@@ -151,6 +167,10 @@ pub fn apply_edits(
             // the op is skipped rather than corrupting the table.
             StructuralEdit::DeleteColumn { block, col } => {
                 let Some(t) = bindings.uniform_table_ord(*block) else {
+                    skips.push(format!(
+                        "delete-column skipped: table at block {block} has a gridSpan \
+                         (non-uniform grid — widen-vs-split is ambiguous)"
+                    ));
                     continue;
                 };
                 columns.insert(t, ColumnAction::Delete { col: *col });
@@ -161,6 +181,10 @@ pub fn apply_edits(
                 text,
             } => {
                 let Some(t) = bindings.uniform_table_ord(*block) else {
+                    skips.push(format!(
+                        "insert-column skipped: table at block {block} has a gridSpan \
+                         (non-uniform grid — widen-vs-split is ambiguous)"
+                    ));
                     continue;
                 };
                 columns.insert(
@@ -173,6 +197,9 @@ pub fn apply_edits(
             }
             StructuralEdit::DeleteRow { block, row } => {
                 let Some(t) = bindings.table_ord(*block) else {
+                    skips.push(format!(
+                        "delete-row skipped: block {block} row {row} is not a resolvable table"
+                    ));
                     continue;
                 };
                 rows.entry((t, *row)).or_default().delete = true;
@@ -183,6 +210,9 @@ pub fn apply_edits(
                 cells,
             } => {
                 let Some(t) = bindings.table_ord(*block) else {
+                    skips.push(format!(
+                        "insert-row skipped: block {block} is not a resolvable table"
+                    ));
                     continue;
                 };
                 rows.entry((t, *after_row))
@@ -192,6 +222,9 @@ pub fn apply_edits(
             }
             StructuralEdit::DeleteParagraph { block } => {
                 let Some(p) = bindings.para_ord(*block) else {
+                    skips.push(format!(
+                        "delete-paragraph skipped: block {block} is not a body paragraph"
+                    ));
                     continue;
                 };
                 paras.entry(p).or_default().delete = true;
@@ -204,6 +237,9 @@ pub fn apply_edits(
                 rstyle,
             } => {
                 let Some(p) = bindings.para_ord(*block) else {
+                    skips.push(format!(
+                        "insert-paragraph skipped: block {block} is not a body paragraph"
+                    ));
                     continue;
                 };
                 let frag =
@@ -216,7 +252,11 @@ pub fn apply_edits(
     // Increment 3 — paragraph `<w:pPr>` edits.
     for pe in &edits.paragraphs {
         let Some(p) = bindings.para_ord(pe.block) else {
-            continue; // a table (or out of range) — skipped
+            skips.push(format!(
+                "paragraph-format edit skipped: block {} is a table or out of range",
+                pe.block
+            ));
+            continue;
         };
         let pstyle = pe.pstyle.as_ref().and_then(|o| o.as_deref());
         paras.entry(p).or_default().new_ppr = Some(rpr::render_ppr(&pe.new_props, pstyle));
@@ -226,7 +266,11 @@ pub fn apply_edits(
     let mut cell_targets: Vec<ResolvedCellTarget> = Vec::new();
     for c in &edits.cells {
         let Some((path, run_ord)) = bindings.resolve_cell(c.block, c.cell, c.para, c.run) else {
-            continue; // non-patchable — skipped
+            skips.push(format!(
+                "cell edit skipped: block {} cell {} para {} run {} is not patchable",
+                c.block, c.cell, c.para, c.run
+            ));
+            continue;
         };
         if c.new_text.is_none() && c.new_props.is_none() {
             continue;
@@ -252,7 +296,7 @@ pub fn apply_edits(
         && rows.is_empty()
         && columns.is_empty()
     {
-        return Ok(());
+        return Ok(skips);
     }
 
     let patched = {
@@ -260,5 +304,5 @@ pub fn apply_edits(
         patch_document_xml_cols(src, &targets, &paras, &cell_targets, &rows, &columns)
     };
     pkg.set_part(main_part, patched);
-    Ok(())
+    Ok(skips)
 }

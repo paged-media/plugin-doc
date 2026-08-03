@@ -35,13 +35,18 @@ mod wasm {
     #[wasm_bindgen]
     pub struct DocEngine {
         session: Option<DocSession>,
+        /// Refusal ledger of the last `save_edited*` (see `last_save_skips`).
+        last_skips: std::cell::RefCell<Vec<String>>,
     }
 
     #[wasm_bindgen]
     impl DocEngine {
         #[wasm_bindgen(constructor)]
         pub fn new() -> DocEngine {
-            DocEngine { session: None }
+            DocEngine {
+                session: None,
+                last_skips: std::cell::RefCell::new(Vec::new()),
+            }
         }
 
         /// Load a `.docx`; returns an error string on failure.
@@ -84,9 +89,11 @@ mod wasm {
                 .ok_or_else(|| JsValue::from_str("no document loaded"))?;
             let edits: docx_export::EditSet =
                 serde_json::from_str(edits_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-            session
+            let (bytes, skips) = session
                 .save_edited(&edits)
-                .map_err(|e| JsValue::from_str(&e))
+                .map_err(|e| JsValue::from_str(&e))?;
+            *self.last_skips.borrow_mut() = skips;
+            Ok(bytes)
         }
 
         /// M2 edited save-back driven by the DOC-03 read: forward the host's
@@ -101,9 +108,21 @@ mod wasm {
                 .ok_or_else(|| JsValue::from_str("no document loaded"))?;
             let content: docx_export::StoryContentIn = serde_json::from_str(content_json)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            session
+            let (bytes, skips) = session
                 .save_edited_from_content(&content)
-                .map_err(|e| JsValue::from_str(&e))
+                .map_err(|e| JsValue::from_str(&e))?;
+            *self.last_skips.borrow_mut() = skips;
+            Ok(bytes)
+        }
+
+        /// The refusal ledger of the LAST `save_edited*` call, as a JSON string
+        /// array: every edit the patcher skipped rather than risk corrupting
+        /// the document (non-patchable runs, gridSpan column ops, …). Empty
+        /// before any save / when nothing was skipped. The bundle surfaces
+        /// these through the host diagnostics lane (ADR-007 posture: refusals
+        /// are told, never silent).
+        pub fn last_save_skips(&self) -> String {
+            serde_json::to_string(&*self.last_skips.borrow()).unwrap_or_else(|_| "[]".into())
         }
     }
 

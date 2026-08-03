@@ -145,32 +145,43 @@ export async function placeEmbedded(
   // contains a table, which is why they are no longer one counter.
   let styleOffset = 0;
   let textOffset = 0;
+  // C-14 ADOPTED (core PR #46): `Mutation::Batch` can carry text ops on new
+  // engines, so each text step pours as ONE atomic batch (one undo step per
+  // step). An OLD engine rejects the whole batch (`notImplemented:
+  // Mutation::Batch` — the same wire, so no capability flag distinguishes
+  // them); the rejection applies NOTHING, which makes try-then-fall-back a
+  // safe runtime probe. The verdict is cached for the rest of the placement.
+  // (One batch for the WHOLE story stays impossible: table inserts mint ids
+  // mid-pour that their cell pours need.)
+  let engineBatchesText: boolean | null = null;
   for (const step of buildStory(ir, storyId)) {
     if (step.kind === "text") {
-      // SEQUENTIAL, not one `batch` — see RFI DOC-04. The engine keeps text
-      // edits in a different lane from element edits: `Mutation::Batch`
-      // translates its children to `paged_mutate::Operation`, and InsertText /
-      // DeleteRange have no Operation form (they route through paged-canvas's
-      // own TextOp). So a batch carrying any text op fails translation and the
-      // whole thing is rejected with `notImplemented: Mutation::Batch` — which
-      // is exactly what the first live run of this plugin hit: a frame
-      // appeared, empty, and nothing said why.
-      //
-      // Cost of pouring op-by-op: the placement is no longer ONE undo step and
-      // is not atomic, so a mid-pour rejection leaves a partly-poured frame.
-      // We report that rather than hide it. Restore the batch when the engine
-      // can carry text ops in one.
-      for (const op of step.mutations(textOffset, styleOffset)) {
-        const poured = await host.document.mutate(op);
-        // A rejected pour used to pass unnoticed: the frame still appeared, so
-        // the document looked "placed" while being empty. Say so (ADR-007 —
-        // never a silent drop).
-        if (!poured.applied) {
-          host.log.warn(
-            `paged.doc: the engine rejected a pour op (${
-              (op as { op?: string }).op ?? "?"
-            }): ${JSON.stringify(poured.error)}`,
-          );
+      const ops = step.mutations(textOffset, styleOffset);
+      let sequential = engineBatchesText === false || ops.length <= 1;
+      if (!sequential) {
+        const outcome = await host.document.mutate({ op: "batch", args: { ops } });
+        if (outcome.applied) {
+          engineBatchesText = true;
+        } else {
+          // Pre-C-14 engine (or another whole-batch rejection): nothing was
+          // applied, so the sequential pour below replays the SAME ops.
+          engineBatchesText = false;
+          sequential = true;
+        }
+      }
+      if (sequential) {
+        // The pre-C-14 lane (see RFI DOC-04): op-by-op, not atomic — a
+        // mid-pour rejection leaves a partly-poured frame. We report that
+        // rather than hide it (ADR-007 — never a silent drop).
+        for (const op of ops) {
+          const poured = await host.document.mutate(op);
+          if (!poured.applied) {
+            host.log.warn(
+              `paged.doc: the engine rejected a pour op (${
+                (op as { op?: string }).op ?? "?"
+              }): ${JSON.stringify(poured.error)}`,
+            );
+          }
         }
       }
       styleOffset += step.length;

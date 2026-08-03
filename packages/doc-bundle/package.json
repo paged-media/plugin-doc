@@ -1,6 +1,6 @@
 {
   "name": "@paged-media/doc",
-  "version": "0.1.0",
+  "version": "0.1.0-canary.0",
   "type": "module",
   "license": "AGPL-3.0-only OR LicenseRef-PMEL",
   "main": "./src/index.ts",
@@ -9,6 +9,19 @@
     "./manifest.json": "./manifest.json"
   },
   "files": ["dist", "bin", "manifest.json"],
+  "publishConfig": {
+    "access": "public",
+    "tag": "canary",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./manifest.json": "./manifest.json"
+    }
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",

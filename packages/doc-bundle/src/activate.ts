@@ -20,9 +20,14 @@
 // objectType + editContext, an insert command, and an outline panel. All DOCX
 // semantics live in the docx-js wasm; this file only drives host surfaces.
 
-import type { BundleHandle, BundleHost } from "@paged-media/plugin-api";
+import type {
+  BundleHandle,
+  BundleHost,
+  ElementId,
+} from "@paged-media/plugin-api";
 
 import { DocEngine } from "./engine.js";
+import { createDocStore } from "./panels/outline-model.js";
 import { makeOutlinePanel } from "./panels/outline-panel.js";
 import { placeEmbedded } from "./place.js";
 
@@ -42,6 +47,9 @@ interface LastDoc {
 export function activate(host: BundleHost): BundleHandle {
   let last: LastDoc | null = null;
   const disposers: Array<() => void> = [];
+  // The panel's document store: the RETAINED LoweredDoc (plain JSON — the
+  // engine itself is disposed after placement) + the placement record.
+  const docStore = createDocStore();
 
   // Load bytes -> engine -> lowering -> embedded placement.
   async function ingest(name: string, bytes: Uint8Array): Promise<void> {
@@ -51,6 +59,12 @@ export function activate(host: BundleHost): BundleHandle {
       const ir = engine.lowered();
       const placed = await placeEmbedded(host, ir, bytes);
       last = { fileName: name, source: bytes, storyId: placed?.storyId ?? null };
+      docStore.set({
+        fileName: name,
+        ir,
+        frameId: placed?.frameId ?? null,
+        storyId: placed?.storyId ?? null,
+      });
       host.shell.openPanel(PANEL_ID);
       // Standalone "open as the whole canvas" needs the docx->native-bytes
       // producer (deferred); when that + host.nativeDocument.open are wired we
@@ -130,7 +144,12 @@ export function activate(host: BundleHost): BundleHandle {
   disposers.push(
     host.contribute.panel({
       id: PANEL_ID,
-      ...makeOutlinePanel(() => last?.fileName ?? null, () => void pickAndIngest()),
+      ...makeOutlinePanel(
+        docStore,
+        () => void pickAndIngest(),
+        (frameId) => void host.selection.set([frameId as ElementId]),
+        () => ({ readStory: host.supports("document.readStory@1") }),
+      ),
     }).dispose,
   );
 

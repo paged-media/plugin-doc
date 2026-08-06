@@ -8,7 +8,11 @@
     ".": "./src/index.ts",
     "./manifest.json": "./manifest.json"
   },
-  "files": ["dist", "bin", "manifest.json"],
+  "files": [
+    "dist",
+    "bin",
+    "manifest.json"
+  ],
   "publishConfig": {
     "access": "public",
     "tag": "canary",
@@ -27,12 +31,10 @@
     "test": "vitest run --passWithNoTests",
     "build": "tsup src/index.ts --format esm --dts"
   },
-  "dependencies": {
-    "@paged-media/plugin-api": "canary",
-    "@paged-media/plugin-sdk": "canary"
-  },
   "peerDependencies": {
-    "react": "^18.3.0"
+    "react": "^18.3.0",
+    "@paged-media/plugin-api": ">=0.2.29-canary.0",
+    "@paged-media/plugin-sdk": ">=0.2.29-canary.0"
   },
   "devDependencies": {
     "@paged-media/doc-host-model": "workspace:*",
@@ -41,6 +43,8 @@
     "react": "^18.3.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
-    "tsup": "^8.3.5"
+    "tsup": "^8.3.5",
+    "@paged-media/plugin-api": "0.2.29-canary.0",
+    "@paged-media/plugin-sdk": "0.2.29-canary.0"
   }
 }

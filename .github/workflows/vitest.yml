@@ -29,12 +29,20 @@ jobs:
         run: node scripts/check-contract-imports.mjs
       - name: typecheck
         run: pnpm -r run typecheck
+      # CI never checks out ../plugin-sdk (that path only exists in the local
+      # sibling-clone layout), so validate through the PUBLISHED plugin-cli —
+      # the same way plugin-publish/ci.yml validates its manifests.
       - name: validate manifest
-        run: node ../plugin-sdk/packages/plugin-cli/bin/paged-plugin.mjs validate packages/doc-bundle/manifest.json || true
-      - name: vitest (junit per package; red results still publish)
+        run: npx --yes @paged-media/plugin-cli@canary validate packages/doc-bundle/manifest.json
+      # Red results must still upload (the state matrix wants the ✗), so the
+      # run does not abort here — the gate at the end fails the job once the
+      # artifact is safely uploaded.
+      - name: vitest (junit per package; red results still upload)
         run: |
+          set -uo pipefail
           pnpm -r --no-bail exec \
-            vitest run --reporter=junit --outputFile=junit.xml || true
+            vitest run --reporter=junit --outputFile=junit.xml \
+            || echo "TS_FAILED=1" >> "$GITHUB_ENV"
           cat packages/*/junit.xml > junit-all.xml 2>/dev/null || true
           [ -s junit-all.xml ]
       # plugin-doc is a PUBLIC repo and the publish-results action lives in the
@@ -52,3 +60,6 @@ jobs:
           path: junit-all.xml
           if-no-files-found: error
           retention-days: 14
+      - name: tests failed
+        if: ${{ env.TS_FAILED == '1' }}
+        run: exit 1

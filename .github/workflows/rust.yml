@@ -38,8 +38,15 @@ jobs:
           toolchain: 1.93.0
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
-      - name: nextest (junit; red results still publish)
-        run: cargo nextest run --workspace --profile ci || true
+      # Red results must still upload (the state matrix wants the ✗), so the
+      # run does not abort here — the gate at the end fails the job once the
+      # artifact is safely uploaded.
+      - name: nextest (junit; red results still upload)
+        run: |
+          set -uo pipefail
+          cargo nextest run --workspace --profile ci \
+            || echo "RUST_FAILED=1" >> "$GITHUB_ENV"
+          test -s target/nextest/ci/junit.xml
       # plugin-doc is a PUBLIC repo and the publish-results action lives in the
       # PRIVATE paged-media/state repo. GitHub refuses to resolve a private
       # repo's action from a public workflow ("Unable to resolve action
@@ -55,6 +62,9 @@ jobs:
           path: target/nextest/ci/junit.xml
           if-no-files-found: error
           retention-days: 14
+      - name: tests failed
+        if: ${{ env.RUST_FAILED == '1' }}
+        run: exit 1
 
   wasm:
     runs-on: ubuntu-latest

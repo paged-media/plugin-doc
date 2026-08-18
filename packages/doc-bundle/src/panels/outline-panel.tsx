@@ -254,5 +254,7 @@ export function makeOutlinePanel(
       </div>
     );
   };
-  return { title: "paged.doc", component: Component, defaultDock: "right" };
+  // U9 — the tab says what the panel IS ("Document outline"); the owning
+  // bundle ("paged.doc") is carried by the host-stamped `source` provenance.
+  return { title: "Document outline", component: Component, defaultDock: "right" };
 }

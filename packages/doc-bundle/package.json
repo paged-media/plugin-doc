@@ -1,6 +1,6 @@
 {
   "name": "@paged-media/doc",
-  "version": "0.1.0-canary.0",
+  "version": "0.1.0-canary.1",
   "type": "module",
   "license": "AGPL-3.0-only OR LicenseRef-PMEL",
   "main": "./src/index.ts",

@@ -64,7 +64,7 @@ fn corpus_word_files() -> Option<Vec<PathBuf>> {
     } else {
         PathBuf::from(switch)
     };
-    let packs = root.join("envato/packs");
+    let packs = root.join("vendor/envato/packs");
     if !packs.is_dir() {
         eprintln!(
             "SKIP doc corpus lane: {} is not a directory",
@@ -92,7 +92,7 @@ fn corpus_word_files() -> Option<Vec<PathBuf>> {
     out.sort();
     if out.is_empty() {
         eprintln!(
-            "SKIP doc corpus lane: no assets/word/* under {} — run corpus/envato/unpack.sh",
+            "SKIP doc corpus lane: no assets/word/* under {} — run corpus/harness/unpack.sh",
             packs.display()
         );
         return None;

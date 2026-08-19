@@ -162,13 +162,21 @@ fn every_real_word_document_imports_or_fails_cleanly() {
         files.len()
     );
 
-    // Every rejection must be a legacy binary format. An OOXML file that
-    // the importer refuses is a real defect, not a format boundary.
+    // Every rejection must be a legacy format. An OOXML file that the
+    // importer refuses is a real defect, not a format boundary.
     for (name, err) in &rejected {
         let ext = ext_of(std::path::Path::new(name));
         assert!(
             ext == "doc",
             "{name} is .{ext} (an OOXML format) but the importer rejected it: {err}"
+        );
+        // ADR-007: and it must be rejected BY NAME. "Could not find EOCD"
+        // is what the bare zip reader says about an RTF that someone saved
+        // as .doc — it tells the user nothing about what they opened.
+        assert!(
+            err.contains("LegacyBinaryDoc") || err.contains("RichTextFormat"),
+            "{name} was rejected with a leaked container error instead of a \
+             named format: {err} — add a sniff in paged_ooxml::opc"
         );
     }
 }

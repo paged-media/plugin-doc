@@ -86,6 +86,9 @@ impl OpcPackage {
         if bytes.starts_with(CFB_MAGIC) {
             return Err(crate::error::OoxmlError::LegacyBinaryDoc);
         }
+        if bytes.starts_with(b"{\\rtf") {
+            return Err(crate::error::OoxmlError::RichTextFormat);
+        }
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
         let mut parts = Vec::with_capacity(archive.len());
         for i in 0..archive.len() {
@@ -187,5 +190,58 @@ impl OpcPackage {
             zip.finish()?;
         }
         Ok(out.into_inner())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::OoxmlError;
+
+    /// A minimal CFB/OLE header followed by a complete OPC package — the
+    /// shape four real corpus `.doc` files have. Without the magic sniff
+    /// the zip reader finds the embedded package by scanning backwards
+    /// for the EOCD, enumerates it, and the failure surfaces much later
+    /// as a nonsense XML error about `themeManager.xml`.
+    #[test]
+    fn a_legacy_doc_that_embeds_an_opc_package_is_rejected_at_the_door() {
+        let mut package = OpcPackage::default();
+        package.set_part("[Content_Types].xml", b"<Types/>".to_vec());
+        let inner = package.write().expect("write inner package");
+
+        let mut bytes = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+        bytes.resize(512, 0);
+        bytes.extend_from_slice(&inner);
+
+        // The trap: the payload IS a readable zip if you look far enough in.
+        assert!(
+            zip::ZipArchive::new(Cursor::new(&bytes[..])).is_ok(),
+            "test premise broken — the embedded package must be zip-readable, \
+             otherwise this test would pass without the sniff"
+        );
+        assert!(
+            matches!(OpcPackage::read(&bytes), Err(OoxmlError::LegacyBinaryDoc)),
+            "a CFB container must be named as a legacy .doc, not half-opened"
+        );
+    }
+
+    #[test]
+    fn an_rtf_saved_as_doc_is_named_rather_than_reported_as_a_broken_zip() {
+        let bytes = br"{\rtf1\ansi\deff0{\fonttbl{\f0 Times;}}\f0 hello}".to_vec();
+        assert!(
+            matches!(OpcPackage::read(&bytes), Err(OoxmlError::RichTextFormat)),
+            "RTF must be identified; the bare zip reader calls it \
+             \"Could not find EOCD\", which names nothing"
+        );
+    }
+
+    #[test]
+    fn genuinely_malformed_input_still_reports_as_a_container_failure() {
+        // The sniffs must not swallow everything — random bytes are still
+        // a zip error, not a format we claim to recognise.
+        assert!(matches!(
+            OpcPackage::read(b"not a container at all"),
+            Err(OoxmlError::Zip(_))
+        ));
     }
 }

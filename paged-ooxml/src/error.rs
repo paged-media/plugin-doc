@@ -43,6 +43,13 @@ pub enum OoxmlError {
     #[error("legacy binary Word document (.doc, CFB/OLE) — only OOXML .docx/.dotx is supported; re-save as .docx")]
     LegacyBinaryDoc,
 
+    /// Rich Text Format, which Word writes and users routinely save with a
+    /// `.doc` extension (the corpus has one). Sniffed for the same reason
+    /// as `LegacyBinaryDoc`: without it the zip reader reports "Could not
+    /// find EOCD", which tells the user nothing about what they opened.
+    #[error("Rich Text Format document — only OOXML .docx/.dotx is supported; re-save as .docx")]
+    RichTextFormat,
+
     /// I/O failure while reading or writing part bytes.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

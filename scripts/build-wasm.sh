@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the paged.doc engine wasm (docx-js) and land the wasm-bindgen
 # `--target web` output in packages/doc-bundle/bin/ — the path the manifest
-# declares under capabilities.wasm[] (governance + the 8 MiB plugin-cli size
+# declares under capabilities.wasm[] (governance + the 100 MB plugin-cli size
 # gate). The bundle loads it via the wasm-bindgen glue (the core/canvas-wasm
 # pattern), NOT via loadBundleWasm.
 #
@@ -12,13 +12,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 OUT=packages/doc-bundle/bin
-BUDGET=$((8 * 1024 * 1024))
+# The budget is now 100 MB for the WHOLE APP including every plugin
+# (maintainer decision, 2026-08-19), enforced as a SUM by the editor's
+# scripts/wasm-budget.mjs. This per-artifact stop keeps a runaway build
+# from sailing through unnoticed here; the number that governs is the app
+# total. Mirrors plugin-sdk WASM_BUDGETS — change them together.
+BUDGET=$((100 * 1000 * 1000))
 mkdir -p "$OUT"
 
 # Budget guard: the save-back patcher (docx-export) MUST stay a byte-level splice
 # and never call the ooxmlsdk serializer — the first `write_to`/`to_xml`/
 # `serialize_root` monomorphization links the whole WML write codegen and blows
-# the 8 MiB budget. Fail fast on an actual call (comments/descriptions excluded).
+# the app wasm budget. Fail fast on an actual call (comments/descriptions excluded).
 if grep -rnE 'serialize_root\(|\.write_to\(|\.to_xml\(' docx-export/src/ >/dev/null; then
   echo "error: docx-export calls the ooxmlsdk serializer — save-back must byte-splice" >&2
   grep -rnE 'serialize_root\(|\.write_to\(|\.to_xml\(' docx-export/src/ >&2
@@ -48,6 +53,6 @@ fi
 SIZE=$(wc -c < "$OUT/docx_js_bg.wasm" | tr -d ' ')
 echo "docx_js_bg.wasm: $SIZE bytes (budget $BUDGET)"
 if [ "$SIZE" -gt "$BUDGET" ]; then
-  echo "error: wasm artifact exceeds the 8 MiB plugin budget" >&2
+  echo "error: wasm artifact exceeds the 100 MB app wasm budget" >&2
   exit 1
 fi

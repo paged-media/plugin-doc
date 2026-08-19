@@ -23,7 +23,7 @@
 
 **Verification gates, all green:** `cargo build/nextest` (11 tests),
 `cargo clippy -D warnings`, `cargo fmt --check`, `cargo deny check`, the wasm
-build (7.5 MiB, under the 8 MiB budget — unoptimized; CI runs `wasm-opt -Oz`),
+build (7.5 MiB, under the 100 MB app wasm budget — unoptimized; CI runs `wasm-opt -Oz`),
 `pnpm typecheck`, `pnpm test` (host-model), the contract-import lint, and
 `paged-plugin validate`.
 
@@ -170,7 +170,7 @@ range ops, so it sits entirely on the contiguous side.
   the source byte ranges to replace, raw-copies everything outside them, and splices
   hand-built fragments into the holes (byte-identity by construction). It never
   calls the ooxmlsdk serializer (`build-wasm.sh` guards this — linking `write_to`
-  would blow the budget; wasm is 8.12 MiB / 8 MiB budget).
+  would blow the budget; wasm is 8.12 MiB / 100 MB app wasm budget).
 - **Provenance.** `docx-import` stamps each run's source `<w:r>` ordinal
   (`Run.source`) and each paragraph's body ordinal (`Paragraph.source_para_ord`);
   `docx-export::build_bindings` projects them onto lowered story `(block, run)`

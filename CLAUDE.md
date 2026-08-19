@@ -74,7 +74,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo deny check
 
-# wasm artifact (8 MiB budget; lands in packages/doc-bundle/bin/)
+# wasm artifact (100 MB app wasm budget; lands in packages/doc-bundle/bin/)
 bash scripts/build-wasm.sh
 
 # TS (the bundle) — consumes the PUBLISHED @paged-media canaries (no link chain)

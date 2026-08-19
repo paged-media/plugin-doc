@@ -27,6 +27,22 @@ pub enum OoxmlError {
     #[error("not a valid OPC (zip) package: {0}")]
     Zip(#[from] zip::result::ZipError),
 
+    /// A legacy binary Word document (CFB/OLE, the pre-2007 `.doc`
+    /// format), which this engine does not read.
+    ///
+    /// Detected by container magic BEFORE the zip reader runs, because
+    /// some of these files ALSO embed an OPC package further in — real
+    /// example from the corpus: a 420 KB CFB preamble followed by a
+    /// complete `[Content_Types].xml` archive. The zip crate scans for
+    /// the end-of-central-directory record, finds that embedded package,
+    /// and happily enumerates it; main-part resolution then lands on
+    /// `theme/theme/themeManager.xml` and the user sees "unexpected tag
+    /// while parsing Document (expected Document, found a:themeManager)"
+    /// for what is simply an old Word file. Honest degradation (ADR-007)
+    /// means saying which format it is, at the door.
+    #[error("legacy binary Word document (.doc, CFB/OLE) — only OOXML .docx/.dotx is supported; re-save as .docx")]
+    LegacyBinaryDoc,
+
     /// I/O failure while reading or writing part bytes.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

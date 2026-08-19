@@ -76,6 +76,16 @@ impl OpcPackage {
     /// Read a package from `.docx` bytes. Never panics on malformed input — a
     /// non-ZIP payload returns [`OoxmlError::Zip`].
     pub fn read(bytes: &[u8]) -> Result<Self> {
+        // Container sniff BEFORE the zip reader. A legacy .doc is CFB/OLE,
+        // but some of them EMBED a complete OPC package after the CFB
+        // payload; the zip crate finds that by scanning backwards for the
+        // EOCD and opens it, so without this guard an old Word file
+        // half-imports and dies later with a misleading XML error. See
+        // OoxmlError::LegacyBinaryDoc.
+        const CFB_MAGIC: &[u8] = &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+        if bytes.starts_with(CFB_MAGIC) {
+            return Err(crate::error::OoxmlError::LegacyBinaryDoc);
+        }
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
         let mut parts = Vec::with_capacity(archive.len());
         for i in 0..archive.len() {

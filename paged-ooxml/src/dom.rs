@@ -39,7 +39,57 @@ pub use ooxmlsdk;
 ///
 /// Never panics on malformed input — a rejected part surfaces as
 /// [`OoxmlError::Sdk`]. `part_name` is threaded through only for error context.
+/// Deepest element nesting `parse_root` will hand to the SDK.
+///
+/// `ooxmlsdk` deserialises by recursive descent, so nesting depth in the
+/// XML becomes stack depth in the process. Apache POI's corpus carries
+/// `deep-table-cell.docx` for exactly this reason — it is a deliberately
+/// deep table nest that has crashed parsers before, and it crashed this
+/// one: `fatal runtime error: stack overflow, aborting`, SIGABRT, no
+/// unwinding and nothing catchable.
+///
+/// A stack overflow is not a parse error. It takes the whole process
+/// down, which in the editor means the wasm module dies mid-document —
+/// so this has to be refused BEFORE the recursive parser sees it.
+///
+/// 256 is far beyond anything a real document reaches (Word's own table
+/// nesting limit is 20) while still being an order of magnitude below
+/// where the SDK's frames become dangerous.
+const MAX_ELEMENT_DEPTH: usize = 256;
+
+/// Reject XML nested deeper than [`MAX_ELEMENT_DEPTH`] before it reaches
+/// the SDK's recursive descent. Cheap: one non-allocating scan.
+fn depth_within_limit(bytes: &[u8]) -> std::result::Result<(), usize> {
+    let mut reader = quick_xml::Reader::from_reader(bytes);
+    let mut buf = Vec::new();
+    let mut depth = 0usize;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(_)) => {
+                depth += 1;
+                if depth > MAX_ELEMENT_DEPTH {
+                    return Err(depth);
+                }
+            }
+            Ok(quick_xml::events::Event::End(_)) => depth = depth.saturating_sub(1),
+            Ok(quick_xml::events::Event::Eof) => return Ok(()),
+            // A malformed document is the SDK's problem to report, with
+            // its own better message — this guard only judges DEPTH.
+            Err(_) => return Ok(()),
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
 pub fn parse_root<T: SdkType>(part_name: &str, bytes: &[u8]) -> Result<T> {
+    if let Err(depth) = depth_within_limit(bytes) {
+        return Err(OoxmlError::NestingTooDeep {
+            part: part_name.to_string(),
+            depth,
+            limit: MAX_ELEMENT_DEPTH,
+        });
+    }
     T::from_bytes(bytes).map_err(|e| OoxmlError::Sdk(format!("{part_name}: {e}")))
 }
 

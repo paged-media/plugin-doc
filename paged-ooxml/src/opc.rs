@@ -89,6 +89,15 @@ impl OpcPackage {
         if bytes.starts_with(b"{\\rtf") {
             return Err(crate::error::OoxmlError::RichTextFormat);
         }
+        // WinWord 2.0 — older than CFB/OLE and a different container
+        // entirely, so the magic above does not catch it. Found in
+        // Apache POI's corpus (`word2.doc`), which was the first time
+        // this parser had seen one: it fell through to the zip reader
+        // and reported "Could not find EOCD", telling the user nothing.
+        const WINWORD2_MAGIC: &[u8] = &[0xDB, 0xA5, 0x2D, 0x00];
+        if bytes.starts_with(WINWORD2_MAGIC) {
+            return Err(crate::error::OoxmlError::LegacyBinaryDoc);
+        }
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
         let mut parts = Vec::with_capacity(archive.len());
         for i in 0..archive.len() {

@@ -40,7 +40,7 @@ pub enum OoxmlError {
     /// while parsing Document (expected Document, found a:themeManager)"
     /// for what is simply an old Word file. Honest degradation (ADR-007)
     /// means saying which format it is, at the door.
-    #[error("legacy binary Word document (.doc, CFB/OLE) — only OOXML .docx/.dotx is supported; re-save as .docx")]
+    #[error("legacy binary Word document (.doc — CFB/OLE or WinWord 2.0) — only OOXML .docx/.dotx is supported; re-save as .docx")]
     LegacyBinaryDoc,
 
     /// Rich Text Format, which Word writes and users routinely save with a
@@ -49,6 +49,23 @@ pub enum OoxmlError {
     /// find EOCD", which tells the user nothing about what they opened.
     #[error("Rich Text Format document — only OOXML .docx/.dotx is supported; re-save as .docx")]
     RichTextFormat,
+
+    /// XML nested deeper than the parser can safely descend.
+    ///
+    /// `ooxmlsdk` deserialises by recursive descent, so nesting depth
+    /// becomes stack depth — and a stack overflow aborts the process
+    /// rather than returning an error. Refused at the door instead, so
+    /// the caller gets a diagnosable failure rather than a dead wasm
+    /// module. Found via Apache POI's `deep-table-cell.docx`.
+    #[error("{part}: XML nested {depth} levels deep, past the {limit} limit — refusing rather than risking a stack overflow")]
+    NestingTooDeep {
+        /// The part that was too deep.
+        part: String,
+        /// Depth reached before the guard tripped.
+        depth: usize,
+        /// The configured ceiling.
+        limit: usize,
+    },
 
     /// I/O failure while reading or writing part bytes.
     #[error("io error: {0}")]

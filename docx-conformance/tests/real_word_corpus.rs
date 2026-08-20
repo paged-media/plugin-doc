@@ -64,36 +64,59 @@ fn corpus_word_files() -> Option<Vec<PathBuf>> {
     } else {
         PathBuf::from(switch)
     };
-    let packs = root.join("idml/packs");
-    if !packs.is_dir() {
-        eprintln!(
-            "SKIP doc corpus lane: {} is not a directory",
-            packs.display()
-        );
-        return None;
-    }
+    // Walk EVERY group's packs, not just idml's. Since 2026-08-20 a pack
+    // is filed under its PRIMARY format, so the 13 real Word packs live
+    // at `docx/packs/<pack>/primary.docx`. Globbing only
+    // `idml/packs/*/assets/word` found 23 files and missed all 13 —
+    // including the cross-format packs where the same document ships as
+    // BOTH .docx and .idml, which is the whole reason they are here.
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&packs) else {
-        eprintln!("SKIP doc corpus lane: cannot read {}", packs.display());
-        return None;
-    };
-    for pack in entries.flatten() {
-        let word = pack.path().join("assets/word");
-        let Ok(files) = std::fs::read_dir(&word) else {
+    let mut any_group = false;
+    for group in ["docx", "idml", "psd", "html", "vector", "pptx"] {
+        let Ok(entries) = std::fs::read_dir(root.join(group).join("packs")) else {
             continue;
         };
-        for f in files.flatten() {
-            let p = f.path();
-            if p.is_file() {
-                out.push(p);
+        any_group = true;
+        for pack in entries.flatten() {
+            let dir = pack.path();
+            for cand in ["primary.docx", "primary.doc", "primary.dotx"] {
+                let p = dir.join(cand);
+                if p.is_file() {
+                    out.push(p);
+                }
+            }
+            // `word` is the pre-2026-08-20 kind name, `doc` the current.
+            for kind in ["doc", "word"] {
+                let Ok(files) = std::fs::read_dir(dir.join("assets").join(kind)) else {
+                    continue;
+                };
+                for f in files.flatten() {
+                    let p = f.path();
+                    let is_word = p.extension().is_some_and(|e| {
+                        matches!(
+                            e.to_string_lossy().to_lowercase().as_str(),
+                            "docx" | "doc" | "dotx"
+                        )
+                    });
+                    if p.is_file() && is_word {
+                        out.push(p);
+                    }
+                }
             }
         }
+    }
+    if !any_group {
+        eprintln!(
+            "SKIP doc corpus lane: no <group>/packs under {}",
+            root.display()
+        );
+        return None;
     }
     out.sort();
     if out.is_empty() {
         eprintln!(
-            "SKIP doc corpus lane: no assets/word/* under {} — run corpus/harness/unpack.sh",
-            packs.display()
+            "SKIP doc corpus lane: no Word documents under {} — run corpus/harness/unpack.sh",
+            root.display()
         );
         return None;
     }

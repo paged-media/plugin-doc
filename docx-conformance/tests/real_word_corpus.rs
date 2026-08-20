@@ -64,7 +64,7 @@ fn corpus_word_files() -> Option<Vec<PathBuf>> {
     } else {
         PathBuf::from(switch)
     };
-    let packs = root.join("vendor/envato/packs");
+    let packs = root.join("idml/packs");
     if !packs.is_dir() {
         eprintln!(
             "SKIP doc corpus lane: {} is not a directory",

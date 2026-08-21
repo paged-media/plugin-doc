@@ -40,10 +40,29 @@
 //! reading "Could not find EOCD". Until now that machinery faced FOUR
 //! files. It now faces 159.
 //!
+//! `docx/poi-converted/` inverts that bargain. Those are the same
+//! legacy `.doc` files re-saved as OOXML by desktop Word 16
+//! (`corpus/harness/convert-office.sh`, a maintainer tool; CI consumes
+//! the committed output). The INPUT was a bug-report corpus, but the
+//! OUTPUT is Word's own writer — so the bar there is the
+//! `real_word_corpus.rs` bar: **every one must import**, and a refusal
+//! is a real defect rather than a curiosity. What they add is twenty
+//! years of content odd enough to file a bug about, expressed in the
+//! OOXML of the producer this importer exists to read.
+//!
+//! 128 of the 159 converted, and 128/128 import as of 2026-08-21, so
+//! that starts green and is a gate rather than a ratchet. The 31 Word
+//! itself would not re-save are the population you would expect: 11
+//! `clusterfuzz-testcase-*`, three encrypted, six in the Word 2.0/6.0/95
+//! formats modern Word blocks by policy, and eleven POI bug-report files
+//! broken enough that Word declines them too. A file Word cannot read is
+//! not evidence about this importer either way.
+//!
 //! Licence: Apache-2.0. These and the sibling `xlsx/poi` set are the
 //! first REDISTRIBUTABLE fixtures this project carries — everything else
 //! is Envato, which grants use and not redistribution. See
-//! `corpus/docx/poi/PROVENANCE.md`.
+//! `corpus/docx/poi/PROVENANCE.md`. The conversions inherit that licence
+//! from their inputs.
 //!
 //! OPT-IN — the assets live in the private corpus checkout:
 //!
@@ -51,11 +70,14 @@
 //! PAGED_DOCX_CORPUS=1 cargo test -p docx-conformance --test poi_corpus -- --ignored --nocapture
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use docx_import::import_docx;
 
-fn poi_files() -> Option<Vec<PathBuf>> {
+const EXTS: &[&str] = &["docx", "dotx", "docm", "doc"];
+
+/// The corpus `docx/` root, or `None` with a printed reason.
+fn docx_root() -> Option<PathBuf> {
     let Some(switch) = std::env::var_os("PAGED_DOCX_CORPUS") else {
         eprintln!(
             "SKIP poi docx lane: PAGED_DOCX_CORPUS unset \
@@ -69,7 +91,64 @@ fn poi_files() -> Option<Vec<PathBuf>> {
     } else {
         PathBuf::from(switch)
     };
-    let dir = root.join("docx/poi");
+    let dir = root.join("docx");
+    if !dir.is_dir() {
+        eprintln!("SKIP poi docx lane: {} not readable", dir.display());
+        return None;
+    }
+    Some(dir)
+}
+
+/// Recursive walk — `docx-conformance` has no `walkdir`, and pulling a
+/// dependency in for one test lane is not worth it.
+fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_symlink() {
+            continue;
+        }
+        if p.is_dir() {
+            // Skip dot-dirs; `Document fonts/.cache` and friends are
+            // machine-local.
+            if !p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+            {
+                walk(&p, out);
+            }
+        } else if p.is_file()
+            && p.extension()
+                .is_some_and(|e| EXTS.contains(&e.to_string_lossy().to_lowercase().as_str()))
+        {
+            out.push(p);
+        }
+    }
+}
+
+/// Every document under one named source directory, e.g. `poi-converted`.
+///
+/// The walk is recursive on purpose. The non-recursive `read_dir` this
+/// replaced could only ever see `docx/poi`, which is why
+/// `docx/poi-converted/` sat in the corpus unwired to any assertion.
+fn source_files(source: &str) -> Option<Vec<PathBuf>> {
+    let root = docx_root()?;
+    let dir = root.join(source);
+    let mut out = Vec::new();
+    walk(&dir, &mut out);
+    out.sort();
+    if out.is_empty() {
+        eprintln!("SKIP: no documents under {}", dir.display());
+        return None;
+    }
+    Some(out)
+}
+
+fn poi_files() -> Option<Vec<PathBuf>> {
+    let root = docx_root()?;
+    let dir = root.join("poi");
     let Ok(entries) = std::fs::read_dir(&dir) else {
         eprintln!("SKIP poi docx lane: {} not readable", dir.display());
         return None;
@@ -95,7 +174,7 @@ fn poi_files() -> Option<Vec<PathBuf>> {
     Some(out)
 }
 
-fn ext_of(p: &std::path::Path) -> String {
+fn ext_of(p: &Path) -> String {
     p.extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default()
@@ -193,5 +272,47 @@ fn every_legacy_doc_is_refused_by_name() {
          user learns what they opened: {:?}",
         unnamed.len(),
         &unnamed[..unnamed.len().min(5)]
+    );
+}
+
+#[test]
+#[ignore = "poi docx lane: opt-in (PAGED_DOCX_CORPUS=1 + the private corpus mount)"]
+fn every_converted_document_imports() {
+    let Some(files) = source_files("poi-converted") else {
+        return;
+    };
+
+    // The inverse of the bargain above. Whatever the input was, desktop
+    // Word 16 wrote these — so a refusal here is this importer failing
+    // on Word's own output, which is a defect, not the "upstream ships
+    // deliberately-broken fixtures" story that makes the POI rate a
+    // report rather than a gate.
+    //
+    // Same bar and same shape as `real_xlsx_corpus.rs::
+    // every_converted_workbook_opens`, which gates the Excel half of the
+    // same harness.
+    let mut failed = Vec::new();
+    for path in &files {
+        let bytes = std::fs::read(path).expect("read converted fixture");
+        if let Err(e) = import_docx(&bytes) {
+            failed.push(format!(
+                "{}: {e:?}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+        }
+    }
+
+    println!(
+        "poi-converted: {} file(s), {} imported",
+        files.len(),
+        files.len() - failed.len()
+    );
+    assert!(
+        failed.is_empty(),
+        "{} of {} Word-converted document(s) failed to import — Word 16 \
+         wrote every one of these, so each is a real importer defect:\n  {}",
+        failed.len(),
+        files.len(),
+        failed.join("\n  ")
     );
 }

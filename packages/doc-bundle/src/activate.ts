@@ -27,6 +27,7 @@ import type {
 } from "@paged-media/plugin-api";
 
 import { DocEngine } from "./engine.js";
+import { contributeMenu } from "./menu";
 import { createDocStore } from "./panels/outline-model.js";
 import { makeOutlinePanel } from "./panels/outline-panel.js";
 import { placeEmbedded } from "./place.js";
@@ -243,8 +244,13 @@ export function activate(host: BundleHost): BundleHandle {
   }
 
   host.log.info("paged.doc activated");
+  // F1 — the menu bar. Before plugin-api 0.2.33 there was no menu door,
+  // so every command in this bundle lived behind Cmd+K and nowhere else.
+  const menuSub = contributeMenu(host);
+
   return {
     dispose() {
+      menuSub.dispose();
       for (const d of disposers) d();
     },
   };

@@ -198,7 +198,10 @@ export async function placeEmbedded(
   }
 
   // Persist the source package (travels with the .paged file) + the binding.
-  const partPath = `paged/media.paged.doc/${storyId}/source.docx`;
+  // Relative to this plugin's `paged/media.paged.doc/` subtree — the host
+  // prepends the namespace (PartsSurface contract); an absolute-style path
+  // here doubled the prefix in the saved container.
+  const partPath = `${storyId}/source.docx`;
   try {
     await host.parts.write(partPath, source);
     await host.document.setMetadata(frameId, {

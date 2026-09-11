@@ -26,12 +26,30 @@ DOM), `docx-core` (frozen semantic WML view), `docx-import` (WML → docx-core),
 `docx-conformance` (TEST-ONLY). TS packages (`packages/*`): `doc-host-model` (pure
 IR → Mutation[]) + `doc-bundle` (`@paged-media/doc`: manifest + `activate`).
 
-## Project state & feature matrix (paged-media/state)
+## Project State & Feature Matrix (cockpit)
 
-The canonical feature inventory + live status for ALL Paged repos live in
-`paged-media/state` (dashboard: https://state.paged.media). There is NO feature
-matrix in this repo; do not create one. NEW CAPABILITY → registry row; STATUS
-CHANGE → registry, not prose.
+The feature inventory, test linkage and live status for ALL Paged repos are derived by
+[Cockpit](https://github.com/drietsch/cockpit) from `~/paged/cockpit/` (`cockpit.toml` with
+`root = ".."`; features in `cockpit/docs/features/<chapter>/<id>.md`). There is NO feature
+matrix in this repo; do not create one.
+
+Rules for every code change in this repo:
+
+1. NEW CAPABILITY → feature file. If your change adds or completes a feature, add or update
+   `cockpit/docs/features/<chapter>/<id>.md` (separate commit in `paged/cockpit`, referenced
+   from this one). Feature ids are immutable; rename with `superseded_by`.
+2. EVERY NEW TEST → feature link. Playwright: `{ tag: ['@feat:<id>'] }`. Rust: a test name
+   ending in `__feat__<id_with_underscores>` or containing `[<id>]`. Otherwise an entry in
+   `cockpit/test-map.yaml`.
+3. STATUS CHANGE → `claims:` in the feature file, never prose. "X is now shipped/partial" is a
+   claim edit; whether it *works* is computed from evidence and cannot be written.
+4. BEFORE claiming a feature done: `cockpit feature <id> --json` (or its page in
+   `cockpit serve`) — done means the linked tests are green and were produced after the
+   latest implementation commit.
+5. `cockpit validate --strict` is the gate (references resolve, required evidence present and
+   fresh). `cockpit pull` fetches the newest CI artifacts; `cockpit status` is the summary.
+6. FOUND A BUG while working? If a test exposes it, let it fail and push — the failure shows
+   up as attention on its feature. Never commit `.cockpit/`.
 
 ## Hard rules (this repo's constitution)
 

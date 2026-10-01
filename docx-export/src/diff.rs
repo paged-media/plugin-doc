@@ -30,7 +30,7 @@
 use docx_core::{RunProps, VertAlign};
 use docx_lower::ir::{LoweredBlock, LoweredDoc, PropValue, StyleProp};
 
-use crate::bindings::DocxBindings;
+use crate::bindings::{BlockBinding, DocxBindings};
 use crate::edit::{CellRunEdit, EditSet, ParaEdit, RunEdit, StructuralEdit};
 
 /// Diff two lowerings into the edits needed to turn `base` into `edited`.
@@ -202,9 +202,23 @@ pub fn diff(base: &LoweredDoc, edited: &LoweredDoc, bindings: &DocxBindings) -> 
         }
 
         // Increment 3 — the paragraph's own `<w:pPr>` (style + direct formatting).
-        let (b_props, b_style) = effective_para_props(bp.para_style_id.as_deref(), base, bindings);
-        let (e_props, e_style) =
+        let (mut b_props, b_style) =
+            effective_para_props(bp.para_style_id.as_deref(), base, bindings);
+        let (mut e_props, e_style) =
             effective_para_props(ep.para_style_id.as_deref(), edited, bindings);
+        // A paragraph with an absolute-position tab lowers with the ptab's
+        // position as its tab stop, not Word's own stops: where the edit
+        // kept that stop, Word's stops are what goes back.
+        if let Some(BlockBinding::Paragraph {
+            word_tabs: Some(word_tabs),
+            ..
+        }) = bindings.blocks.get(block_idx)
+        {
+            if e_props.tabs == b_props.tabs {
+                e_props.tabs = word_tabs.clone();
+                b_props.tabs = word_tabs.clone();
+            }
+        }
         if b_props != e_props || b_style != e_style {
             paragraphs.push(ParaEdit {
                 block: block_idx,

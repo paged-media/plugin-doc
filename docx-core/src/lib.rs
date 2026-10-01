@@ -35,6 +35,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod symbols;
+pub use symbols::symbol_char;
+
 /// A parsed Word document: the body in reading order, the style catalog, and the
 /// sections (page geometry).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -163,6 +166,58 @@ pub enum RunSource {
 /// line break in `insertText` text (the paragraph stays one paragraph).
 pub const LINE_BREAK: char = '\u{2028}';
 
+/// Word's optional hyphen (`<w:softHyphen/>`) in [`Run::text`]: U+00AD SOFT
+/// HYPHEN, which the engine's composer takes as the only place its word may
+/// break, drawing a hyphen there and nothing elsewhere.
+pub const SOFT_HYPHEN: char = '\u{00AD}';
+
+/// An absolute-position tab (`<w:ptab>`), which is a `\t` in [`Run::text`]
+/// at char offset `at`: unlike a tab, it goes to a position of its own
+/// rather than to the next tab stop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PositionalTab {
+    /// Char offset of its `\t` in the run's text.
+    pub at: usize,
+    /// `@w:alignment`: how the text after it sits at the position.
+    pub alignment: PtabAlignment,
+    /// `@w:relativeTo`: the position is the margins' or the indents'.
+    pub relative_to: PtabBase,
+    /// `@w:leader` as its display character (`None` for `none`).
+    pub leader: Option<String>,
+}
+
+/// `w:ptab/@w:alignment`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PtabAlignment {
+    /// At the left margin / indent.
+    Left,
+    /// Centred between the margins / indents.
+    Center,
+    /// At the right margin / indent.
+    Right,
+}
+
+/// `w:ptab/@w:relativeTo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PtabBase {
+    Margin,
+    Indent,
+}
+
+/// A symbol character (`<w:sym>`) in a run: its Unicode equivalent sits in
+/// [`Run::text`] at char offset `at`, or, with no equivalent
+/// ([`symbol_char`]), nothing does and `at` is where it was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunSymbol {
+    pub at: usize,
+    /// `@w:font`.
+    pub font: Option<String>,
+    /// `@w:char`, as written (hex).
+    pub code: String,
+    /// The character carried in the text, if any.
+    pub char: Option<char>,
+}
+
 /// A Word run (`w:r`): direct character formatting plus its text.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Run {
@@ -170,16 +225,24 @@ pub struct Run {
     pub style_id: Option<String>,
     /// Direct character formatting (`w:rPr`).
     pub props: RunProps,
-    /// The concatenated text of the run's `w:t` children (tabs as `\t`;
-    /// text-wrapping breaks `w:br` / `w:cr` as [`LINE_BREAK`], U+2028, a line
-    /// break inside the paragraph). Page and column breaks are NOT in the
-    /// text: they are [`Run::breaks`].
+    /// The concatenated text of the run's `w:t` children (tabs and
+    /// absolute-position tabs as `\t`; text-wrapping breaks `w:br` / `w:cr`
+    /// as [`LINE_BREAK`], U+2028, a line break inside the paragraph;
+    /// `<w:noBreakHyphen/>` as U+2011, `<w:softHyphen/>` as [`SOFT_HYPHEN`],
+    /// a `<w:sym>` as its Unicode equivalent where it has one). Page and
+    /// column breaks are NOT in the text: they are [`Run::breaks`].
     pub text: String,
     /// `w:br w:type="page"|"column"` in this run, each at the char offset into
     /// [`Run::text`] where it sits (thoughts ADR 028/029: the content after
     /// one starts on a new page or column).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breaks: Vec<RunBreak>,
+    /// `<w:ptab>` in this run, each a `\t` in [`Run::text`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ptabs: Vec<PositionalTab>,
+    /// `<w:sym>` in this run, carried or not ([`RunSymbol`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub symbols: Vec<RunSymbol>,
     /// A `w:drawing` image carried on this run (`text` is empty for such a run).
     pub image: Option<Image>,
     /// When this run sits inside a `w:hyperlink`, its resolved target (an

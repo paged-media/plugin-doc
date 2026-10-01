@@ -275,12 +275,30 @@ function cellText(cell: LoweredCell): string {
   return cell.paragraphs.map((p) => p.runs.map((r) => r.text).join("")).join("\n");
 }
 
+/** A cell whose Word content is one EMPTY paragraph that carries a paragraph
+ *  style. `insertTable` mints its cells with NO paragraph at all (core
+ *  `new_table_cell`), so a caret there is refused ("caret offset 0 addresses
+ *  no paragraph (story length 0)"). An empty `insertText` seeds the cell's
+ *  one empty paragraph (core `apply_insert_text`), which the caret can then
+ *  style. */
+function isStyledEmptyCell(cell: LoweredCell): boolean {
+  return cellText(cell).length === 0 && cell.paragraphs.some((p) => p.paraStyleId);
+}
+
 /** The cell-pour + merge batch for a resolved `tableId`: `insertText` per cell
- *  (addressed by TextCellAddr) + `setCellSpan` per merged cell. */
+ *  (addressed by TextCellAddr) + `setCellSpan` per merged cell. A styled cell
+ *  with no text gets an EMPTY `insertText`, so it has the paragraph its caret
+ *  styles ({@link buildTableCellCarets}). */
 export function buildTableCells(table: LoweredTable, storyId: string, tableId: string): Mutation {
   const ops: Mutation[] = [];
   for (const cell of table.cells) {
     const text = cellText(cell);
+    if (isStyledEmptyCell(cell)) {
+      ops.push({
+        op: "insertText",
+        args: { storyId, offset: 0, text: "", cell: { tableId, row: cell.row, col: cell.col } },
+      } as Mutation);
+    }
     if (text.length > 0) {
       const addr = { tableId, row: cell.row, col: cell.col };
       ops.push({
@@ -329,15 +347,15 @@ export function buildTableCells(table: LoweredTable, storyId: string, tableId: s
  *  with a `cell` address restarts at 0, and so do the cell's style ranges).
  *  A blank line occupies no characters, so it sits at the offset its next
  *  paragraph starts at, and consecutive ones share it: only the LAST caret
- *  per cell offset is emitted (the body's rule). Only cells the pour gives
- *  text to are addressed — a cell of one empty paragraph gets no
- *  `insertText`, so the engine has no paragraph there for a caret to name.
+ *  per cell offset is emitted (the body's rule). A cell of one empty
+ *  paragraph is addressed too: {@link buildTableCells} seeds its paragraph
+ *  with an empty `insertText`, and its caret at 0 styles it.
  *  Applied after every cell is poured (see {@link buildStoryBlocks}), so an
  *  engine that refuses a caret costs no cell its text. */
 export function buildTableCellCarets(table: LoweredTable, storyId: string, tableId: string): Mutation[] {
   const ops: Mutation[] = [];
   for (const cell of table.cells) {
-    if (cellText(cell).length === 0) continue;
+    if (cellText(cell).length === 0 && !isStyledEmptyCell(cell)) continue;
     const addr = { tableId, row: cell.row, col: cell.col };
     const last = new Map<number, string>();
     let offset = 0;

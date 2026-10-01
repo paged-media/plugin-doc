@@ -1,5 +1,5 @@
 {
- "source": "scripts/word-run-specials-probe.sh: Microsoft Word saved run_specials_docx() and the edited save-back of docx-conformance/tests/run_specials.rs (EDITS) as PDF; pdftotext -bbox, each line's words with their left edge in pt from the page's left edge. Tab stops at x = 108 and 180 (left margin 36).",
+ "source": "scripts/word-run-specials-probe.sh: Microsoft Word saved run_specials_docx() and the edited save-back of docx-conformance/tests/run_specials.rs (EDITS) as PDF; pdftotext -bbox, each line's words with their left edge in pt from the page's left edge. Tab stops at x = 108 and 180 (left margin 36). Re-asked 2026-10-01 after the symbol (S01), optional hyphen (H01) and ptab (P01) edits stopped being refused: Word opened the edited save without a repair prompt and kept the bullet, the invisible hyphen and the right-aligned text after the ptab.",
  "date": "2026-10-01",
  "original": [
   [
@@ -190,6 +190,10 @@
    [
     "before•after",
     56.5
+   ],
+   [
+    "EDITED",
+    112.1
    ]
   ],
   [
@@ -200,6 +204,10 @@
    [
     "hyphenation",
     57.0
+   ],
+   [
+    "EDITED",
+    114.3
    ]
   ],
   [
@@ -213,7 +221,11 @@
    ],
    [
     "right",
-    304.7
+    265.2
+   ],
+   [
+    "EDITED",
+    287.2
    ]
   ]
  ]

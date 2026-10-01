@@ -703,9 +703,10 @@ pub fn line_breaks_docx() -> Vec<u8> {
 /// left margin), so a tab is visible as where the text after it starts.
 ///
 /// The run children the import turns into a character of the text
-/// (`<w:tab/>` → `\t`, `<w:noBreakHyphen/>` → U+2011, a plain `<w:br/>` →
-/// U+2028), and the ones it does not carry at all (`<w:sym>`,
-/// `<w:softHyphen/>`, `<w:ptab>`), which an edited save must refuse.
+/// (`<w:tab/>` and `<w:ptab>` → `\t`, `<w:noBreakHyphen/>` → U+2011,
+/// `<w:softHyphen/>` → U+00AD, a plain `<w:br/>` → U+2028, a `<w:sym>` →
+/// its Unicode equivalent), which an edited save writes back as the
+/// elements they were.
 pub const RUN_SPECIAL_CASES: &[(&str, &str)] = &[
     // A tab between two words of one run.
     (
@@ -780,6 +781,131 @@ pub fn run_specials_docx() -> Vec<u8> {
         ("word/styles.xml", STYLES.as_bytes()),
     ])
 }
+
+/// The cases of [`symbols_docx`], in document order: a label, the
+/// paragraph's extra `w:pPr` children, and its run content (`{R}` is the
+/// fixture's run properties). After them comes a one-row table and a
+/// paragraph `AFTER` (see [`symbols_docx`]).
+pub const SYMBOL_CASES: &[(&str, &str, &str)] = &[
+    // Symbol: the bullet, alpha, Delta, Omega.
+    (
+        "S01",
+        "",
+        r#"<w:r>{R}<w:t>S01 a</w:t><w:sym w:font="Symbol" w:char="F0B7"/><w:t xml:space="preserve">b </w:t><w:sym w:font="Symbol" w:char="F061"/><w:sym w:font="Symbol" w:char="F044"/><w:sym w:font="Symbol" w:char="F057"/></w:r>"#,
+    ),
+    // Wingdings: check, ballot x, small square, arrowhead, smiley.
+    (
+        "S02",
+        "",
+        r#"<w:r>{R}<w:t xml:space="preserve">S02 </w:t><w:sym w:font="Wingdings" w:char="F0FC"/><w:t xml:space="preserve"> </w:t><w:sym w:font="Wingdings" w:char="F0FB"/><w:t xml:space="preserve"> </w:t><w:sym w:font="Wingdings" w:char="F0A7"/><w:t xml:space="preserve"> </w:t><w:sym w:font="Wingdings" w:char="F0D8"/><w:t xml:space="preserve"> </w:t><w:sym w:font="Wingdings" w:char="F04A"/></w:r>"#,
+    ),
+    // Wingdings' Windows logo: no Unicode equivalent.
+    (
+        "S03",
+        "",
+        r#"<w:r>{R}<w:t>S03 x</w:t><w:sym w:font="Wingdings" w:char="F0FF"/><w:t>y</w:t></w:r>"#,
+    ),
+    // A long word with optional hyphens in a 90 pt measure: Word breaks it
+    // at one and shows a hyphen there.
+    (
+        "H01",
+        r#"<w:ind w:right="3960"/>"#,
+        r#"<w:r>{R}<w:t>H01 Donau</w:t><w:softHyphen/><w:t>dampf</w:t><w:softHyphen/><w:t>schiff</w:t><w:softHyphen/><w:t>fahrts</w:t><w:softHyphen/><w:t>gesell</w:t><w:softHyphen/><w:t>schaft</w:t></w:r>"#,
+    ),
+    // The same word with NO optional hyphens: what Word does without them
+    // (its automatic hyphenation is off by default).
+    (
+        "H02",
+        r#"<w:ind w:right="3960"/>"#,
+        r#"<w:r>{R}<w:t>H02 Donaudampfschifffahrtsgesellschaft</w:t></w:r>"#,
+    ),
+    // An optional hyphen where the line does not break: nothing shows.
+    (
+        "H03",
+        "",
+        r#"<w:r>{R}<w:t>H03 un</w:t><w:softHyphen/><w:t>broken</w:t></w:r>"#,
+    ),
+    // Absolute-position tabs: right of the margins, centre of the margins,
+    // right of the indents (1 in each side), right of the margins with a
+    // dot leader.
+    (
+        "P01",
+        "",
+        r#"<w:r>{R}<w:t>P01 left</w:t><w:ptab w:relativeTo="margin" w:alignment="right" w:leader="none"/><w:t>right</w:t></w:r>"#,
+    ),
+    (
+        "P02",
+        "",
+        r#"<w:r>{R}<w:t>P02</w:t><w:ptab w:relativeTo="margin" w:alignment="center" w:leader="none"/><w:t>centre</w:t></w:r>"#,
+    ),
+    (
+        "P03",
+        r#"<w:ind w:left="1440" w:right="1440"/>"#,
+        r#"<w:r>{R}<w:t>P03</w:t><w:ptab w:relativeTo="indent" w:alignment="right" w:leader="none"/><w:t>indent</w:t></w:r>"#,
+    ),
+    (
+        "P04",
+        "",
+        r#"<w:r>{R}<w:t>P04</w:t><w:ptab w:relativeTo="margin" w:alignment="right" w:leader="dot"/><w:t>dots</w:t></w:r>"#,
+    ),
+];
+
+/// Symbols, optional hyphens, absolute-position tabs and empty table cells
+/// ([`SYMBOL_CASES`]) on a 5 in × 7 in page (288 pt of text width from a
+/// 36 pt margin), Arial 10 pt on an exact 12 pt pitch. Then a
+/// one-row table of three 100 pt cells: `C01`, an EMPTY paragraph with an
+/// exact 48 pt line, and an empty paragraph with no properties; then a
+/// paragraph `AFTER`, whose position shows how tall Word made the row. Word
+/// saves it as PDF in `scripts/word-symbols-probe.sh`
+/// (`fixtures/symbols.word.json`).
+pub fn symbols_docx() -> Vec<u8> {
+    let rpr = r#"<w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="20"/></w:rPr>"#;
+    let spacing = r#"<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="exact"/>"#;
+    let mut body = String::new();
+    for (_, ppr, runs) in SYMBOL_CASES {
+        body.push_str(&format!(
+            r#"<w:p><w:pPr>{spacing}{ppr}{rpr}</w:pPr>{}</w:p>"#,
+            runs.replace("{R}", rpr)
+        ));
+    }
+    let cell = |ppr: &str, runs: &str| {
+        format!(
+            r#"<w:tc><w:tcPr><w:tcW w:w="2000" w:type="dxa"/></w:tcPr><w:p>{ppr}{runs}</w:p></w:tc>"#
+        )
+    };
+    let row = [
+        cell(
+            &format!("<w:pPr>{spacing}</w:pPr>"),
+            &format!("<w:r>{rpr}<w:t>C01</w:t></w:r>"),
+        ),
+        cell(
+            r#"<w:pPr><w:spacing w:before="0" w:after="0" w:line="960" w:lineRule="exact"/></w:pPr>"#,
+            "",
+        ),
+        cell("", ""),
+    ]
+    .concat();
+    body.push_str(&format!(
+        r#"<w:tbl><w:tblPr><w:tblW w:w="6000" w:type="dxa"/><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid><w:tr>{row}</w:tr></w:tbl><w:p><w:pPr>{spacing}{rpr}</w:pPr><w:r>{rpr}<w:t>AFTER</w:t></w:r></w:p>"#
+    ));
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}<w:sectPr>{SYMBOLS_PAGE}<w:cols w:space="720"/></w:sectPr></w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+    ])
+}
+
+/// The page of [`symbols_docx`]: 5 in × 7 in, 0.5 in margins → a 288 pt wide
+/// body, tall enough for every case on one page.
+const SYMBOLS_PAGE: &str = r#"<w:pgSz w:w="7200" w:h="10080"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/>"#;
 
 /// One section of [`continuous_docx`]: its label prefix, how it starts, its
 /// paragraph count, column count, page size and margins (twips).

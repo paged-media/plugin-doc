@@ -29,7 +29,8 @@ use quick_xml::events::Event;
 use quick_xml::name::QName;
 use quick_xml::Reader;
 
-use crate::rpr::{render_text, RunSpecials, SpecialKind, SpecialSource};
+use crate::rpr::{render_text, RunSpecials, SpecialSource};
+use docx_core::{LINE_BREAK, SOFT_HYPHEN};
 
 /// A run to patch, addressed by source ordinals + the pre-rendered replacements.
 #[derive(Debug, Clone)]
@@ -563,58 +564,75 @@ fn find_target(targets: &[ResolvedTarget], p: i64, r: i64) -> Option<&ResolvedTa
         .find(|t| t.wrapper.is_none() && t.para_ord as i64 == p && t.run_ord as i64 == r)
 }
 
-/// The [`SpecialKind`] of a run child the import turned into a character of
-/// the run's text: `<w:br/>` with no `w:type` or `w:type="textWrapping"` and
-/// `<w:cr/>` (U+2028), `<w:tab/>` (`\t`), `<w:noBreakHyphen/>` (U+2011). A
-/// page or column `w:br` is a pagination instruction, not text, and is never
-/// one.
-fn special_kind(e: &quick_xml::events::BytesStart<'_>) -> Option<SpecialKind> {
+/// What a run child is to the run's text.
+enum Special {
+    /// The import turned it into this ONE character of the text:
+    /// `<w:br/>` with no `w:type` or `w:type="textWrapping"` and `<w:cr/>`
+    /// (U+2028), `<w:tab/>` and `<w:ptab>` (`\t`), `<w:noBreakHyphen/>`
+    /// (U+2011), `<w:softHyphen/>` (U+00AD), a `<w:sym>` with a Unicode
+    /// equivalent (that character, [`docx_core::symbol_char`]).
+    Char(char),
+    /// It has no character in the text (a `<w:sym>` with no equivalent), so
+    /// an edited text cannot say where it goes.
+    Unplaceable,
+    /// Not text at all (a page or column `w:br` is a pagination
+    /// instruction; an `rPr`, a drawing, …).
+    No,
+}
+
+fn attr(e: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
+    e.attributes()
+        .flatten()
+        .find(|a| local_name(a.key.as_ref()) == name)
+        .map(|a| String::from_utf8_lossy(&a.value).into_owned())
+}
+
+fn special(e: &quick_xml::events::BytesStart<'_>) -> Special {
     match local_name(e.name().as_ref()) {
-        b"cr" => Some(SpecialKind::LineBreak),
-        b"tab" => Some(SpecialKind::Tab),
-        b"noBreakHyphen" => Some(SpecialKind::NoBreakHyphen),
-        b"br" => e
-            .attributes()
-            .flatten()
-            .find(|a| local_name(a.key.as_ref()) == b"type")
-            .is_none_or(|a| a.value.as_ref() == b"textWrapping")
-            .then_some(SpecialKind::LineBreak),
-        _ => None,
+        b"cr" => Special::Char(LINE_BREAK),
+        b"tab" | b"ptab" => Special::Char('\t'),
+        b"noBreakHyphen" => Special::Char('\u{2011}'),
+        b"softHyphen" => Special::Char(SOFT_HYPHEN),
+        b"sym" => match docx_core::symbol_char(
+            attr(e, b"font").as_deref(),
+            &attr(e, b"char").unwrap_or_default(),
+        ) {
+            Some(c) => Special::Char(c),
+            None => Special::Unplaceable,
+        },
+        b"br" if attr(e, b"type").is_none_or(|t| t == "textWrapping") => Special::Char(LINE_BREAK),
+        _ => Special::No,
     }
 }
 
-/// Run content the import does NOT carry as text (it has no character in the
-/// engine's text), so an edited text cannot say where it goes: an edit that
-/// rewrites such a run's text is refused, never guessed.
-const UNPLACEABLE: &[&[u8]] = &[b"sym", b"softHyphen", b"ptab"];
+fn is_special_char(e: &quick_xml::events::BytesStart<'_>) -> bool {
+    matches!(special(e), Special::Char(_))
+}
 
-/// Every special character of a `<w:t>`'s content, in order, as literals.
-fn literal_specials(reader: &mut Reader<&[u8]>, specials: &mut RunSpecials<'_>) {
-    let push = |s: &str, specials: &mut RunSpecials<'_>| {
-        for c in s.chars() {
-            if let Some(kind) = SpecialKind::of_char(c) {
-                specials.push(kind, SpecialSource::Literal);
-            }
-        }
-    };
+/// The text content of a `<w:t>` (the reader just past its start tag), as
+/// far as special characters go.
+fn wt_text(reader: &mut Reader<&[u8]>) -> String {
+    let mut out = String::new();
     loop {
         match reader.read_event() {
             Ok(Event::Text(t)) => {
                 if let Ok(s) = t.decode() {
-                    push(&s, specials);
+                    out.push_str(&s);
                 }
             }
             Ok(Event::CData(t)) => {
                 if let Ok(s) = t.decode() {
-                    push(&s, specials);
+                    out.push_str(&s);
                 }
             }
             Ok(Event::GeneralRef(r)) => {
+                // A character reference may be a special character (`&#9;`);
+                // the predefined entities never are, so they are not needed.
                 if let Ok(Some(c)) = r.resolve_char_ref() {
-                    push(c.encode_utf8(&mut [0; 4]), specials);
+                    out.push(c);
                 }
             }
-            Ok(Event::End(_)) | Ok(Event::Eof) | Err(_) => return,
+            Ok(Event::End(_)) | Ok(Event::Eof) | Err(_) => return out,
             Ok(_) => {}
         }
     }
@@ -629,13 +647,22 @@ fn literal_specials(reader: &mut Reader<&[u8]>, specials: &mut RunSpecials<'_>) 
 /// child that is neither, sitting BETWEEN two of them (a `<w:drawing>`, a
 /// page break, a `<w:footnoteReference>`), would move behind the text: that
 /// is refused. `<w:lastRenderedPageBreak/>` is only Word's layout cache, so
-/// it may move. And content the import drops ([`UNPLACEABLE`]) is refused
+/// it may move. And content the import drops ([`Special::Unplaceable`]) is refused
 /// wherever it sits.
 fn scan_run(src: &[u8], run_open_end: usize) -> Result<RunSpecials<'_>, String> {
     let body = &src[run_open_end..];
     let mut reader = Reader::from_reader(body);
     reader.config_mut().trim_text(false);
-    let mut specials = RunSpecials::default();
+    // The run's text-bearing children in order: a `<w:t>`'s text, or a
+    // special element's character and bytes. Which characters count as
+    // special is only known at the end (a `<w:sym>`'s character may also
+    // stand literally in an earlier `<w:t>`), so the specials are built
+    // from this list.
+    enum Piece<'a> {
+        Text(String),
+        Element(char, &'a [u8]),
+    }
+    let mut pieces: Vec<Piece<'_>> = Vec::new();
     let mut first_text: Option<usize> = None;
     let mut last_text: Option<usize> = None;
     let mut opaque: Vec<(usize, String)> = Vec::new();
@@ -654,7 +681,7 @@ fn scan_run(src: &[u8], run_open_end: usize) -> Result<RunSpecials<'_>, String> 
         let mut text_bearing = false;
         if ln == b"t" {
             if !empty {
-                literal_specials(&mut reader, &mut specials);
+                pieces.push(Piece::Text(wt_text(&mut reader)));
             }
             text_bearing = true;
         } else {
@@ -662,14 +689,16 @@ fn scan_run(src: &[u8], run_open_end: usize) -> Result<RunSpecials<'_>, String> 
                 let _ = reader.read_to_end(QName(&name));
             }
             let bytes = &body[start..reader.buffer_position() as usize];
-            if let Some(kind) = special_kind(&e) {
-                specials.push(kind, SpecialSource::Element(bytes));
+            let kind = special(&e);
+            if let Special::Char(c) = kind {
+                pieces.push(Piece::Element(c, bytes));
                 text_bearing = true;
-            } else if UNPLACEABLE.contains(&ln.as_slice()) {
+            } else if matches!(kind, Special::Unplaceable) {
                 return Err(format!(
-                    "it holds a <w:{}>, which is not part of the text, so the edited \
-                     text has no place for it",
-                    String::from_utf8_lossy(&ln)
+                    "it holds a <w:{}> with no character in the text ({}), so the \
+                     edited text has no place for it",
+                    String::from_utf8_lossy(&ln),
+                    String::from_utf8_lossy(bytes)
                 ));
             } else if ln != b"rPr" && ln != b"lastRenderedPageBreak" {
                 opaque.push((k, String::from_utf8_lossy(&name).into_owned()));
@@ -686,6 +715,23 @@ fn scan_run(src: &[u8], run_open_end: usize) -> Result<RunSpecials<'_>, String> 
                 "its <{name}> sits inside the run's text, and the edited text has no \
                  place for it"
             ));
+        }
+    }
+    let tracked = |c: char| {
+        crate::rpr::word_element(c).is_some()
+            || pieces
+                .iter()
+                .any(|p| matches!(p, Piece::Element(e, _) if *e == c))
+    };
+    let mut specials = RunSpecials::default();
+    for piece in &pieces {
+        match piece {
+            Piece::Text(t) => {
+                for c in t.chars().filter(|c| tracked(*c)) {
+                    specials.push(c, SpecialSource::Literal);
+                }
+            }
+            Piece::Element(c, bytes) => specials.push(*c, SpecialSource::Element(bytes)),
         }
     }
     Ok(specials)
@@ -783,7 +829,7 @@ fn splice_run(
                     rpr_pending = None;
                     continue;
                 }
-                if t.new_text.is_some() && (ln == b"t" || special_kind(&e).is_some()) {
+                if t.new_text.is_some() && (ln == b"t" || is_special_char(&e)) {
                     let _ = reader.read_to_end(QName(&name));
                     let end = reader.buffer_position() as usize;
                     out.extend_from_slice(&src[*cursor..child_start]);
@@ -812,7 +858,7 @@ fn splice_run(
                     out.extend_from_slice(t.new_rpr.as_deref().unwrap());
                     *cursor = end;
                     rpr_pending = None;
-                } else if t.new_text.is_some() && (ln == b"t" || special_kind(&e).is_some()) {
+                } else if t.new_text.is_some() && (ln == b"t" || is_special_char(&e)) {
                     out.extend_from_slice(&src[*cursor..child_start]);
                     if let Some(rpr) = rpr_pending.take() {
                         out.extend_from_slice(rpr);
@@ -974,10 +1020,11 @@ mod tests {
     #[test]
     fn content_inside_the_text_refuses_the_edit_and_keeps_the_run() {
         // A footnote reference between two pieces of text would move behind
-        // the edited text; a `w:sym` has no character to place at all.
+        // the edited text; a `w:sym` with no Unicode equivalent (Wingdings'
+        // Windows logo) has no character to place at all.
         for run in [
             r#"<w:r><w:t>a</w:t><w:footnoteReference w:id="1"/><w:t>b</w:t></w:r>"#,
-            r#"<w:r><w:sym w:font="Symbol" w:char="F0B7"/><w:t>b</w:t></w:r>"#,
+            r#"<w:r><w:sym w:font="Wingdings" w:char="F0FF"/><w:t>b</w:t></w:r>"#,
             r#"<w:r><w:t>a</w:t><w:br w:type="page"/><w:t>b</w:t></w:r>"#,
         ] {
             let src = format!(

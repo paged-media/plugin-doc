@@ -21,84 +21,78 @@
 //! `CT_RPr` child order. `w:`-prefixed element names resolve against the
 //! `xmlns:w` decl on the root element (copied verbatim in the surrounding bytes).
 
-use docx_core::{Justification, ParaProps, RunProps, VertAlign, LINE_BREAK};
+use docx_core::{Justification, ParaProps, RunProps, VertAlign, LINE_BREAK, SOFT_HYPHEN};
 use quick_xml::escape::escape;
 
-/// A run child the import turned into ONE character of the run's text, so
-/// save-back writes that character back as the element: Word's line break
-/// (`<w:br/>` with no type or `textWrapping`, `<w:cr/>` → [`LINE_BREAK`],
-/// U+2028), its tab (`<w:tab/>` → `\t`) and its non-breaking hyphen
-/// (`<w:noBreakHyphen/>` → U+2011).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpecialKind {
-    LineBreak,
-    Tab,
-    NoBreakHyphen,
-}
-
-impl SpecialKind {
-    /// The kind a character of the run's text stands for, if any.
-    pub fn of_char(c: char) -> Option<Self> {
-        match c {
-            LINE_BREAK => Some(Self::LineBreak),
-            '\t' => Some(Self::Tab),
-            '\u{2011}' => Some(Self::NoBreakHyphen),
-            _ => None,
-        }
-    }
-
-    /// The element Word writes for a NEW character of this kind.
-    fn element(self) -> &'static [u8] {
-        match self {
-            Self::LineBreak => b"<w:br/>",
-            Self::Tab => b"<w:tab/>",
-            Self::NoBreakHyphen => b"<w:noBreakHyphen/>",
-        }
-    }
-
-    fn index(self) -> usize {
-        self as usize
+/// Word's element for a NEW character of the kinds the import reads from a
+/// run child rather than a `<w:t>`: its line break (`<w:br/>`, also
+/// `<w:cr/>` → [`LINE_BREAK`], U+2028), its tab (`<w:tab/>`, also
+/// `<w:ptab>` → `\t`), its non-breaking hyphen (`<w:noBreakHyphen/>` →
+/// U+2011) and its optional hyphen (`<w:softHyphen/>` → [`SOFT_HYPHEN`]).
+/// A `<w:sym>`'s character has no element of its own: a new one is text.
+pub fn word_element(c: char) -> Option<&'static [u8]> {
+    match c {
+        LINE_BREAK => Some(b"<w:br/>"),
+        '\t' => Some(b"<w:tab/>"),
+        '\u{2011}' => Some(b"<w:noBreakHyphen/>"),
+        SOFT_HYPHEN => Some(b"<w:softHyphen/>"),
+        _ => None,
     }
 }
 
-/// How the source run wrote the k-th character of a [`SpecialKind`].
+/// How the source run wrote the k-th occurrence of a special character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecialSource<'a> {
-    /// As an element (`<w:tab/>`, `<w:br w:clear="all"/>`, …): these bytes.
+    /// As an element (`<w:tab/>`, `<w:br w:clear="all"/>`, `<w:ptab …/>`,
+    /// `<w:sym …/>`, …): these bytes.
     Element(&'a [u8]),
     /// As the character itself inside a `<w:t>` (a literal tab, U+2011, …).
     Literal,
 }
 
-/// A run's original special characters, per kind, in text order.
+/// A run's original special characters, per character, in text order: every
+/// character [`word_element`] knows, plus the character of each `<w:sym>`
+/// the run holds (and that character's literal occurrences, so the k-th one
+/// of the edited text takes the k-th one's form).
 #[derive(Debug, Default, Clone)]
 pub struct RunSpecials<'a> {
-    by_kind: [Vec<SpecialSource<'a>>; 3],
+    by_char: Vec<(char, Vec<SpecialSource<'a>>)>,
 }
 
 impl<'a> RunSpecials<'a> {
-    pub fn push(&mut self, kind: SpecialKind, source: SpecialSource<'a>) {
-        self.by_kind[kind.index()].push(source);
+    pub fn push(&mut self, c: char, source: SpecialSource<'a>) {
+        match self.by_char.iter_mut().find(|(k, _)| *k == c) {
+            Some((_, v)) => v.push(source),
+            None => self.by_char.push((c, vec![source])),
+        }
+    }
+
+    fn sources(&self, c: char) -> Option<&[SpecialSource<'a>]> {
+        self.by_char
+            .iter()
+            .find(|(k, _)| *k == c)
+            .map(|(_, v)| v.as_slice())
     }
 }
 
 /// A run's text content: `<w:t>` elements, always `xml:space="preserve"` so
-/// leading/trailing spaces survive, with `<w:br/>` for every line break
-/// ([`LINE_BREAK`], U+2028), `<w:tab/>` for every tab and
-/// `<w:noBreakHyphen/>` for every U+2011 in `text` (see [`SpecialKind`]).
+/// leading/trailing spaces survive, with Word's element ([`word_element`])
+/// for every line break ([`LINE_BREAK`], U+2028), tab, U+2011 and
+/// [`SOFT_HYPHEN`] in `text`.
 pub fn render_wt(text: &str) -> Vec<u8> {
     render_text(text, &RunSpecials::default())
 }
 
-/// [`render_wt`], writing the k-th special character of each kind the way
-/// the source run wrote ITS k-th one ([`RunSpecials`]): the original element
-/// bytes verbatim (a `w:clear`, a `w:cr`), or the literal character inside
-/// the `<w:t>` when the source had it there. Characters past the source's
-/// count get Word's element. So an edit that keeps a run's tabs and breaks
-/// keeps their exact bytes, in order.
+/// [`render_wt`], writing the k-th occurrence of each special character the
+/// way the source run wrote ITS k-th one ([`RunSpecials`]): the original
+/// element bytes verbatim (a `w:clear`, a `w:cr`, a `w:ptab`, a `w:sym`), or
+/// the literal character inside the `<w:t>` when the source had it there.
+/// Occurrences past the source's count get Word's element ([`word_element`];
+/// a symbol's character is plain text). So an edit that keeps a run's tabs,
+/// breaks, hyphens and symbols keeps their exact bytes, in order.
 pub fn render_text(text: &str, originals: &RunSpecials<'_>) -> Vec<u8> {
     let mut out = Vec::new();
-    let mut seen = [0usize; 3];
+    let mut seen: Vec<(char, usize)> = Vec::new();
     let mut part = String::new();
     let flush = |out: &mut Vec<u8>, part: &mut String| {
         if !part.is_empty() {
@@ -113,23 +107,31 @@ pub fn render_text(text: &str, originals: &RunSpecials<'_>) -> Vec<u8> {
         }
     };
     for c in text.chars() {
-        let Some(kind) = SpecialKind::of_char(c) else {
+        let element = word_element(c);
+        let sources = originals.sources(c);
+        if element.is_none() && sources.is_none() {
             part.push(c);
             continue;
+        }
+        let i = match seen.iter().position(|(s, _)| *s == c) {
+            Some(i) => i,
+            None => {
+                seen.push((c, 0));
+                seen.len() - 1
+            }
         };
-        let k = &mut seen[kind.index()];
-        let source = originals.by_kind[kind.index()].get(*k).copied();
-        *k += 1;
-        match source {
-            Some(SpecialSource::Literal) => part.push(c),
-            Some(SpecialSource::Element(bytes)) => {
+        let source = sources.and_then(|v| v.get(seen[i].1)).copied();
+        seen[i].1 += 1;
+        match (source, element) {
+            (Some(SpecialSource::Element(bytes)), _) => {
                 flush(&mut out, &mut part);
                 out.extend_from_slice(bytes);
             }
-            None => {
+            (None, Some(bytes)) => {
                 flush(&mut out, &mut part);
-                out.extend_from_slice(kind.element());
+                out.extend_from_slice(bytes);
             }
+            (Some(SpecialSource::Literal), _) | (None, None) => part.push(c),
         }
     }
     flush(&mut out, &mut part);
@@ -333,10 +335,32 @@ mod tests {
         );
         assert_eq!(String::from_utf8(render_wt("\u{2028}")).unwrap(), "<w:br/>");
         let mut cr = RunSpecials::default();
-        cr.push(SpecialKind::LineBreak, SpecialSource::Element(b"<w:cr/>"));
+        cr.push(LINE_BREAK, SpecialSource::Element(b"<w:cr/>"));
         assert_eq!(
             String::from_utf8(render_text("x\u{2028}y\u{2028}z", &cr)).unwrap(),
             "<w:t xml:space=\"preserve\">x</w:t><w:cr/><w:t xml:space=\"preserve\">y</w:t><w:br/><w:t xml:space=\"preserve\">z</w:t>"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // `…__feat__<id>` links the cockpit feature
+    fn soft_hyphens_and_symbols_take_their_source_form__feat__plugin_doc_save_back() {
+        // A new soft hyphen is Word's element; a new symbol character is text.
+        assert_eq!(
+            String::from_utf8(render_wt("a\u{00AD}b\u{2022}")).unwrap(),
+            "<w:t xml:space=\"preserve\">a</w:t><w:softHyphen/>\
+             <w:t xml:space=\"preserve\">b\u{2022}</w:t>"
+        );
+        // The source wrote a literal bullet, then a <w:sym> bullet: the k-th
+        // bullet of the edit takes the k-th one's form, a third is text.
+        let sym: &[u8] = b"<w:sym w:font=\"Symbol\" w:char=\"F0B7\"/>";
+        let mut o = RunSpecials::default();
+        o.push('\u{2022}', SpecialSource::Literal);
+        o.push('\u{2022}', SpecialSource::Element(sym));
+        assert_eq!(
+            String::from_utf8(render_text("\u{2022}x\u{2022}y\u{2022}", &o)).unwrap(),
+            "<w:t xml:space=\"preserve\">\u{2022}x</w:t><w:sym w:font=\"Symbol\" w:char=\"F0B7\"/>\
+             <w:t xml:space=\"preserve\">y\u{2022}</w:t>"
         );
     }
 
@@ -355,10 +379,10 @@ mod tests {
         // Per kind, in order: the first tab was literal in the source, the
         // second an element; a third is new.
         let mut o = RunSpecials::default();
-        o.push(SpecialKind::Tab, SpecialSource::Literal);
-        o.push(SpecialKind::Tab, SpecialSource::Element(b"<w:tab/>"));
+        o.push('\t', SpecialSource::Literal);
+        o.push('\t', SpecialSource::Element(b"<w:tab/>"));
         o.push(
-            SpecialKind::LineBreak,
+            LINE_BREAK,
             SpecialSource::Element(b"<w:br w:clear=\"all\"/>"),
         );
         assert_eq!(

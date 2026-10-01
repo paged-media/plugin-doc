@@ -612,19 +612,46 @@ canvas-wasm v55 release (DOC-03 read + cell-qualified applyStyle) and a
 
 ## Save-back: tabs, non-breaking hyphens and run content the text cannot place
 
-The import turns three run children into a character of the run's text:
-`<w:tab/>` → `\t`, `<w:noBreakHyphen/>` → U+2011 and a plain `<w:br/>` /
-`<w:cr/>` → U+2028. An edited run writes each character back the way the
-source run wrote its k-th one of that kind (the element bytes verbatim, or a
-literal character inside `<w:t>` where the source had one); a new one is Word's
-element. The text goes where the run's first text-bearing child was.
-`<w:sym>`, `<w:softHyphen/>` and `<w:ptab>` have no character in the text, so
-an edit to a run holding one is refused into the skip ledger (the run keeps
-its bytes), and so is an edit to a run with any other child (a page break, a
+The import turns these run children into a character of the run's text:
+`<w:tab/>` and `<w:ptab>` → `\t`, `<w:noBreakHyphen/>` → U+2011,
+`<w:softHyphen/>` → U+00AD, a plain `<w:br/>` / `<w:cr/>` → U+2028, and a
+`<w:sym>` → its Unicode equivalent (`docx-core::symbols`: Word's `symbol.ttf`
+through its Adobe glyph names; the unambiguous part of `Wingdings.ttf`; where
+Word's own PDF names a glyph, that name). An edited run writes each character
+back the way the source run wrote its k-th one (the element bytes verbatim,
+or a literal character inside `<w:t>` where the source had one); a new one is
+Word's element (a new symbol character is text). The text goes where the
+run's first text-bearing child was. A `<w:sym>` with NO Unicode equivalent
+(Wingdings' Windows logo, an unknown symbol font's private code) has no
+character in the text: it is not shown (a warning names its font and code),
+and an edit to its run is refused into the skip ledger (the run keeps its
+bytes), as is an edit to a run with any other child (a page break, a
 footnote reference, a drawing) BETWEEN its pieces of text, which would move
 behind the edited text. Word opened the edited save without repair and put
 every piece of text after a tab at its tab stop
 (`fixtures/run-specials.word.json`, `scripts/word-run-specials-probe.sh`).
+
+On open (`fixtures/symbols.word.json`, `scripts/word-symbols-probe.sh`):
+
+- **Optional hyphens.** Word breaks a long word at one and draws a hyphen
+  there; elsewhere nothing shows. The engine's composer takes U+00AD as the
+  only break its word gets and shapes a hyphen at it (core `paged-text`
+  `hyphenate.rs`), but only in a paragraph whose hyphenation is on. The
+  lowering never turns it off, so it is; but that also means the engine
+  hyphenates every other word by its dictionary, which Word (automatic
+  hyphenation off by default) does not: Word breaks an over-long word with no
+  optional hyphen where the line is full, with no hyphen. Not modelled yet.
+- **Absolute-position tabs.** Word puts the text after a ptab at the
+  left/centre/right of the margins or of the indents. A paragraph whose only
+  tab is one ptab gets exactly that tab stop (with its leader). Other tabs in
+  the paragraph, a table cell, or a multi-column section: it stays a plain tab
+  to the next stop, with a diagnostic.
+- **Empty table cells.** Word lays a cell of one empty paragraph on that
+  paragraph's line height. `insertTable` mints its cells with NO paragraph, so
+  a caret there is refused (`caret offset 0 addresses no paragraph (story
+  length 0)`); the pour seeds the paragraph with an empty `insertText` and
+  then styles it with the cell caret.
+
 Editing several adjacent paragraphs in one save now patches each in place: the
 block diff pairs a stretch of deleted keys with the stretch of inserted ones
 that follows it, where it used to pair only the last with the first and

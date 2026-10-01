@@ -49,6 +49,11 @@ pub enum BlockBinding {
     Paragraph {
         para_ord: u32,
         runs: Vec<RunBinding>,
+        /// For a paragraph holding an absolute-position tab: its own Word tab
+        /// stops (`w:pPr/w:tabs`). The lowering gives such a paragraph the
+        /// ptab's position as its one tab stop, which is not Word's, so a
+        /// paragraph-formatting edit writes these back instead.
+        word_tabs: Option<Vec<docx_core::TabStop>>,
     },
     /// A table: its `<w:tbl>` ordinal among the body's tables + one entry per
     /// LOWERED cell, in the same order `docx-lower` emits them (vMerge-continue
@@ -115,7 +120,7 @@ impl DocxBindings {
     /// an out-of-range index, or a hyperlink/field/linked run).
     pub fn resolve(&self, block: usize, run: usize) -> Option<RunAddr> {
         match self.blocks.get(block)? {
-            BlockBinding::Paragraph { para_ord, runs } => match runs.get(run)? {
+            BlockBinding::Paragraph { para_ord, runs, .. } => match runs.get(run)? {
                 RunBinding::Direct { run_ord } => Some(RunAddr {
                     para_ord: *para_ord,
                     run_ord: *run_ord,
@@ -237,6 +242,11 @@ pub fn build_bindings(doc: &DocxDocument) -> DocxBindings {
                 blocks.push(BlockBinding::Paragraph {
                     para_ord: p.source_para_ord,
                     runs: run_bindings(p),
+                    word_tabs: p
+                        .runs
+                        .iter()
+                        .any(|r| !r.ptabs.is_empty())
+                        .then(|| p.props.tabs.clone()),
                 });
             }
             // Replay `docx-lower::lower_table`'s cell emission EXACTLY (a

@@ -203,8 +203,8 @@ describe("blank lines in table cells", () => {
     return {
       kind: "table",
       rows: 1,
-      cols: 3,
-      columnWidthsPt: [100, 100, 100],
+      cols: 4,
+      columnWidthsPt: [100, 100, 100, 100],
       cells: [
         // A, two blank lines (one cell offset, 1), B.
         {
@@ -222,8 +222,11 @@ describe("blank lines in table cells", () => {
           colSpan: 1,
           paragraphs: [P("PS/a", run("Ünï")), blank("PS/tall"), P("PS/a", run("Dé")), blank("PS/end")],
         },
-        // An empty cell: no insertText, so no paragraph a caret could name.
+        // An empty cell: insertTable mints it with NO paragraph, so the pour
+        // seeds one with an empty insertText for its caret to name.
         { row: 0, col: 2, rowSpan: 1, colSpan: 1, paragraphs: [blank("PS/tall")] },
+        // An empty cell with no style to give: nothing poured, no caret.
+        { row: 0, col: 3, rowSpan: 1, colSpan: 1, paragraphs: [P(null, [])] },
       ],
     };
   }
@@ -238,6 +241,7 @@ describe("blank lines in table cells", () => {
       caret(1, "PS/short", 0),
       caret(3, "PS/tall", 1),
       caret(5, "PS/end", 1),
+      caret(0, "PS/tall", 2),
     ]);
   });
 
@@ -248,7 +252,12 @@ describe("blank lines in table cells", () => {
     expect(ops.find((o) => o.op === "insertText" && (o.args.cell as { col: number }).col === 0)?.args.text).toBe(
       "A\n\n\nB",
     );
-    expect(ops.some((o) => o.op === "insertText" && (o.args.cell as { col: number }).col === 2)).toBe(false);
+    // The empty styled cell gets an EMPTY insertText (its paragraph); the
+    // unstyled one gets nothing.
+    expect(ops.filter((o) => o.op === "insertText" && (o.args.cell as { col: number }).col === 2)).toEqual([
+      { op: "insertText", args: { storyId: "s", offset: 0, text: "", cell: cell(2) } },
+    ]);
+    expect(ops.some((o) => (o.args.cell as { col: number } | undefined)?.col === 3)).toBe(false);
   });
 
   it("are applied in the story's final caret step, after the body's, once the table exists", () => {
@@ -274,6 +283,7 @@ describe("blank lines in table cells", () => {
       caret(1, "PS/short", 0),
       caret(3, "PS/tall", 1),
       caret(5, "PS/end", 1),
+      caret(0, "PS/tall", 2),
     ]);
   });
 
@@ -282,7 +292,7 @@ describe("blank lines in table cells", () => {
     expect(steps.map((s) => s.kind)).toEqual(["table", "text"]);
     (steps[0] as Extract<(typeof steps)[number], { kind: "table" }>).cells("Table/t9");
     const ops = (steps[1] as Extract<(typeof steps)[number], { kind: "text" }>).mutations(1, 0) as unknown as Op[];
-    expect(ops.map((o) => (o.args.cell as { tableId: string }).tableId)).toEqual(["Table/t9", "Table/t9", "Table/t9"]);
+    expect(ops.map((o) => (o.args.cell as { tableId: string }).tableId)).toEqual(["Table/t9", "Table/t9", "Table/t9", "Table/t9"]);
   });
 });
 

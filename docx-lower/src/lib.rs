@@ -33,7 +33,7 @@
 
 use std::collections::HashMap;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use docx_core::{
     Block, BreakKind, DocxDocument, Justification, LineRule, LineSpacing, ListKind, ListMarker,
@@ -286,6 +286,18 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
     let mut blocks = Vec::new();
     let mut carry: Option<BreakKind> = None;
     for (idx, block) in doc.body.iter().enumerate() {
+        ctx.current_block = idx;
+        if idx == 0 || starts_story(idx) {
+            let default = docx_core::Section::default();
+            let s = doc
+                .sections
+                .iter()
+                .rev()
+                .find(|s| s.first_block <= idx)
+                .unwrap_or(&default);
+            ctx.text_width =
+                (s.columns <= 1).then(|| twip_to_pt(s.page_width - s.margin_left - s.margin_right));
+        }
         let section_start = starts_section(idx);
         if let Some((_, _, joined)) = section_start {
             let (l, r) = joined.map_or((0.0, 0.0), |p| (p.indent_left_pt, p.indent_right_pt));
@@ -477,6 +489,36 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
         ctx.diagnostics.push(Diagnostic::info(msg, 3));
     }
 
+    // Symbol characters (`<w:sym>`): carried as their Unicode equivalent,
+    // drawn in the run's font, not the symbol font; or, with no
+    // equivalent, not carried at all (the source keeps them, and an edit
+    // to their run is refused).
+    if !ctx.symbols_carried.is_empty() {
+        let fonts: Vec<String> = ctx
+            .symbols_carried
+            .iter()
+            .map(|(f, n)| format!("{n} from {f}"))
+            .collect();
+        ctx.diagnostics.push(Diagnostic::info(
+            format!(
+                "symbol character(s) ({}) carried as their Unicode equivalents, drawn in \
+                 the run's font (with fallback) rather than in the symbol font",
+                fonts.join(", ")
+            ),
+            3,
+        ));
+    }
+    for (block, font, code) in &ctx.symbols_dropped {
+        ctx.diagnostics.push(Diagnostic::warning(
+            format!(
+                "a symbol character in body block {block} ({font} {code}) has no Unicode \
+                 equivalent and is not shown; the source keeps it, and an edit to its run \
+                 is refused on save"
+            ),
+            1,
+        ));
+    }
+
     if !ctx.unmeasured_faces.is_empty() {
         let faces: Vec<&str> = ctx.unmeasured_faces.iter().map(String::as_str).collect();
         ctx.diagnostics.push(Diagnostic::info(
@@ -550,6 +592,17 @@ struct Lowering {
     /// a continuous section with other margins, joined to the story before
     /// it (`sections`). Body paragraphs only.
     section_indent: (f32, f32),
+    /// The text width in pt of the story being lowered (its first section's
+    /// page width less its margins), or `None` for a multi-column section,
+    /// whose column width the lowering does not know. Where an
+    /// absolute-position tab goes (`ptab_stop`).
+    text_width: Option<f32>,
+    /// The body block being lowered, for diagnostics.
+    current_block: usize,
+    /// Symbol characters carried as their Unicode equivalent, per font.
+    symbols_carried: BTreeMap<String, usize>,
+    /// Symbol characters with no equivalent: (body block, font, code).
+    symbols_dropped: Vec<(usize, String, String)>,
 }
 
 impl Lowering {
@@ -803,6 +856,10 @@ impl Lowering {
         if can_carry.is_some() && self.section_indent != (0.0, 0.0) {
             self.add_section_indent(p, &mut props);
         }
+        if let Some(stops) = self.ptab_stop(p, can_carry.is_some()) {
+            props.retain(|sp| sp.path != "paragraphTabStops");
+            props.push(stops);
+        }
         let mut para_style_id = if props.is_empty() {
             // No direct formatting or list: apply the paragraph's style, or the
             // docDefaults base when the paragraph carries no style at all.
@@ -872,6 +929,15 @@ impl Lowering {
     }
 
     fn lower_run(&mut self, r: &Run) -> LoweredRun {
+        for sym in &r.symbols {
+            let font = sym.font.clone().unwrap_or_else(|| "no font".into());
+            if sym.char.is_some() {
+                *self.symbols_carried.entry(font).or_default() += 1;
+            } else {
+                self.symbols_dropped
+                    .push((self.current_block, font, sym.code.clone()));
+            }
+        }
         let base = r
             .style_id
             .as_ref()
@@ -1071,6 +1137,89 @@ impl Lowering {
             });
         }
         out
+    }
+
+    /// The tab stop an absolute-position tab (`<w:ptab>`) becomes. A ptab
+    /// goes to a position of its own — the left/centre/right of the margins
+    /// or of the paragraph's indents — not to the next tab stop. In the
+    /// native model, the paragraph's ONE tab goes there when it is the
+    /// paragraph's only tab stop, so a paragraph whose only tab is one ptab
+    /// gets exactly that stop (its other stops served no tab). Where that
+    /// cannot say it — other tabs in the paragraph, a table cell (whose
+    /// margins the lowering does not know), a multi-column section — the
+    /// ptab stays a plain tab to the next stop, and a diagnostic says so.
+    fn ptab_stop(&mut self, p: &docx_core::Paragraph, body: bool) -> Option<StyleProp> {
+        let ptabs: Vec<&docx_core::PositionalTab> =
+            p.runs.iter().flat_map(|r| r.ptabs.iter()).collect();
+        let first = *ptabs.first()?;
+        let tabs: usize = p
+            .runs
+            .iter()
+            .map(|r| r.text.chars().filter(|c| *c == '\t').count())
+            .sum();
+        let block = self.current_block;
+        let refuse = |why: &str| {
+            Diagnostic::info(
+                format!(
+                    "the absolute-position tab(s) in body block {block} became plain tabs \
+                     to the next tab stop: {why}"
+                ),
+                3,
+            )
+        };
+        let width = match self.text_width {
+            _ if !body => {
+                self.diagnostics.push(refuse(
+                    "the paragraph is in a table cell, whose margins the lowering does not know",
+                ));
+                return None;
+            }
+            _ if tabs > 1 => {
+                self.diagnostics.push(refuse(
+                    "the paragraph has other tabs, which a tab stop at the ptab's position \
+                     would also catch",
+                ));
+                return None;
+            }
+            None => {
+                self.diagnostics.push(refuse(
+                    "the section has several columns, whose width the lowering does not know",
+                ));
+                return None;
+            }
+            Some(w) => w,
+        };
+        let (dl, dr) = self.section_indent;
+        let (left, right) = match first.relative_to {
+            docx_core::PtabBase::Margin => (dl, width - dr),
+            docx_core::PtabBase::Indent => {
+                let chain = self.style_chain(p.style_id.as_deref());
+                let indent = |pick: fn(&ParaProps) -> Option<i32>| -> f32 {
+                    pick(&p.props)
+                        .or_else(|| chain.iter().find_map(|s| pick(&s.para)))
+                        .or_else(|| pick(&self.word_defaults.para))
+                        .map_or(0.0, twip_to_pt)
+                };
+                (
+                    dl + indent(|pp| pp.left_indent),
+                    width - dr - indent(|pp| pp.right_indent),
+                )
+            }
+        };
+        let (position, alignment) = match first.alignment {
+            docx_core::PtabAlignment::Left => (left, "left"),
+            docx_core::PtabAlignment::Center => ((left + right) / 2.0, "center"),
+            docx_core::PtabAlignment::Right => (right, "right"),
+        };
+        Some(StyleProp {
+            path: "paragraphTabStops".into(),
+            value: PropValue::TabStops(vec![LoweredTabStop {
+                position,
+                alignment: Some(alignment.into()),
+                alignment_character: None,
+                leader: first.leader.clone(),
+            }]),
+        })
     }
 
     /// ADR 029 — a continuous section with other left/right margins joins
@@ -1424,6 +1573,7 @@ fn parse_hex(hex: &str) -> Option<(f32, f32, f32)> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(non_snake_case)] // `…__feat__<id>` test names link the cockpit feature
     use super::*;
     use docx_core::*;
 
@@ -1575,5 +1725,130 @@ mod tests {
         assert_eq!(l.section.page_width_pt, 612.0);
         assert_eq!(l.section.page_height_pt, 792.0);
         assert_eq!(l.section.margin_left_pt, 72.0);
+    }
+
+    fn ptab_run(text: &str, at: usize) -> Run {
+        Run {
+            ptabs: vec![PositionalTab {
+                at,
+                alignment: PtabAlignment::Right,
+                relative_to: PtabBase::Margin,
+                leader: None,
+            }],
+            ..run(text, RunProps::default())
+        }
+    }
+
+    fn ptab_notes(l: &LoweredDoc) -> Vec<&str> {
+        l.diagnostics
+            .iter()
+            .filter(|d| d.message.contains("absolute-position"))
+            .map(|d| d.message.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn a_ptab_lowers_to_one_tab_stop_at_the_right_margin__feat__plugin_doc_read_path() {
+        let mut doc = DocxDocument::default();
+        doc.sections.push(Section::default()); // 612 pt, 72 pt margins
+        doc.body.push(Block::Paragraph(Paragraph {
+            runs: vec![ptab_run("a\tb", 1)],
+            ..Default::default()
+        }));
+        let l = lower(&doc);
+        let id = l.story.paragraphs()[0].para_style_id.clone().unwrap();
+        let st = l.styles.iter().find(|s| s.id == id).unwrap();
+        let stops = st
+            .props
+            .iter()
+            .find_map(|p| match &p.value {
+                PropValue::TabStops(t) => Some(t.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0].position, 468.0);
+        assert_eq!(stops[0].alignment.as_deref(), Some("right"));
+        assert!(ptab_notes(&l).is_empty());
+    }
+
+    #[test]
+    fn a_ptab_the_native_model_cannot_place_stays_a_tab_and_says_so__feat__plugin_doc_read_path() {
+        // Another tab in the paragraph.
+        let mut doc = DocxDocument::default();
+        doc.body.push(Block::Paragraph(Paragraph {
+            runs: vec![ptab_run("a\tb\tc", 1)],
+            ..Default::default()
+        }));
+        let l = lower(&doc);
+        assert!(
+            ptab_notes(&l)[0].contains("other tabs"),
+            "{:?}",
+            l.diagnostics
+        );
+        assert_eq!(l.story.paragraphs()[0].runs[0].text, "a\tb\tc");
+
+        // Two columns.
+        let mut doc = DocxDocument::default();
+        doc.sections.push(Section {
+            columns: 2,
+            ..Section::default()
+        });
+        doc.body.push(Block::Paragraph(Paragraph {
+            runs: vec![ptab_run("a\tb", 1)],
+            ..Default::default()
+        }));
+        assert!(ptab_notes(&lower(&doc))[0].contains("several columns"));
+
+        // A table cell.
+        let mut doc = DocxDocument::default();
+        doc.body.push(Block::Table(Table {
+            column_widths: vec![2000],
+            rows: vec![TableRow {
+                cells: vec![TableCell {
+                    paragraphs: vec![Paragraph {
+                        runs: vec![ptab_run("a\tb", 1)],
+                        ..Default::default()
+                    }],
+                    grid_span: 1,
+                    v_merge: VMerge::None,
+                }],
+            }],
+        }));
+        let l = lower(&doc);
+        assert!(
+            ptab_notes(&l)[0].contains("table cell"),
+            "{:?}",
+            l.diagnostics
+        );
+    }
+
+    #[test]
+    fn symbols_are_counted_and_the_ones_without_a_character_warned__feat__plugin_doc_read_path() {
+        let mut doc = DocxDocument::default();
+        let sym = |font: &str, code: &str, char: Option<char>| RunSymbol {
+            at: 0,
+            font: Some(font.into()),
+            code: code.into(),
+            char,
+        };
+        doc.body.push(Block::Paragraph(Paragraph {
+            runs: vec![Run {
+                symbols: vec![
+                    sym("Symbol", "F0B7", Some('\u{2022}')),
+                    sym("Wingdings", "F0FF", None),
+                ],
+                ..run("\u{2022}", RunProps::default())
+            }],
+            ..Default::default()
+        }));
+        let l = lower(&doc);
+        assert!(l
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == "info" && d.message.contains("1 from Symbol")));
+        assert!(l.diagnostics.iter().any(
+            |d| d.severity == "warning" && d.message.contains("body block 0 (Wingdings F0FF)")
+        ));
     }
 }

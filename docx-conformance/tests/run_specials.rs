@@ -20,16 +20,18 @@
 //! save-back (`run_specials_docx()`).
 //!
 //! What is pinned here:
-//! - the import turns `<w:tab/>` into `\t` and `<w:noBreakHyphen/>` into
-//!   U+2011 in the run's text, and drops `<w:sym>`, `<w:softHyphen/>` and
-//!   `<w:ptab>` (they have no character in the engine's text);
+//! - the import turns `<w:tab/>` and `<w:ptab>` into `\t`,
+//!   `<w:noBreakHyphen/>` into U+2011, `<w:softHyphen/>` into U+00AD and a
+//!   `<w:sym>` into its Unicode equivalent in the run's text;
 //! - a zero-edit save stays byte-identical;
 //! - an edited run writes each of those characters back the way the source
-//!   run wrote it — `<w:tab/>` / `<w:noBreakHyphen/>` / `<w:br …/>` elements
-//!   verbatim and in position, a literal tab as a literal tab — and a NEW
-//!   one as Word's element (never a tab character folded into `<w:t>`);
-//! - an edit to a run holding content the text cannot place is refused into
-//!   the skip ledger, and that run keeps its bytes.
+//!   run wrote it — `<w:tab/>` / `<w:ptab …/>` / `<w:noBreakHyphen/>` /
+//!   `<w:softHyphen/>` / `<w:sym …/>` / `<w:br …/>` elements verbatim and in
+//!   position, a literal tab as a literal tab — and a NEW one as Word's
+//!   element (never a tab character folded into `<w:t>`).
+//!
+//! A `<w:sym>` with no Unicode equivalent, which an edit must refuse, is
+//! pinned in `symbols.rs`.
 
 #![allow(non_snake_case)] // `…__feat__<id>` test names link the cockpit feature
 
@@ -118,10 +120,11 @@ fn tabs_and_no_break_hyphens_import_as_characters__feat__plugin_doc_save_back() 
     assert_eq!(by("N01"), "N01 well\u{2011}known");
     assert_eq!(by("M01"), "M01a\tb\u{2028}M01c\u{2011}d");
     assert_eq!(by("X01"), "X01\tliteral");
-    // Not carried as text.
-    assert_eq!(by("S01"), "S01 beforeafter");
-    assert_eq!(by("H01"), "H01 hyphenation");
-    assert_eq!(by("P01"), "P01 leftright");
+    // Symbol F0B7 is the bullet; the optional hyphen is U+00AD; the
+    // absolute-position tab is a tab.
+    assert_eq!(by("S01"), "S01 before\u{2022}after");
+    assert_eq!(by("H01"), "H01 hyphen\u{00AD}ation");
+    assert_eq!(by("P01"), "P01 left\tright");
 }
 
 #[test]
@@ -151,10 +154,10 @@ const EDITS: &[(&str, &str)] = &[
     ("N01", "N01 well\u{2011}known EDITED"),
     ("M01", "M01a\tB\u{2028}M01c\u{2011}D"),
     ("X01", "X01\tLITERAL"),
-    // Content the text cannot place: all three refused.
-    ("S01", "S01 before EDITED after"),
-    ("H01", "H01 hyphenation EDITED"),
-    ("P01", "P01 left EDITED right"),
+    // The symbol, the optional hyphen and the ptab, each kept in its run.
+    ("S01", "S01 before\u{2022}after EDITED"),
+    ("H01", "H01 hyphen\u{00AD}ation EDITED"),
+    ("P01", "P01 left\tright EDITED"),
 ];
 
 fn edited_save() -> (Vec<u8>, Vec<String>) {
@@ -229,23 +232,43 @@ fn edited_runs_keep_their_tab_and_hyphen_elements_in_place__feat__plugin_doc_sav
 }
 
 #[test]
-fn edits_the_text_cannot_place_are_refused_and_keep_their_bytes__feat__plugin_doc_save_back() {
-    let original = document_xml(&run_specials_docx());
+fn symbols_soft_hyphens_and_ptabs_keep_their_elements_in_an_edit__feat__plugin_doc_save_back() {
     let (saved, skips) = edited_save();
+    assert!(skips.is_empty(), "{skips:?}");
     let xml = document_xml(&saved);
-    assert_eq!(skips.len(), 3, "{skips:?}");
-    for (label, element) in [("S01", "w:sym"), ("H01", "w:softHyphen"), ("P01", "w:ptab")] {
-        let block = index(label);
+    let t = |s: &str| format!(r#"<w:t xml:space="preserve">{s}</w:t>"#);
+    for (label, want) in [
+        (
+            "S01",
+            format!(
+                r#"{}<w:sym w:font="Symbol" w:char="F0B7"/>{}</w:r>"#,
+                t("S01 before"),
+                t("after EDITED")
+            ),
+        ),
+        (
+            "H01",
+            format!(
+                "{}<w:softHyphen/>{}</w:r>",
+                t("H01 hyphen"),
+                t("ation EDITED")
+            ),
+        ),
+        (
+            "P01",
+            format!(
+                r#"{}<w:ptab w:relativeTo="margin" w:alignment="right" w:leader="none"/>{}</w:r>"#,
+                t("P01 left"),
+                t("right EDITED")
+            ),
+        ),
+    ] {
+        let p = paragraph_xml(&xml, label);
+        assert!(p.contains(&want), "{label}: want {want}\n in {p}");
+        // Nothing the import read from an element is folded into the text.
         assert!(
-            skips.iter().any(|s| s.starts_with(&format!(
-                "run edit skipped: block {block} run 0: it holds a <{element}>"
-            ))),
-            "{label}: {skips:?}"
-        );
-        assert_eq!(
-            paragraph_xml(&xml, label),
-            paragraph_xml(&original, label),
-            "{label} is byte-identical"
+            !p.contains('\u{2022}') && !p.contains('\u{00AD}') && !p.contains('\t'),
+            "{label}: {p}"
         );
     }
 }
@@ -260,12 +283,7 @@ fn an_edited_save_re_imports_to_the_edited_text__feat__plugin_doc_save_back() {
     let ir = docx_lower::lower(&import_docx(&saved).unwrap());
     let paras = paragraphs(&ir);
     for (label, new) in EDITS {
-        let got = text(paras[index(label)]);
-        if ["S01", "H01", "P01"].contains(label) {
-            assert_eq!(got, text(paragraphs(&lowered())[index(label)]), "{label}");
-        } else {
-            assert_eq!(got, *new, "{label}");
-        }
+        assert_eq!(text(paras[index(label)]), *new, "{label}");
     }
 }
 
@@ -313,4 +331,51 @@ fn word_puts_the_edited_text_after_each_tab_at_its_tab_stop__feat__plugin_doc_sa
             );
         }
     }
+}
+
+/// P01's only tab is a ptab, so it lowers with ONE tab stop, at the right
+/// margin — not Word's own two (1 in, 2 in). A paragraph-formatting edit
+/// that keeps that stop writes Word's stops back, never the ptab's.
+#[test]
+fn a_ptab_paragraph_keeps_words_tab_stops_on_a_format_edit__feat__plugin_doc_save_back() {
+    use docx_lower::ir::{PropValue, StyleProp};
+    let doc = import_docx(&run_specials_docx()).unwrap();
+    let bindings = docx_export::build_bindings(&doc);
+    let base = docx_lower::lower(&doc);
+    let mut edited = base.clone();
+    let block = index("P01");
+    let LoweredBlock::Paragraph(p) = &mut edited.story.blocks[block] else {
+        panic!("P01 is a paragraph");
+    };
+    let style = edited
+        .styles
+        .iter()
+        .find(|s| Some(&s.id) == p.para_style_id.as_ref())
+        .unwrap()
+        .clone();
+    assert!(style.props.iter().any(|sp| matches!(
+        &sp.value,
+        PropValue::TabStops(t) if t.len() == 1 && t[0].alignment.as_deref() == Some("right")
+    )));
+    let mut centred = style.clone();
+    centred.id = "ParagraphStyle/docx-test-centred".into();
+    centred.props.push(StyleProp {
+        path: "paragraphJustification".into(),
+        value: PropValue::Text("CenterAlign".into()),
+    });
+    p.para_style_id = Some(centred.id.clone());
+    edited.styles.push(centred);
+    let edits = docx_export::diff(&base, &edited, &bindings);
+    assert_eq!(edits.paragraphs.len(), 1, "{:?}", edits.paragraphs);
+    let tabs: Vec<i32> = edits.paragraphs[0]
+        .new_props
+        .tabs
+        .iter()
+        .map(|t| t.position)
+        .collect();
+    assert_eq!(tabs, [1440, 2880]);
+    assert_eq!(
+        edits.paragraphs[0].new_props.justification,
+        Some(docx_core::Justification::Center)
+    );
 }

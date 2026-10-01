@@ -27,9 +27,9 @@
 
 use docx_core::{
     Block, BreakKind, CellPath, DocxDocument, HeaderFooter, Image, Justification, LineRule,
-    LineSpacing, ListKind, ListMarker, Note, ParaProps, Paragraph, Run, RunBreak, RunProps,
-    RunSource, Section, SectionKind, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
-    LINE_BREAK,
+    LineSpacing, ListKind, ListMarker, Note, ParaProps, Paragraph, PositionalTab, PtabAlignment,
+    PtabBase, Run, RunBreak, RunProps, RunSource, RunSymbol, Section, SectionKind, Style,
+    StyleCatalog, StyleKind, TabStop, VertAlign, LINE_BREAK, SOFT_HYPHEN,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
@@ -791,6 +791,8 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
     let mut breaks = Vec::new();
     let mut image = None;
     let mut note_ref = None;
+    let mut ptabs = Vec::new();
+    let mut symbols = Vec::new();
     for c in &r.run_choice {
         match c {
             wml::RunChoice::Text(t) => {
@@ -818,6 +820,52 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
             },
             wml::RunChoice::CarriageReturn => text.push(LINE_BREAK),
             wml::RunChoice::NoBreakHyphen => text.push('\u{2011}'),
+            // Word's optional hyphen: the one place its word may break.
+            wml::RunChoice::SoftHyphen => text.push(SOFT_HYPHEN),
+            // A symbol-font character: its Unicode equivalent, where it has
+            // one; recorded either way, so the lowering can say what it
+            // drew in the run's font and what it could not carry.
+            wml::RunChoice::SymbolChar(sym) | wml::RunChoice::SymbolCharExt(sym) => {
+                let code = sym.char.clone().unwrap_or_default();
+                let font = sym.font.clone();
+                let ch = docx_core::symbol_char(font.as_deref(), &code);
+                symbols.push(RunSymbol {
+                    at: text.chars().count(),
+                    font,
+                    code,
+                    char: ch,
+                });
+                if let Some(ch) = ch {
+                    text.push(ch);
+                }
+            }
+            // An absolute-position tab: a tab in the text, with where it goes
+            // kept for the lowering.
+            wml::RunChoice::PositionalTab(p) => {
+                use wml::AbsolutePositionTabAlignmentValues as A;
+                use wml::AbsolutePositionTabLeaderCharValues as L;
+                use wml::AbsolutePositionTabPositioningBaseValues as B;
+                ptabs.push(PositionalTab {
+                    at: text.chars().count(),
+                    alignment: match p.alignment {
+                        A::Left => PtabAlignment::Left,
+                        A::Center => PtabAlignment::Center,
+                        A::Right => PtabAlignment::Right,
+                    },
+                    relative_to: match p.relative_to {
+                        B::Margin => PtabBase::Margin,
+                        B::Indent => PtabBase::Indent,
+                    },
+                    leader: match p.leader {
+                        L::None => None,
+                        L::Dot => Some(".".into()),
+                        L::Hyphen => Some("-".into()),
+                        L::Underscore => Some("_".into()),
+                        L::MiddleDot => Some("\u{00B7}".into()),
+                    },
+                });
+                text.push('\t');
+            }
             wml::RunChoice::Drawing(d) => {
                 if image.is_none() {
                     image = map_drawing(d, ctx);
@@ -835,6 +883,8 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
         props,
         text,
         breaks,
+        ptabs,
+        symbols,
         image,
         hyperlink: None,
         // The caller (map_paragraph) stamps the real provenance from context.

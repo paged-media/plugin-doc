@@ -249,8 +249,8 @@ fn symbols_carry_the_character_word_names_them_by__feat__plugin_doc_read_path() 
 ///
 /// Without optional hyphens Word does not hyphenate at all (automatic
 /// hyphenation is off by default): it breaks the word where the line is
-/// full, with no hyphen (`Donaudampfschifffa` / `hrtsgesellschaft`). The
-/// engine hyphenates by its dictionary instead — not modelled here.
+/// full, with no hyphen (`Donaudampfschifffa` / `hrtsgesellschaft`), so the
+/// lowering turns the engine's dictionary hyphenation off everywhere else.
 #[test]
 fn soft_hyphens_are_where_word_breaks_the_word__feat__plugin_doc_read_path() {
     let ir = lowered();
@@ -297,13 +297,28 @@ fn soft_hyphens_are_where_word_breaks_the_word__feat__plugin_doc_read_path() {
     assert_eq!(lines_of(&word, "H03")[0].words[1].0, "unbroken");
     assert_eq!(text(&paragraph(&ir, "H03")), "H03 un\u{00AD}broken");
 
-    // Nothing turns the composer's hyphenation off.
-    for st in &ir.styles {
-        assert!(
-            !st.props.iter().any(|p| p.path == "paragraphHyphenation"),
-            "{}",
-            st.id
-        );
+    // Word's automatic hyphenation is off (no `w:autoHyphenation`), so the
+    // document defaults turn the composer's off too; a paragraph carrying an
+    // optional hyphen turns it back on, which the composer needs to break
+    // there.
+    let hyphenation = |id: &str| {
+        let mut next = Some(id.to_string());
+        while let Some(id) = next {
+            let st = ir.styles.iter().find(|s| s.id == id).unwrap();
+            if let Some(p) = st.props.iter().find(|p| p.path == "paragraphHyphenation") {
+                return p.value == PropValue::Bool(true);
+            }
+            next = st.based_on.clone();
+        }
+        true
+    };
+    for label in ["H01", "H03"] {
+        let p = paragraph(&ir, label);
+        assert!(hyphenation(p.para_style_id.as_deref().unwrap()), "{label}");
+    }
+    for label in ["H02", "S01", "P01"] {
+        let p = paragraph(&ir, label);
+        assert!(!hyphenation(p.para_style_id.as_deref().unwrap()), "{label}");
     }
 }
 
@@ -337,10 +352,10 @@ fn absolute_position_tabs_lower_to_where_word_puts_the_text__feat__plugin_doc_re
     let ir = lowered();
     let word = word_lines("original");
     for (label, align, leader) in [
-        ("P01", "right", None),
-        ("P02", "center", None),
-        ("P03", "right", None),
-        ("P04", "right", Some(".")),
+        ("P01", "RightAlign", None),
+        ("P02", "CenterAlign", None),
+        ("P03", "RightAlign", None),
+        ("P04", "RightAlign", Some(".")),
     ] {
         let p = paragraph(&ir, label);
         assert_eq!(text(&p).matches('\t').count(), 1, "{label}");
@@ -352,7 +367,7 @@ fn absolute_position_tabs_lower_to_where_word_puts_the_text__feat__plugin_doc_re
         let line = &lines_of(&word, label)[0];
         let (_, x0, x1) = line.words.last().unwrap();
         let at = match align {
-            "center" => (x0 + x1) / 2.0,
+            "CenterAlign" => (x0 + x1) / 2.0,
             _ => *x1,
         };
         assert!(

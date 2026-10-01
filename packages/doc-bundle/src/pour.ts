@@ -100,7 +100,20 @@ export async function pourSteps(host: BundleHost, steps: readonly StoryStep[]): 
       const outcome = await host.document.mutate(step.insert);
       const tableId = outcome.applied ? tableIdOf(outcome.createdId) : null;
       if (tableId) {
-        await host.document.mutate(step.cells(tableId));
+        // The cells are one batch: a refusal loses the whole table's text,
+        // which must be said, not swallowed (ADR-007).
+        const cells = await host.document.mutate(step.cells(tableId));
+        if (!cells.applied) {
+          host.log.warn(
+            `paged.doc: the engine rejected a table's cell content: ${JSON.stringify(cells.error)}`,
+          );
+        }
+      } else {
+        host.log.warn(
+          `paged.doc: the engine did not create a table: ${JSON.stringify(
+            outcome.applied ? "no table id in the reply" : outcome.error,
+          )}`,
+        );
       }
       styleOffset += TABLE_FOOTPRINT_STYLE;
       textOffset += TABLE_FOOTPRINT_TEXT;

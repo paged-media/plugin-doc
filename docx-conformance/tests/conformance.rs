@@ -183,10 +183,12 @@ fn tier1_doc_defaults_tabs_keeps_and_underline() {
         Block::Paragraph(p) => p,
         _ => panic!("expected a paragraph"),
     };
-    // Two real tab stops; the "clear" stop is dropped.
-    assert_eq!(para.props.tabs.len(), 2);
+    // Two real tab stops, and the "clear" stop as a stop with no alignment
+    // (it removes an inherited stop when the lowering merges the chain).
+    assert_eq!(para.props.tabs.len(), 3);
     assert_eq!(para.props.tabs[0].position, 720);
     assert_eq!(para.props.tabs[1].alignment.as_deref(), Some("right"));
+    assert_eq!(para.props.tabs[2].alignment, None);
     assert_eq!(para.props.keep_next, Some(true));
     // Underline on for the single, OFF for the explicit none.
     assert_eq!(para.runs[1].props.underline, Some(true));
@@ -227,7 +229,8 @@ fn tier1_doc_defaults_tabs_keeps_and_underline() {
         PropValue::TabStops(stops) => {
             assert_eq!(stops.len(), 2);
             assert_eq!(stops[0].position, 36.0); // 720 twips -> 36 pt
-            assert_eq!(stops[1].alignment.as_deref(), Some("right"));
+                                                 // The engine's IDML name: it reads no other.
+            assert_eq!(stops[1].alignment.as_deref(), Some("RightAlign"));
         }
         _ => panic!("expected tabStops value"),
     }

@@ -19,19 +19,30 @@ NAME="$(basename "$IN")"
 cp "$IN" "$STAGE/$NAME"
 PDF="$STAGE/${NAME%.docx}.pdf"
 rm -f "$PDF"
+# The document is addressed BY NAME, never as "active document": a long
+# document is still opening when the next command runs, and "active
+# document" then saved the PREVIOUS file under this one's name (a 61-page
+# real document came back as three different PDFs, all of it). Wait until
+# the PDF stops growing; a long document takes minutes.
 osascript <<OSA || true
-with timeout of 180 seconds
+with timeout of 900 seconds
     tell application "Microsoft Word"
         activate
         delay 3
         open POSIX file "$STAGE/$NAME"
         delay 2
-        save as active document file name "$PDF" file format format PDF
-        close active document saving no
+        set d to document "$NAME"
+        save as d file name "$PDF" file format format PDF
+        close d saving no
     end tell
 end timeout
 OSA
-for i in $(seq 1 30); do [ -s "$PDF" ] && break; sleep 1; done
-[ -s "$PDF" ] || { echo "Word produced no PDF (judge by the artifact)"; exit 1; }
+prev=-1
+for i in $(seq 1 120); do
+  size=$(stat -f %z "$PDF" 2>/dev/null || echo 0)
+  [ "$size" -gt 0 ] && [ "$size" = "$prev" ] && break
+  prev=$size; sleep 2
+done
+pdfinfo "$PDF" >/dev/null 2>&1 || { echo "Word produced no PDF (judge by the artifact)"; exit 1; }
 cp "$PDF" "$OUT"
 echo "==> $OUT"

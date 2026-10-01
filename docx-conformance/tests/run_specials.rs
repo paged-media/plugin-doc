@@ -355,7 +355,7 @@ fn a_ptab_paragraph_keeps_words_tab_stops_on_a_format_edit__feat__plugin_doc_sav
         .clone();
     assert!(style.props.iter().any(|sp| matches!(
         &sp.value,
-        PropValue::TabStops(t) if t.len() == 1 && t[0].alignment.as_deref() == Some("right")
+        PropValue::TabStops(t) if t.len() == 1 && t[0].alignment.as_deref() == Some("RightAlign")
     )));
     let mut centred = style.clone();
     centred.id = "ParagraphStyle/docx-test-centred".into();

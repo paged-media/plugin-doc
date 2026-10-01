@@ -2048,3 +2048,173 @@ pub fn floats_docx() -> Vec<u8> {
         ("word/media/image1.png", png),
     ])
 }
+
+/// A black 96 × 96 grey PNG (a real one: Word refuses a fake image with a
+/// repair prompt; opaque, so its box shows in Word's PDF; and not 1 × 1,
+/// which Word draws at two thirds of its VML size).
+const TINY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x60, 0x08, 0x00, 0x00, 0x00, 0x00, 0xc7, 0xf3, 0x28,
+    0xe4, 0x00, 0x00, 0x00, 0x20, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0xed, 0xc1, 0x81, 0x00, 0x00,
+    0x00, 0x00, 0xc3, 0xa0, 0xf9, 0x53, 0x5f, 0xe0, 0x08, 0x55, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x7c, 0x03, 0x24, 0x60, 0x00, 0x01, 0x7c, 0xec, 0x86, 0xc6, 0x00, 0x00, 0x00,
+    0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+/// ADR 029 acceptance against real Word documents (`docs/acceptance-real-docx.md`):
+/// the constructs the corpus documents exposed, one paragraph each, on a
+/// 5 in × 7 in page with 0.5 in margins (a 288 pt text width). Word's answer:
+/// `scripts/word-real-docx-probe.sh` → `fixtures/real-docx.word.json`.
+///
+/// - `T01` — a TOC entry: its style (`Toc2`) sets a left stop at 0.5 in and a
+///   RIGHT stop with a dot leader at 300 pt, past the 288 pt margin; the
+///   paragraph adds a left stop at 1 in, which the entry's text runs past.
+///   Word merges the paragraph's stops with the style's and puts the page
+///   number, after the dot leader, at the margin.
+/// - `B01` — a paragraph style based on a CHARACTER style (`FootRef`), with a
+///   bulleted `w:numPr` of its own; the document defaults set no size. Word
+///   ignores the cross-type `basedOn` (10 pt, the bare defaults) and bullets
+///   the paragraph through its style.
+/// - `N01` — a paragraph naming no style: Word lays it in the default
+///   paragraph style (Normal, 12 pt), not on the bare defaults.
+/// - `V01` — a legacy VML inline picture 100 pt square; `A01` after it shows
+///   how much room Word gave the picture's line.
+/// - `F01` — a FLOATING VML picture (100 × 50 pt, `position:absolute`) whose
+///   text wraps top and bottom; `A02` after it shows Word giving it a band.
+pub fn real_docx_docx() -> Vec<u8> {
+    let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+</Types>"#;
+    let doc_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>"#;
+    let styles = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/></w:rPr></w:rPrDefault>
+    <w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+    <w:pPr><w:spacing w:after="240"/></w:pPr>
+    <w:rPr><w:sz w:val="24"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Toc2">
+    <w:name w:val="toc 2"/>
+    <w:basedOn w:val="Normal"/>
+    <w:pPr><w:tabs><w:tab w:val="left" w:pos="720"/><w:tab w:val="right" w:leader="dot" w:pos="6000"/></w:tabs></w:pPr>
+  </w:style>
+  <w:style w:type="character" w:styleId="FootRef">
+    <w:name w:val="footnote reference"/>
+    <w:rPr><w:vertAlign w:val="superscript"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:customStyle="1" w:styleId="BulletInd">
+    <w:name w:val="Bullet Indented"/>
+    <w:basedOn w:val="FootRef"/>
+    <w:pPr><w:numPr><w:numId w:val="1"/></w:numPr><w:spacing w:after="240"/></w:pPr>
+  </w:style>
+</w:styles>"#;
+    let numbering = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="&#8226;"/><w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+</w:numbering>"#;
+    let document = r##"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Toc2"/><w:tabs><w:tab w:val="left" w:pos="1440"/></w:tabs></w:pPr><w:r><w:t>T01</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>An entry past the inch</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>7</w:t></w:r></w:p>
+    <w:p><w:pPr><w:pStyle w:val="BulletInd"/></w:pPr><w:r><w:t>B01 bulleted through its style</w:t></w:r></w:p>
+    <w:p><w:r><w:t>N01 names no style</w:t></w:r></w:p>
+    <w:p><w:r><w:t xml:space="preserve">V01 </w:t></w:r><w:r><w:pict><v:shapetype id="_x0000_t75" coordsize="21600,21600" o:spt="75" o:preferrelative="t" path="m@4@5l@4@11@9@11@9@5xe" filled="f" stroked="f"><v:stroke joinstyle="miter"/><v:path o:extrusionok="f" gradientshapeok="t" o:connecttype="rect"/><o:lock v:ext="edit" aspectratio="t"/></v:shapetype><v:shape id="Pic1" o:spid="_x0000_i1025" type="#_x0000_t75" style="width:100pt;height:100pt;visibility:visible;mso-wrap-style:square"><v:imagedata r:id="rId3" o:title=""/></v:shape></w:pict></w:r></w:p>
+    <w:p><w:r><w:t>A01 after the picture</w:t></w:r></w:p>
+    <w:p><w:r><w:t xml:space="preserve">F01 </w:t></w:r><w:r><w:pict><v:shape id="Pic2" o:spid="_x0000_s1026" type="#_x0000_t75" style="position:absolute;margin-left:0;margin-top:0;width:100pt;height:50pt;z-index:251658240;mso-position-horizontal-relative:text;mso-position-vertical-relative:text"><v:imagedata r:id="rId3" o:title=""/><w10:wrap type="topAndBottom"/></v:shape></w:pict></w:r></w:p>
+    <w:p><w:r><w:t>A02 after the floating picture</w:t></w:r></w:p>
+    <w:sectPr><w:pgSz w:w="7200" w:h="10080"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/></w:sectPr>
+  </w:body>
+</w:document>"##;
+    zip_parts(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", doc_rels.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", styles.as_bytes()),
+        ("word/numbering.xml", numbering.as_bytes()),
+        ("word/media/image1.png", TINY_PNG),
+    ])
+}
+
+/// The paragraphs of [`keeps_docx`], in order: a label, its `w:pPr` keep
+/// element, and its line count (a multi-line paragraph's lines are
+/// `w:br` line breaks, `K1a` / `K1b` …). `F` rows are one-line fillers
+/// (`F001` …), as many as the number says.
+pub const KEEPS_CASES: &[(&str, &str, u32)] = &[
+    ("F", "", 35),
+    // One line fits at the page foot: widow control moves it all.
+    ("K1", "<w:widowControl/>", 3),
+    ("F", "", 32),
+    // The same, widow control off: the first line stays.
+    ("K2", r#"<w:widowControl w:val="0"/>"#, 3),
+    ("F", "", 32),
+    // Two of three fit: keepLines moves it all.
+    ("K3", "<w:keepLines/>", 3),
+    ("F", "", 30),
+    // Three of four fit: widow control pulls a second line over (2 | 2).
+    ("K4", "<w:widowControl/>", 4),
+    ("F", "", 33),
+    // No keep element anywhere in the hierarchy: what Word does by default.
+    ("K5", "", 3),
+    ("F", "", 2),
+];
+
+/// ADR 029 decision 3 against Word: `w:widowControl` and `w:keepLines`
+/// ([`KEEPS_CASES`]) on 5 in × 7 in pages with 0.5 in margins, Arial 10 pt
+/// on an exact 12 pt pitch, so a page holds 36 lines. Word's answer:
+/// `scripts/word-keeps-probe.sh` → `fixtures/keeps.word.json`.
+pub fn keeps_docx() -> Vec<u8> {
+    let rpr = r#"<w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="20"/></w:rPr>"#;
+    let spacing = r#"<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="exact"/>"#;
+    let mut body = String::new();
+    let mut filler = 0;
+    for (label, keep, lines) in KEEPS_CASES {
+        if *label == "F" {
+            for _ in 0..*lines {
+                filler += 1;
+                body.push_str(&format!(
+                    r#"<w:p><w:pPr>{spacing}{rpr}</w:pPr><w:r>{rpr}<w:t>F{filler:03}</w:t></w:r></w:p>"#
+                ));
+            }
+            continue;
+        }
+        let runs: Vec<String> = (0..*lines)
+            .map(|k| format!("<w:t>{label}{}</w:t>", (b'a' + k as u8) as char))
+            .collect();
+        body.push_str(&format!(
+            r#"<w:p><w:pPr>{keep}{spacing}{rpr}</w:pPr><w:r>{rpr}{}</w:r></w:p>"#,
+            runs.join("<w:br/>")
+        ));
+    }
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}<w:sectPr>{SYMBOLS_PAGE}</w:sectPr></w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+    ])
+}

@@ -72,6 +72,15 @@ pub struct DocxDocument {
     /// Section page geometry (Tier-1 partial). At least one is synthesized if the
     /// document omits `sectPr`.
     pub sections: Vec<Section>,
+    /// `w:settings/w:autoHyphenation`: Word hyphenates automatically only when
+    /// the document turns it on (off by default, unlike the native engine).
+    #[serde(default)]
+    pub auto_hyphenation: bool,
+    /// Legacy VML drawings (`w:pict`) the import could not place: floating
+    /// shapes, text boxes, diagrams (only an inline VML picture becomes an
+    /// [`Image`]). The lowering reports them.
+    #[serde(default)]
+    pub unplaced_vml: u32,
 }
 
 /// A top-level body block.
@@ -148,6 +157,14 @@ pub struct ListMarker {
     /// For numbered lists: the IDML numbering-format sample (e.g. `"1, 2, 3, 4..."`,
     /// `"I, II, III, IV..."`), matching what the engine's `format_number` reads.
     pub number_format: Option<String>,
+    /// The level's own `w:pPr/w:ind` (numbering.xml): where Word puts the
+    /// list text (`left`) and the marker (`hanging` / `firstLine`), in twips.
+    #[serde(default)]
+    pub left_indent: Option<i32>,
+    #[serde(default)]
+    pub first_line_indent: Option<i32>,
+    #[serde(default)]
+    pub hanging_indent: Option<i32>,
 }
 
 /// Whether a list paragraph is bulleted or numbered.
@@ -632,7 +649,13 @@ pub struct ParaProps {
     #[serde(default)]
     pub line_spacing: Option<LineSpacing>,
     pub keep_next: Option<bool>,
+    /// `w:keepLines`: every line of the paragraph on one page.
     pub keep_lines: Option<bool>,
+    /// `w:widowControl`: no single first or last line of the paragraph alone
+    /// on a page (Word moves a second line with it). Absent everywhere in
+    /// the style hierarchy, it is off.
+    #[serde(default)]
+    pub widow_control: Option<bool>,
     /// `w:pageBreakBefore` (ADR 028/029): the paragraph starts a new page.
     /// `Some(false)` is an explicit `w:val="0"`, which turns off a style's.
     #[serde(default)]
@@ -647,9 +670,12 @@ pub struct TabStop {
     /// `@w:pos` in twips.
     pub position: i32,
     /// `@w:val` alignment (`"left"`, `"center"`, `"right"`, `"decimal"`, …).
-    /// `None` for a `"clear"` stop (which removes an inherited tab — skipped).
+    /// `None` for a `"clear"` stop, which removes the stop an inherited style
+    /// sets at the same position (Word MERGES a paragraph's stops with its
+    /// style chain's).
     pub alignment: Option<String>,
-    /// `@w:leader` (`"dot"`, `"hyphen"`, …) as a display character.
+    /// `@w:leader` as the native leader string (`"."` for `dot`, `"-"` for
+    /// `hyphen`, `"_"` for `underscore`/`heavy`, `"\u{B7}"` for `middleDot`).
     pub leader: Option<String>,
 }
 
@@ -721,6 +747,10 @@ pub struct Style {
     pub kind: StyleKind,
     /// `w:basedOn/@w:val`.
     pub based_on: Option<String>,
+    /// `@w:default="1"`: the default style of its type. A paragraph that
+    /// names no style is in the default paragraph style (Word's Normal).
+    #[serde(default)]
+    pub is_default: bool,
     /// Paragraph-level properties defined by the style (`w:pPr`).
     pub para: ParaProps,
     /// Character-level properties defined by the style (`w:rPr`).

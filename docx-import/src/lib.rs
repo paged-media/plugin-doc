@@ -32,6 +32,8 @@ use docx_core::{
     PositionalTab, PtabAlignment, PtabBase, Run, RunBreak, RunProps, RunSource, RunSymbol, Section,
     SectionKind, Style, StyleCatalog, StyleKind, TabStop, VertAlign, LINE_BREAK, SOFT_HYPHEN,
 };
+use paged_ooxml::ooxmlsdk::schemas::schemas_microsoft_com_office_word as w10;
+use paged_ooxml::ooxmlsdk::schemas::schemas_microsoft_com_vml as vml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_wordprocessing_drawing as wp;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
@@ -45,6 +47,70 @@ use paged_ooxml::{parse_root, part_dir, rels, resolve_target, OoxmlError, OpcPac
 struct ImportCtx<'a> {
     numbering: NumberingTable,
     images: ImageResolver<'a>,
+    /// Paragraph styles' own `w:numPr` and `basedOn`, for a paragraph whose
+    /// list comes from its style (Word applies a style's numbering).
+    style_lists: StyleLists,
+    /// Legacy VML drawings (`w:pict`) that are not an inline picture, and so
+    /// are not placed (floating shapes, text boxes, org charts…).
+    unplaced_vml: std::cell::Cell<u32>,
+}
+
+/// A paragraph style's own `w:numPr` (`numId`, `ilvl`) and its `basedOn`.
+type StyleList = (Option<(i32, u8)>, Option<String>);
+
+/// Per paragraph style: its [`StyleList`], plus the document's default
+/// paragraph style (`w:default="1"`).
+#[derive(Default)]
+struct StyleLists {
+    styles: std::collections::HashMap<String, StyleList>,
+    default_style: Option<String>,
+}
+
+impl StyleLists {
+    fn from_styles(styles: &wml::Styles) -> Self {
+        let mut out = StyleLists::default();
+        for s in &styles.style {
+            if !matches!(s.r#type, Some(wml::StyleValues::Paragraph) | None) {
+                continue;
+            }
+            let Some(id) = s.style_id.clone() else {
+                continue;
+            };
+            if s.default.is_some() && on(&s.default) {
+                out.default_style = Some(id.clone());
+            }
+            let num = s
+                .style_paragraph_properties
+                .as_deref()
+                .and_then(|pp| pp.numbering_properties.as_deref())
+                .and_then(|np| {
+                    let id = np.numbering_id.as_ref()?.val;
+                    let lvl = np
+                        .numbering_level_reference
+                        .as_ref()
+                        .map_or(0, |l| l.val as u8);
+                    Some((id, lvl))
+                });
+            out.styles
+                .insert(id, (num, s.based_on.as_ref().map(|b| b.val.clone())));
+        }
+        out
+    }
+
+    /// The numbering a paragraph in `style` inherits: the nearest style in
+    /// its chain (the default paragraph style when it names none) with a
+    /// `w:numPr`. `numId` 0 there means "no list" and ends the walk.
+    fn inherited(&self, style: Option<&str>) -> Option<(i32, u8)> {
+        let mut next = style.or(self.default_style.as_deref());
+        for _ in 0..32 {
+            let (num, based_on) = self.styles.get(next?)?;
+            if let Some(n) = num {
+                return (n.0 != 0).then_some(*n);
+            }
+            next = based_on.as_deref();
+        }
+        None
+    }
 }
 
 impl ImportCtx<'_> {
@@ -125,10 +191,13 @@ pub fn import_docx_with_package(
     let wml_doc: wml::Document = parse_root(&main_part, doc_bytes)?;
 
     // The styles part is optional.
-    let styles = styles_part(&pkg, &main_part)
+    let wml_styles = styles_part(&pkg, &main_part)
         .and_then(|name| pkg.part(&name).map(|b| (name, b)))
-        .and_then(|(name, b)| parse_root::<wml::Styles>(&name, b).ok())
-        .map(|s| map_styles(&s))
+        .and_then(|(name, b)| parse_root::<wml::Styles>(&name, b).ok());
+    let styles = wml_styles.as_ref().map(map_styles).unwrap_or_default();
+    let style_lists = wml_styles
+        .as_ref()
+        .map(StyleLists::from_styles)
         .unwrap_or_default();
 
     // numbering.xml (optional) -> a resolver from (numId, level) to a marker.
@@ -174,13 +243,20 @@ pub fn import_docx_with_package(
         })
         .unwrap_or_default();
 
-    let (body, sections, notes, headers_footers) = {
+    let auto_hyphenation = settings
+        .as_ref()
+        .and_then(|s| s.auto_hyphenation.as_ref())
+        .is_some_and(|a| on(&a.val));
+
+    let (body, sections, notes, headers_footers, unplaced_vml) = {
         let doc_rels = pkg
             .part(&rels::rels_part_name(&main_part))
             .map(rels::Relationships::parse)
             .unwrap_or_default();
         let ctx = ImportCtx {
             numbering,
+            style_lists,
+            unplaced_vml: std::cell::Cell::new(0),
             images: ImageResolver {
                 rels: doc_rels,
                 package: &pkg,
@@ -194,7 +270,13 @@ pub fn import_docx_with_package(
             .unwrap_or_default();
         let notes = map_notes(&pkg, &main_part, &ctx);
         let headers_footers = map_headers_footers(&pkg, &main_part, &mut sections, &refs, &ctx);
-        (body, sections, notes, headers_footers)
+        (
+            body,
+            sections,
+            notes,
+            headers_footers,
+            ctx.unplaced_vml.get(),
+        )
     };
 
     let doc = DocxDocument {
@@ -206,6 +288,8 @@ pub fn import_docx_with_package(
         body,
         styles,
         sections,
+        auto_hyphenation,
+        unplaced_vml,
     };
     Ok((doc, pkg, main_part))
 }
@@ -497,12 +581,15 @@ fn styles_part(pkg: &OpcPackage, main_part: &str) -> Option<String> {
 struct NumberingTable {
     /// numId -> abstractNumId.
     num_to_abstract: std::collections::HashMap<i32, i32>,
-    /// abstractNumId -> (level -> (format, lvlText)).
-    abstract_levels: std::collections::HashMap<
-        i32,
-        std::collections::HashMap<u8, (wml::NumberFormatValues, Option<String>)>,
-    >,
+    /// abstractNumId -> (level -> (format, lvlText, the level's w:ind)).
+    abstract_levels: std::collections::HashMap<i32, std::collections::HashMap<u8, Level>>,
 }
+
+/// One numbering level: its format, `w:lvlText` and indents.
+type Level = (wml::NumberFormatValues, Option<String>, LevelIndent);
+
+/// A numbering level's own `w:pPr/w:ind` (twips): left, first line, hanging.
+type LevelIndent = (Option<i32>, Option<i32>, Option<i32>);
 
 impl NumberingTable {
     fn from_numbering(n: &wml::Numbering) -> Self {
@@ -517,7 +604,18 @@ impl NumberingTable {
                     .map(|f| f.val)
                     .unwrap_or(wml::NumberFormatValues::Decimal);
                 let text = lvl.level_text.as_ref().and_then(|t| t.val.clone());
-                levels.insert(ilvl, (fmt, text));
+                let indent = lvl
+                    .previous_paragraph_properties
+                    .as_deref()
+                    .and_then(|pp| pp.indentation.as_ref())
+                    .map_or((None, None, None), |ind| {
+                        (
+                            ind.left.as_ref().or(ind.start.as_ref()).and_then(stwips),
+                            ind.first_line.as_ref().and_then(twips_u),
+                            ind.hanging.as_ref().and_then(stwips),
+                        )
+                    });
+                levels.insert(ilvl, (fmt, text, indent));
             }
             t.abstract_levels.insert(a.abstract_number_id, levels);
         }
@@ -530,26 +628,31 @@ impl NumberingTable {
 
     fn resolve(&self, num_id: i32, level: u8) -> Option<ListMarker> {
         let abstract_id = self.num_to_abstract.get(&num_id)?;
-        let (fmt, text) = self.abstract_levels.get(abstract_id)?.get(&level)?;
+        let (fmt, text, (left, first, hanging)) =
+            self.abstract_levels.get(abstract_id)?.get(&level)?;
+        let marker = |kind, bullet_char, number_format| ListMarker {
+            kind,
+            level,
+            bullet_char,
+            number_format,
+            left_indent: *left,
+            first_line_indent: *first,
+            hanging_indent: *hanging,
+        };
         Some(match fmt {
-            wml::NumberFormatValues::Bullet => ListMarker {
-                kind: ListKind::Bullet,
-                level,
-                bullet_char: Some(normalize_bullet(text.as_deref())),
-                number_format: None,
-            },
-            wml::NumberFormatValues::None => ListMarker {
-                kind: ListKind::Bullet,
-                level,
-                bullet_char: Some("\u{2022}".into()),
-                number_format: None,
-            },
-            other => ListMarker {
-                kind: ListKind::Numbered,
-                level,
-                bullet_char: None,
-                number_format: Some(numbering_sample(other).to_string()),
-            },
+            wml::NumberFormatValues::Bullet => marker(
+                ListKind::Bullet,
+                Some(normalize_bullet(text.as_deref())),
+                None,
+            ),
+            wml::NumberFormatValues::None => {
+                marker(ListKind::Bullet, Some("\u{2022}".into()), None)
+            }
+            other => marker(
+                ListKind::Numbered,
+                None,
+                Some(numbering_sample(other).to_string()),
+            ),
         })
     }
 }
@@ -647,8 +750,11 @@ fn map_paragraph(
                 &pp.justification,
                 &pp.indentation,
                 &pp.spacing_between_lines,
-                pp.keep_next.is_some(),
-                pp.keep_lines.is_some(),
+                Keeps {
+                    next: pp.keep_next.as_ref().map(|v| on(&v.val)),
+                    lines: pp.keep_lines.as_ref().map(|v| on(&v.val)),
+                    widow_control: pp.widow_control.as_ref().map(|v| on(&v.val)),
+                },
                 pp.page_break_before.as_ref().map(|v| on(&v.val)),
                 &pp.tabs,
             ),
@@ -656,20 +762,32 @@ fn map_paragraph(
         None => (None, ParaProps::default()),
     };
 
-    // Resolve w:numPr -> a list marker through numbering.xml.
-    let list = p
+    // Resolve w:numPr -> a list marker through numbering.xml. With no numPr
+    // of its own the paragraph takes its style chain's (Word applies a
+    // paragraph style's numbering); its own numPr, even `numId` 0, wins.
+    let own_num = p
         .paragraph_properties
         .as_deref()
-        .and_then(|pp| pp.numbering_properties.as_deref())
-        .and_then(|np| {
-            let num_id = np.numbering_id.as_ref()?.val;
+        .and_then(|pp| pp.numbering_properties.as_deref());
+    let list = match own_num {
+        Some(np) => np.numbering_id.as_ref().and_then(|id| {
             let level = np
                 .numbering_level_reference
                 .as_ref()
                 .map(|l| l.val as u8)
                 .unwrap_or(0);
-            ctx.numbering.resolve(num_id, level)
-        });
+            ctx.numbering.resolve(id.val, level)
+        }),
+        None => ctx
+            .style_lists
+            .inherited(
+                p.paragraph_properties
+                    .as_deref()
+                    .and_then(|pp| pp.paragraph_style_id.as_ref())
+                    .map(|s| s.val.as_str()),
+            )
+            .and_then(|(id, level)| ctx.numbering.resolve(id, level)),
+    };
 
     let mut runs = Vec::new();
     // Complex-field state: a stack so (rare) nested fields resolve correctly.
@@ -1013,6 +1131,12 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
                 Some(img) => images.push(img),
                 None => other_drawings += 1,
             },
+            // A legacy VML picture (`w:pict`): a picture where Word gives it
+            // room in the flow, else counted as not placed.
+            wml::RunChoice::Picture(p) => match map_pict(p, ctx) {
+                Some(img) => images.push(img),
+                None => ctx.unplaced_vml.set(ctx.unplaced_vml.get() + 1),
+            },
             // A footnote/endnote reference mark — the run carries no text; the
             // note body lives in the notes part, keyed by this id.
             wml::RunChoice::FootnoteReference(f) => note_ref = Some(f.id),
@@ -1173,6 +1297,70 @@ fn percent(s: &str) -> Option<i64> {
     s.trim().trim_end_matches('%').parse().ok()
 }
 
+/// An [`Image`] from a legacy VML picture (`w:pict` → `v:shape` →
+/// `v:imagedata r:id`), Word 97–2003's picture: its size is the shape's CSS
+/// `width`/`height`. An inline picture lowers, and so does a floating one
+/// whose text wraps top and bottom (`w10:wrap type="topAndBottom"`): Word
+/// gives it a band of its own, so the text resumes below it, as after an
+/// inline picture (`fixtures/real-docx.word.json`, F01). Any other floating
+/// VML, or VML that is not a picture, returns `None` and is counted as
+/// unplaced.
+fn map_pict(p: &wml::Picture, ctx: &ImportCtx) -> Option<Image> {
+    p.picture_choice.iter().find_map(|c| {
+        let wml::PictureChoice::Shape(shape) = c else {
+            return None;
+        };
+        let style = shape.style.as_deref().unwrap_or("");
+        let css = |key: &str| {
+            style.split(';').find_map(|decl| {
+                let (k, v) = decl.split_once(':')?;
+                (k.trim() == key).then(|| v.trim())
+            })
+        };
+        let own_band = shape.shape_choice.iter().any(|sc| {
+            matches!(sc, vml::ShapeChoice::TextWrap(w)
+                if matches!(w.r#type, Some(w10::WrapValues::TopAndBottom) | None))
+        });
+        if css("position") == Some("absolute") && !own_band {
+            return None;
+        }
+        let rel_id = shape.shape_choice.iter().find_map(|sc| match sc {
+            vml::ShapeChoice::ImageData(d) => d.relationship_id.as_deref(),
+            _ => None,
+        })?;
+        let width_emu = css_length_emu(css("width")?)?;
+        let height_emu = css_length_emu(css("height")?)?;
+        let (bytes, mime) = ctx.images.resolve(rel_id)?;
+        // Inline in the flow, as Word lays both kinds (a floating one's band
+        // is its own line's worth of room).
+        Some(Image {
+            bytes,
+            mime,
+            width_emu,
+            height_emu,
+            float: None,
+        })
+    })
+}
+
+/// A VML/CSS length (`481.1pt`, `2in`, `3cm`, `20mm`, `96px`) in EMU.
+fn css_length_emu(v: &str) -> Option<i64> {
+    let split = v
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+        .unwrap_or(v.len());
+    let (num, unit) = v.split_at(split);
+    let n: f64 = num.parse().ok()?;
+    let per = match unit.trim() {
+        "pt" => 12700.0,
+        "in" => 914400.0,
+        "cm" => 360000.0,
+        "mm" => 36000.0,
+        "px" | "" => 9525.0,
+        _ => return None,
+    };
+    Some((n * per).round() as i64)
+}
+
 /// The `r:embed` rel id of the first picture blip in a DrawingML graphic.
 fn blip_embed(graphic: &aml::Graphic) -> Option<&str> {
     for choice in &graphic.graphic_data.graphic_data_choice {
@@ -1228,8 +1416,11 @@ fn map_styles(styles: &wml::Styles) -> StyleCatalog {
                     &base.justification,
                     &base.indentation,
                     &base.spacing_between_lines,
-                    false,
-                    false,
+                    Keeps {
+                        next: None,
+                        lines: None,
+                        widow_control: base.widow_control.as_ref().map(|v| on(&v.val)),
+                    },
                     None,
                     &None,
                 );
@@ -1286,8 +1477,11 @@ fn map_style(s: &wml::Style) -> Option<Style> {
                 &pp.justification,
                 &pp.indentation,
                 &pp.spacing_between_lines,
-                pp.keep_next.is_some(),
-                pp.keep_lines.is_some(),
+                Keeps {
+                    next: pp.keep_next.as_ref().map(|v| on(&v.val)),
+                    lines: pp.keep_lines.as_ref().map(|v| on(&v.val)),
+                    widow_control: pp.widow_control.as_ref().map(|v| on(&v.val)),
+                },
                 pp.page_break_before.as_ref().map(|v| on(&v.val)),
                 &pp.tabs,
             )
@@ -1304,6 +1498,7 @@ fn map_style(s: &wml::Style) -> Option<Style> {
         name: s.style_name.as_ref().map(|n| n.val.clone()),
         kind,
         based_on: s.based_on.as_ref().map(|b| b.val.clone()),
+        is_default: s.default.is_some() && on(&s.default),
         para,
         run,
     })
@@ -1351,12 +1546,20 @@ fn run_props_named(rpr: &wml::StyleRunProperties) -> RunProps {
 // ---------------------------------------------------------------------------
 // Paragraph properties (shared by w:pPr and w:style/w:pPr — same field types)
 
+/// A paragraph's `w:keepNext`, `w:keepLines` and `w:widowControl`, each
+/// `None` when absent and its `w:val` when present (`w:val="0"` turns an
+/// inherited one off).
+struct Keeps {
+    next: Option<bool>,
+    lines: Option<bool>,
+    widow_control: Option<bool>,
+}
+
 fn para_props(
     justification: &Option<wml::Justification>,
     indentation: &Option<wml::Indentation>,
     spacing: &Option<wml::SpacingBetweenLines>,
-    keep_next: bool,
-    keep_lines: bool,
+    keeps: Keeps,
     page_break_before: Option<bool>,
     tabs: &Option<wml::Tabs>,
 ) -> ParaProps {
@@ -1385,25 +1588,22 @@ fn para_props(
             });
         }
     }
-    if keep_next {
+    if keeps.next == Some(true) {
         p.keep_next = Some(true);
     }
-    if keep_lines {
-        p.keep_lines = Some(true);
-    }
+    p.keep_lines = keeps.lines;
+    p.widow_control = keeps.widow_control;
     p.page_break_before = page_break_before;
     if let Some(t) = tabs {
         for ts in &t.tab_stop {
-            // A "clear" stop removes an inherited tab — no alignment, not carried.
-            if let Some(alignment) = tab_alignment(&ts.val) {
-                if let Some(position) = stwips(&ts.position) {
-                    p.tabs.push(TabStop {
-                        position,
-                        alignment: Some(alignment),
-                        // Leader glyphs (dot/hyphen) are a later-tier refinement.
-                        leader: None,
-                    });
-                }
+            // A "clear" stop (alignment `None`) removes the inherited stop at
+            // its position; the lowering merges the chain.
+            if let Some(position) = stwips(&ts.position) {
+                p.tabs.push(TabStop {
+                    position,
+                    alignment: tab_alignment(&ts.val),
+                    leader: ts.leader.as_ref().and_then(tab_leader),
+                });
             }
         }
     }
@@ -1561,6 +1761,21 @@ fn tab_alignment(v: &wml::TabStopValues) -> Option<String> {
             T::Decimal => "decimal",
             T::Bar => "bar",
             T::Clear => return None,
+        }
+        .to_string(),
+    )
+}
+
+/// `w:tab/@w:leader` as the native leader string.
+fn tab_leader(v: &wml::TabStopLeaderCharValues) -> Option<String> {
+    use wml::TabStopLeaderCharValues as L;
+    Some(
+        match v {
+            L::None => return None,
+            L::Dot => ".",
+            L::Hyphen => "-",
+            L::Underscore | L::Heavy => "_",
+            L::MiddleDot => "\u{B7}",
         }
         .to_string(),
     )

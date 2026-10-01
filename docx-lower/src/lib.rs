@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use docx_core::{
     Block, BreakKind, DocxDocument, Justification, LineRule, LineSpacing, ListKind, ListMarker,
-    ParaProps, Run, RunProps, Section, SectionKind, Style, StyleKind, VertAlign,
+    ParaProps, Run, RunProps, Section, SectionKind, Style, StyleKind, TabStop, VertAlign,
 };
 
 pub mod ir;
@@ -403,14 +403,30 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
 /// Lower a whole Word document to the native IR with `options` (what the
 /// target engine can lay out).
 pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
+    let mut diagnostics = Vec::new();
+    let styles = valid_bases(&doc.styles.styles, &mut diagnostics);
+    // A style's tab stops are measured from the margin like a paragraph's;
+    // the narrowest single-column text width is the one every section's
+    // text can reach.
+    let min_text_width = doc
+        .sections
+        .iter()
+        .filter(|s| s.columns <= 1)
+        .map(|s| twip_to_pt(s.page_width - s.margin_left - s.margin_right))
+        .reduce(f32::min);
     let mut ctx = Lowering {
-        word_styles: doc
-            .styles
-            .styles
+        word_styles: styles
             .iter()
             .map(|s| (s.style_id.clone(), s.clone()))
             .collect(),
         word_defaults: doc.styles.doc_defaults.clone(),
+        auto_hyphenation: doc.auto_hyphenation,
+        min_text_width,
+        default_para_style: styles
+            .iter()
+            .find(|s| s.kind == StyleKind::Paragraph && s.is_default)
+            .map(|s| s.style_id.clone()),
+        diagnostics,
         ..Lowering::default()
     };
 
@@ -419,7 +435,7 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
     ctx.install_doc_defaults(&doc.styles.doc_defaults);
 
     // 1. The Word style catalog -> native styles (topologically ordered).
-    ctx.lower_style_catalog(&doc.styles.styles);
+    ctx.lower_style_catalog(&styles);
 
     // 2. The body -> a native story of blocks (paragraphs + tables) in order,
     //    synthesizing styles for direct formatting.
@@ -566,6 +582,32 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
                  (paragraphStartParagraph); an engine before protocol 64 refuses the \
                  rule and only the breaks are lost",
                 ctx.breaks
+            ),
+            3,
+        ));
+    }
+
+    if ctx.clamped_tabs > 0 {
+        ctx.diagnostics.push(Diagnostic::info(
+            format!(
+                "{} right/centre/decimal tab stop(s) set past the right margin moved to \
+                 the margin: Word sets the text after such a stop out in the margin, \
+                 which a native frame cannot, so the text keeps Word's line a few \
+                 points further left",
+                ctx.clamped_tabs
+            ),
+            1,
+        ));
+    }
+
+    if doc.unplaced_vml > 0 {
+        ctx.diagnostics.push(Diagnostic::warning(
+            format!(
+                "{} legacy VML drawing(s) (floating shapes, text boxes, diagrams) are \
+                 not placed on the page: only an inline VML picture becomes an image. \
+                 They are preserved in the source .docx and round-trip on save; Word's \
+                 pages may hold less text where they took space",
+                doc.unplaced_vml
             ),
             3,
         ));
@@ -870,9 +912,19 @@ struct Lowering {
     synth_cache: HashMap<String, String>,
     synth_counter: u32,
     diagnostics: Vec<Diagnostic>,
-    /// The docDefaults base style id, if docDefaults carried any properties.
-    /// Un-based Word styles + un-styled paragraphs fall back to it.
+    /// The docDefaults base style id. Un-based Word styles + un-styled
+    /// paragraphs fall back to it.
     default_base: Option<String>,
+    /// `w:autoHyphenation` (off by default in Word, on in the engine).
+    auto_hyphenation: bool,
+    /// Word's default paragraph style (`w:default="1"`), the style of every
+    /// paragraph that names none.
+    default_para_style: Option<String>,
+    /// Tab stops past the right margin moved to it (`clamp_tabs`).
+    clamped_tabs: usize,
+    /// The narrowest single-column text width in pt, where a STYLE's right,
+    /// centre and decimal tab stops are clamped.
+    min_text_width: Option<f32>,
     /// Count of hyperlink runs styled (blue + underline).
     hyperlinks: u32,
     /// Of those, how many carry an EXTERNAL target that becomes a native
@@ -924,13 +976,20 @@ impl Lowering {
     /// carries anything), so every un-based style and un-styled paragraph
     /// inherits Word's document defaults.
     fn install_doc_defaults(&mut self, defaults: &docx_core::Defaults) {
-        let mut props = self.para_props(&defaults.para);
+        // Word's widow control is ON where nothing in the hierarchy sets it
+        // (`fixtures/keeps.word.json`, K5: no keep element anywhere, and Word
+        // moves the paragraph's lone first line to the next page).
+        let mut para = defaults.para.clone();
+        para.widow_control.get_or_insert(true);
+        let mut props = self.para_props(&para);
         props.extend(self.run_props(&defaults.run));
-        if props.is_empty() && defaults.para.line_spacing.is_none() {
-            // Nothing to carry: every style and paragraph resolves its own
-            // leading (Word's single when nothing sets one).
-            return;
+        // Word's own defaults where docDefaults is silent, which are not the
+        // engine's: 10 pt type (the engine's is 12 pt) and no automatic
+        // hyphenation unless the settings turn it on (the engine's is on).
+        if defaults.run.size_half_pts.is_none() {
+            props.push(len("characterFontSize", 10.0));
         }
+        props.push(boolean("paragraphHyphenation", self.auto_hyphenation));
         let ls = defaults.para.line_spacing.unwrap_or(SINGLE);
         let single = self.single_line(defaults.run.font.as_deref(), defaults.run.size_half_pts);
         let leading = Some(line_height::line_pitch_pt(ls, single));
@@ -1019,7 +1078,12 @@ impl Lowering {
         for s in styles {
             match s.kind {
                 StyleKind::Paragraph => {
-                    let mut props = self.para_props(&s.para);
+                    let mut para = s.para.clone();
+                    if !para.tabs.is_empty() {
+                        para.tabs = self.effective_tabs(&[], Some(&s.style_id));
+                    }
+                    let mut props = self.para_props(&para);
+                    self.clamped_tabs += clamp_tabs(&mut props, self.min_text_width);
                     if s.para.page_break_before == Some(false)
                         && self.resolve_page_break_before(None, s.based_on.as_deref())
                     {
@@ -1096,13 +1160,24 @@ impl Lowering {
         start: Option<&'static str>,
         can_carry: Option<bool>,
     ) -> (LoweredParagraph, Option<BreakKind>) {
-        let explicit = p
-            .style_id
-            .as_ref()
+        let explicit = self
+            .style_of(p)
             .map(|id| format!("{PARA_PREFIX}{}", sanitize(id)));
-        let mut props = self.para_props(&p.props);
+        let mut direct = p.props.clone();
+        if !direct.tabs.is_empty() {
+            direct.tabs = self.effective_tabs(&p.props.tabs, self.style_of(p));
+        }
+        let mut props = self.para_props(&direct);
+        self.clamped_tabs += clamp_tabs(
+            &mut props,
+            if can_carry.is_some() {
+                self.text_width
+            } else {
+                None
+            },
+        );
         if p.props.page_break_before == Some(false)
-            && self.resolve_page_break_before(None, p.style_id.as_deref())
+            && self.resolve_page_break_before(None, self.style_of(p))
         {
             props.push(text(START_PARAGRAPH, "Anywhere"));
         }
@@ -1148,13 +1223,19 @@ impl Lowering {
         // The rule this paragraph itself starts with. A paragraph that
         // already breaks before a page (`pageBreakBefore`) needs nothing
         // weaker on top.
-        let own_page =
-            self.resolve_page_break_before(p.props.page_break_before, p.style_id.as_deref());
+        let own_page = self.resolve_page_break_before(p.props.page_break_before, self.style_of(p));
         if let Some(rule) = stronger(start, head) {
             if !own_page || rule_rank(rule) > rule_rank("NextPage") {
                 props.retain(|sp| sp.path != START_PARAGRAPH);
                 props.push(text(START_PARAGRAPH, rule));
             }
+        }
+        // Word honours an optional hyphen (U+00AD) with its automatic
+        // hyphenation off; the engine's composer only breaks at one with
+        // hyphenation ON. A paragraph carrying one turns it back on, which
+        // also lets the engine's dictionary break its other words.
+        if !self.auto_hyphenation && p.runs.iter().any(|r| r.text.contains('\u{00AD}')) {
+            props.push(boolean("paragraphHyphenation", true));
         }
         if let Some(pt) = self.paragraph_pitch(p) {
             let inherited = self
@@ -1165,7 +1246,24 @@ impl Lowering {
             }
         }
         if let Some(list) = &p.list {
-            props.extend(list_props(list));
+            // Word's order: numbering, then the paragraph style, then direct
+            // formatting. The level's indents only reach the paragraph where
+            // neither its style chain nor its own pPr sets them.
+            let chain = self.style_chain(self.style_of(p));
+            let set = |pick: fn(&ParaProps) -> bool| {
+                pick(&p.props) || chain.iter().any(|s| pick(&s.para))
+            };
+            let left_set = set(|pp| pp.left_indent.is_some());
+            let first_set = set(|pp| pp.first_line_indent.is_some() || pp.hanging_indent.is_some());
+            props.extend(
+                list_props(list)
+                    .into_iter()
+                    .filter(|sp| match sp.path.as_str() {
+                        "paragraphLeftIndent" => !left_set,
+                        "paragraphFirstLineIndent" => !first_set,
+                        _ => true,
+                    }),
+            );
         }
         if can_carry.is_some() && self.section_indent != (0.0, 0.0) {
             self.add_section_indent(p, &mut props);
@@ -1448,8 +1546,26 @@ impl Lowering {
         if p.keep_next == Some(true) {
             out.push(len("paragraphKeepWithNext", 1.0));
         }
-        if let Some(k) = p.keep_lines {
-            out.push(boolean("paragraphKeepLinesTogether", k));
+        // Word's keepLines keeps EVERY line together; its widowControl keeps
+        // two at a page's foot and two at its head. InDesign says both
+        // through KeepLinesTogether: All Lines, or At Start / At End 2 / 2.
+        match (p.keep_lines, p.widow_control) {
+            (Some(true), _) => {
+                out.push(boolean("paragraphKeepLinesTogether", true));
+                out.push(boolean("paragraphKeepAllLinesTogether", true));
+            }
+            (lines, Some(true)) => {
+                out.push(boolean("paragraphKeepLinesTogether", true));
+                if lines == Some(false) {
+                    out.push(boolean("paragraphKeepAllLinesTogether", false));
+                }
+                out.push(len("paragraphKeepFirstLines", 2.0));
+                out.push(len("paragraphKeepLastLines", 2.0));
+            }
+            (Some(false), _) | (None, Some(false)) => {
+                out.push(boolean("paragraphKeepLinesTogether", false));
+            }
+            (None, None) => {}
         }
         // ADR 028/029 — `w:pageBreakBefore` is InDesign's StartParagraph
         // NextPage: both leave a paragraph that already opens a page where it
@@ -1463,11 +1579,14 @@ impl Lowering {
             let stops = p
                 .tabs
                 .iter()
-                .map(|t| LoweredTabStop {
-                    position: twip_to_pt(t.position),
-                    alignment: t.alignment.clone(),
-                    alignment_character: None,
-                    leader: t.leader.clone(),
+                .filter_map(|t| {
+                    let (alignment, character) = idml_tab_alignment(t.alignment.as_deref()?)?;
+                    Some(LoweredTabStop {
+                        position: twip_to_pt(t.position),
+                        alignment: Some(alignment.into()),
+                        alignment_character: character.map(Into::into),
+                        leader: t.leader.clone(),
+                    })
                 })
                 .collect();
             out.push(StyleProp {
@@ -1532,7 +1651,7 @@ impl Lowering {
         let (left, right) = match first.relative_to {
             docx_core::PtabBase::Margin => (dl, width - dr),
             docx_core::PtabBase::Indent => {
-                let chain = self.style_chain(p.style_id.as_deref());
+                let chain = self.style_chain(self.style_of(p));
                 let indent = |pick: fn(&ParaProps) -> Option<i32>| -> f32 {
                     pick(&p.props)
                         .or_else(|| chain.iter().find_map(|s| pick(&s.para)))
@@ -1546,9 +1665,9 @@ impl Lowering {
             }
         };
         let (position, alignment) = match first.alignment {
-            docx_core::PtabAlignment::Left => (left, "left"),
-            docx_core::PtabAlignment::Center => ((left + right) / 2.0, "center"),
-            docx_core::PtabAlignment::Right => (right, "right"),
+            docx_core::PtabAlignment::Left => (left, "LeftAlign"),
+            docx_core::PtabAlignment::Center => ((left + right) / 2.0, "CenterAlign"),
+            docx_core::PtabAlignment::Right => (right, "RightAlign"),
         };
         Some(StyleProp {
             path: "paragraphTabStops".into(),
@@ -1568,7 +1687,7 @@ impl Lowering {
     /// docDefaults; the last one pushed wins, as the host applies them).
     fn add_section_indent(&self, p: &docx_core::Paragraph, props: &mut Vec<StyleProp>) {
         let (dl, dr) = self.section_indent;
-        let chain = self.style_chain(p.style_id.as_deref());
+        let chain = self.style_chain(self.style_of(p));
         let resolved = |path: &str, pick: fn(&ParaProps) -> Option<i32>| -> f32 {
             props
                 .iter()
@@ -1592,6 +1711,37 @@ impl Lowering {
             props.retain(|sp| sp.path != "paragraphRightIndent");
             props.push(len("paragraphRightIndent", right));
         }
+    }
+
+    /// The paragraph style a paragraph is in: the one it names, else Word's
+    /// default paragraph style (`w:default="1"`, usually Normal). Word lays a
+    /// paragraph that names no style in that style, not on the bare document
+    /// defaults (which only its root styles inherit).
+    fn style_of<'a>(&'a self, p: &'a docx_core::Paragraph) -> Option<&'a str> {
+        p.style_id.as_deref().or(self.default_para_style.as_deref())
+    }
+
+    /// The tab stops a paragraph in `style` with its own stops `direct` has
+    /// in Word: Word MERGES stops down the style chain (docDefaults, root
+    /// style … leaf style, then the paragraph), a `clear` stop removing the
+    /// inherited one at its position. The native model's tab list REPLACES
+    /// the inherited one, so the merged set is what it must carry.
+    fn effective_tabs(&self, direct: &[TabStop], style: Option<&str>) -> Vec<TabStop> {
+        let mut layers: Vec<&[TabStop]> = vec![&self.word_defaults.para.tabs];
+        let chain = self.style_chain(style);
+        layers.extend(chain.iter().rev().map(|s| s.para.tabs.as_slice()));
+        layers.push(direct);
+        let mut out: Vec<TabStop> = Vec::new();
+        for layer in layers {
+            for t in layer {
+                out.retain(|o| (o.position - t.position).abs() > 1);
+                if t.alignment.is_some() {
+                    out.push(t.clone());
+                }
+            }
+        }
+        out.sort_by_key(|t| t.position);
+        out
     }
 
     /// A paragraph style and its `basedOn` ancestors, nearest first
@@ -1690,7 +1840,8 @@ impl Lowering {
     /// the single line of its TALLEST run (Word sizes each line by its
     /// tallest run; one leading per paragraph is the native model's grain).
     fn paragraph_pitch(&mut self, p: &docx_core::Paragraph) -> Option<f32> {
-        let style = p.style_id.as_deref();
+        let style_id = self.style_of(p).map(str::to_owned);
+        let style = style_id.as_deref();
         let ls = self.resolve_spacing(p.props.line_spacing, style)?;
         let faces: Vec<(Option<String>, Option<u32>)> = {
             let mut v: Vec<_> = p
@@ -1779,6 +1930,82 @@ impl Lowering {
     }
 }
 
+/// A Word tab stop's `w:val` as the engine's IDML `Alignment` (and its
+/// alignment character): the composer reads only IDML's names, so a Word
+/// name would lay every right tab as a left one. A `bar` tab draws a rule
+/// and stops no text; Word's text skips it, so it lowers to no stop.
+fn idml_tab_alignment(word: &str) -> Option<(&'static str, Option<&'static str>)> {
+    Some(match word {
+        "left" => ("LeftAlign", None),
+        "center" => ("CenterAlign", None),
+        "right" => ("RightAlign", None),
+        "decimal" => ("CharacterAlign", Some(".")),
+        _ => return None,
+    })
+}
+
+/// Word sets the text after a right, centre or decimal stop placed past the
+/// right margin AT that stop, out in the margin, on the same line
+/// (`fixtures/real-docx.word.json`, T01: a TOC page number at 300 pt with
+/// the margin at 288). The native engine cannot set text past its frame and
+/// would move it to a new line, which costs Word's line. So such a stop
+/// moves to the margin: Word's line, a few points further left. `width` is
+/// the text width the stops are measured in (`None`: unknown, left as they
+/// are). Returns how many stops moved.
+fn clamp_tabs(props: &mut [StyleProp], width: Option<f32>) -> usize {
+    let Some(width) = width else {
+        return 0;
+    };
+    let mut moved = 0;
+    for sp in props.iter_mut() {
+        if let PropValue::TabStops(stops) = &mut sp.value {
+            for t in stops.iter_mut() {
+                let aligned = matches!(
+                    t.alignment.as_deref(),
+                    Some("RightAlign" | "CenterAlign" | "CharacterAlign")
+                );
+                if aligned && t.position > width {
+                    t.position = width;
+                    moved += 1;
+                }
+            }
+        }
+    }
+    moved
+}
+
+/// The style catalog with every `basedOn` Word would honour: a style can only
+/// be based on an existing style of its own type. Word ignores any other
+/// (a paragraph style "based on" a character style lays out on docDefaults),
+/// and so must the lowering, or the style hangs off a parent the host never
+/// creates.
+fn valid_bases(styles: &[Style], diagnostics: &mut Vec<Diagnostic>) -> Vec<Style> {
+    let kinds: HashMap<&str, StyleKind> = styles
+        .iter()
+        .map(|s| (s.style_id.as_str(), s.kind))
+        .collect();
+    styles
+        .iter()
+        .map(|s| {
+            let mut s = s.clone();
+            if let Some(base) = &s.based_on {
+                if kinds.get(base.as_str()) != Some(&s.kind) {
+                    diagnostics.push(Diagnostic::info(
+                        format!(
+                            "style '{}' is based on '{}', which is not a {:?} style; \
+                             like Word, it is laid out on the document defaults",
+                            s.style_id, base, s.kind
+                        ),
+                        1,
+                    ));
+                    s.based_on = None;
+                }
+            }
+            s
+        })
+        .collect()
+}
+
 fn len(path: &str, pt: f32) -> StyleProp {
     StyleProp {
         path: path.into(),
@@ -1826,9 +2053,18 @@ fn list_props(list: &ListMarker) -> Vec<StyleProp> {
             value: PropValue::Text(fmt.clone()),
         });
     }
-    // Each level indents by 18 pt (¼ inch) — a reasonable default when the list
-    // definition's own indent metrics are not (yet) carried.
-    out.push(len("paragraphLeftIndent", (list.level as f32 + 1.0) * 18.0));
+    // The level's own indents (numbering.xml `w:lvl/w:pPr/w:ind`): the text
+    // at `left`, the marker `hanging` before it. Without them, 18 pt (¼ in)
+    // per level.
+    match list.left_indent {
+        Some(left) => out.push(len("paragraphLeftIndent", twip_to_pt(left))),
+        None => out.push(len("paragraphLeftIndent", (list.level as f32 + 1.0) * 18.0)),
+    }
+    if let Some(h) = list.hanging_indent {
+        out.push(len("paragraphFirstLineIndent", -twip_to_pt(h)));
+    } else if let Some(f) = list.first_line_indent {
+        out.push(len("paragraphFirstLineIndent", twip_to_pt(f)));
+    }
     out
 }
 
@@ -1957,6 +2193,7 @@ mod tests {
             name: Some("heading 1".into()),
             kind: StyleKind::Paragraph,
             based_on: Some("Normal".into()),
+            is_default: false,
             para: ParaProps {
                 justification: Some(Justification::Center),
                 ..Default::default()
@@ -2129,7 +2366,7 @@ mod tests {
             .unwrap();
         assert_eq!(stops.len(), 1);
         assert_eq!(stops[0].position, 468.0);
-        assert_eq!(stops[0].alignment.as_deref(), Some("right"));
+        assert_eq!(stops[0].alignment.as_deref(), Some("RightAlign"));
         assert!(ptab_notes(&l).is_empty());
     }
 

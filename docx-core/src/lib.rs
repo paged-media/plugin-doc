@@ -46,9 +46,25 @@ pub struct DocxDocument {
     /// ([`Run::note_ref`]). Empty when the document has none.
     #[serde(default)]
     pub notes: Vec<Note>,
-    /// Header + footer parts referenced by the document's sections.
+    /// Header + footer parts referenced by the document's sections, one per
+    /// PART (two references to one part share it). Each section says which
+    /// of them it shows ([`Section::headers`] / [`Section::footers`]).
     #[serde(default)]
     pub headers_footers: Vec<HeaderFooter>,
+    /// `settings.xml` `w:evenAndOddHeaders` (thoughts ADR 033): even pages
+    /// show the `even` header and footer. Document-wide, unlike `titlePg`.
+    #[serde(default)]
+    pub even_and_odd_headers: bool,
+    /// `settings.xml` `w:footnotePr`, as written (thoughts ADR 034). Word
+    /// does NOT number by it: the marks follow each section's own
+    /// `w:footnotePr` ([`DocxDocument::footnote_numbering`],
+    /// `fixtures/footnote-numbering.word.json`). Kept for save-back and for
+    /// a later reader that finds a use for it.
+    #[serde(default)]
+    pub footnote_props: NoteProps,
+    /// `settings.xml` `w:endnotePr`, as [`DocxDocument::footnote_props`].
+    #[serde(default)]
+    pub endnote_props: NoteProps,
     /// Body content in document order.
     pub body: Vec<Block>,
     /// The style catalog from `styles.xml` (`docDefaults` + named styles).
@@ -243,8 +259,15 @@ pub struct Run {
     /// `<w:sym>` in this run, carried or not ([`RunSymbol`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub symbols: Vec<RunSymbol>,
-    /// A `w:drawing` image carried on this run (`text` is empty for such a run).
-    pub image: Option<Image>,
+    /// The `w:drawing` pictures carried on this run, in order (`text` is
+    /// empty for such a run).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<Image>,
+    /// `w:drawing`s in this run that are not pictures (shapes, text boxes,
+    /// charts, SmartArt) or whose picture cannot be resolved: not carried,
+    /// counted so the lowering can say so.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub other_drawings: u32,
     /// When this run sits inside a `w:hyperlink`, its resolved target (an
     /// external URL, or `#anchor` for an internal bookmark). Styled blue +
     /// underline on lowering; the clickable link itself is preserved in the
@@ -295,13 +318,211 @@ pub enum BreakKind {
 pub struct HeaderFooter {
     /// `true` for a footer, `false` for a header.
     pub footer: bool,
-    /// `w:type` on the reference: `default` / `first` / `even`.
+    /// `w:type` on the first reference to it: `default` / `first` / `even`.
     pub kind: Option<String>,
+    /// The part name (`word/header1.xml`), for save-back provenance.
+    #[serde(default)]
+    pub part: String,
+    /// The section that first references it (0-based).
+    #[serde(default)]
+    pub section: usize,
     pub paragraphs: Vec<Paragraph>,
 }
 
-/// An inline image (`w:drawing` → `wp:inline`/`wp:anchor` → a picture blip),
-/// resolved to its media bytes + intrinsic size at import time.
+/// Which header (or footer) part a section shows, per `w:type`, as indices
+/// into [`DocxDocument::headers_footers`] (thoughts ADR 033). `None` is a
+/// blank one: no reference of that kind in this section or any before it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeaderFooterSet {
+    pub default: Option<HeaderFooterRef>,
+    pub first: Option<HeaderFooterRef>,
+    pub even: Option<HeaderFooterRef>,
+}
+
+/// One section's header or footer of one kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeaderFooterRef {
+    /// Index into [`DocxDocument::headers_footers`].
+    pub index: usize,
+    /// `true` when the section has no reference of this kind and shows the
+    /// previous section's (Word's rule, ECMA-376 §17.10.5).
+    pub inherited: bool,
+}
+
+/// The kind of header/footer a page shows (`w:type`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HeaderFooterKind {
+    Default,
+    First,
+    Even,
+}
+
+impl HeaderFooterSet {
+    pub fn get(&self, kind: HeaderFooterKind) -> Option<HeaderFooterRef> {
+        match kind {
+            HeaderFooterKind::Default => self.default,
+            HeaderFooterKind::First => self.first,
+            HeaderFooterKind::Even => self.even,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.default.is_none() && self.first.is_none() && self.even.is_none()
+    }
+}
+
+/// Footnote or endnote numbering (`w:footnotePr` / `w:endnotePr`, thoughts
+/// ADR 034). `None` is "not said here" (inherit, or Word's default).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteProps {
+    /// `w:numFmt/@w:val` as Word writes it (`decimal`, `lowerRoman`,
+    /// `upperLetter`, `chicago`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_fmt: Option<String>,
+    /// `w:numStart/@w:val`: the first note's number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_start: Option<u32>,
+    /// `w:numRestart/@w:val`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_restart: Option<NoteRestart>,
+    /// `w:pos/@w:val` as Word writes it: footnotes `pageBottom` /
+    /// `beneathText` / `sectEnd`; endnotes `sectEnd` / `docEnd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<String>,
+}
+
+/// `w:numRestart/@w:val`: when note numbering starts over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NoteRestart {
+    /// Never (Word's default).
+    Continuous,
+    /// At each section.
+    EachSection,
+    /// On each page (footnotes only).
+    EachPage,
+}
+
+impl NoteProps {
+    pub fn is_empty(&self) -> bool {
+        *self == NoteProps::default()
+    }
+
+    /// The number Word gives a footnote under these (a section's own)
+    /// numbering settings, from its 0-based ordinals among ALL the
+    /// document's footnotes, its section's, and its page's (measured,
+    /// `fixtures/footnote-numbering.word.json`): `numStart` (else 1) plus
+    /// the ordinal since the restart point — the page for `eachPage`, the
+    /// section for `eachSect`, and the DOCUMENT's start for `continuous`,
+    /// whatever earlier sections restarted or started at.
+    pub fn note_number(&self, in_document: u32, in_section: u32, on_page: u32) -> u32 {
+        let start = self.num_start.unwrap_or(1);
+        start
+            + match self.num_restart.unwrap_or(NoteRestart::Continuous) {
+                NoteRestart::Continuous => in_document,
+                NoteRestart::EachSection => in_section,
+                NoteRestart::EachPage => on_page,
+            }
+    }
+}
+
+/// A note number in Word's `w:numFmt` (`decimal` when `None`), for the
+/// formats a note mark commonly takes: `decimal`, `lowerRoman`,
+/// `upperRoman`, `lowerLetter`, `upperLetter` (Word's letters repeat:
+/// 27 is `AA`). `None` for any other format.
+pub fn format_note_number(n: u32, fmt: Option<&str>) -> Option<String> {
+    fn roman(mut n: u32) -> String {
+        const T: &[(u32, &str)] = &[
+            (1000, "m"),
+            (900, "cm"),
+            (500, "d"),
+            (400, "cd"),
+            (100, "c"),
+            (90, "xc"),
+            (50, "l"),
+            (40, "xl"),
+            (10, "x"),
+            (9, "ix"),
+            (5, "v"),
+            (4, "iv"),
+            (1, "i"),
+        ];
+        let mut s = String::new();
+        for (v, r) in T {
+            while n >= *v {
+                s.push_str(r);
+                n -= v;
+            }
+        }
+        s
+    }
+    fn letter(n: u32) -> String {
+        if n == 0 {
+            return String::new();
+        }
+        let c = char::from(b'a' + ((n - 1) % 26) as u8);
+        std::iter::repeat_n(c, ((n - 1) / 26 + 1) as usize).collect()
+    }
+    Some(match fmt.unwrap_or("decimal") {
+        "decimal" => n.to_string(),
+        "lowerRoman" => roman(n),
+        "upperRoman" => roman(n).to_uppercase(),
+        "lowerLetter" => letter(n),
+        "upperLetter" => letter(n).to_uppercase(),
+        _ => return None,
+    })
+}
+
+impl DocxDocument {
+    /// The header (`footer == false`) or footer a page of section `section`
+    /// shows, by Word's rule (ECMA-376 §17.10.1-6): the section's first page
+    /// takes `first` when the section has `w:titlePg`; otherwise an even
+    /// page takes `even` when the document has `w:evenAndOddHeaders`;
+    /// otherwise `default`. `page_number` is the page's NUMBER (after any
+    /// `w:pgNumType/@w:start`), which is what decides even and odd.
+    /// `None` is a blank header.
+    pub fn header_footer_for(
+        &self,
+        section: usize,
+        footer: bool,
+        first_of_section: bool,
+        page_number: i32,
+    ) -> Option<&HeaderFooter> {
+        let s = self.sections.get(section)?;
+        let set = if footer { &s.footers } else { &s.headers };
+        let kind = if first_of_section && s.title_page {
+            HeaderFooterKind::First
+        } else if self.even_and_odd_headers && page_number % 2 == 0 {
+            HeaderFooterKind::Even
+        } else {
+            HeaderFooterKind::Default
+        };
+        set.get(kind)
+            .and_then(|r| self.headers_footers.get(r.index))
+    }
+
+    /// The footnote numbering in force in section `section`: its OWN
+    /// `w:footnotePr`, alone. Word takes nothing from `settings.xml` nor
+    /// from the previous section (measured,
+    /// `fixtures/footnote-numbering.word.json`); what it leaves out is
+    /// Word's default (decimal, from 1, continuous).
+    pub fn footnote_numbering(&self, section: usize) -> NoteProps {
+        self.sections
+            .get(section)
+            .map_or_else(NoteProps::default, |s| s.footnote_props.clone())
+    }
+
+    /// The endnote numbering in force in section `section`: its own
+    /// `w:endnotePr`, by analogy with footnotes (endnotes not measured).
+    pub fn endnote_numbering(&self, section: usize) -> NoteProps {
+        self.sections
+            .get(section)
+            .map_or_else(NoteProps::default, |s| s.endnote_props.clone())
+    }
+}
+
+/// An image (`w:drawing` → `wp:inline`/`wp:anchor` → a picture blip),
+/// resolved to its media bytes + intrinsic size at import time. A floating
+/// one (`wp:anchor`) carries its position and wrap in [`Image::float`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Image {
     /// The raw media bytes (PNG/JPEG/…) from `word/media/…`.
@@ -312,6 +533,86 @@ pub struct Image {
     pub width_emu: i64,
     /// Intrinsic height in EMU (`wp:extent/@cy`).
     pub height_emu: i64,
+    /// `Some` for a floating drawing (`wp:anchor`): where Word positions it
+    /// and how text wraps around it (thoughts ADR 035). `None` for an inline
+    /// one (`wp:inline`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float: Option<Float>,
+}
+
+/// A floating drawing's placement (`wp:anchor`, thoughts ADR 035). Lengths in
+/// EMU, as Word writes them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Float {
+    /// `wp:positionH`.
+    pub horizontal: Option<FloatPosition>,
+    /// `wp:positionV`.
+    pub vertical: Option<FloatPosition>,
+    /// The wrap element (`wp:wrapSquare` / … / `wp:wrapNone`).
+    pub wrap: FloatWrap,
+    /// `@wrapText` of a square/tight/through wrap: `bothSides` / `left` /
+    /// `right` / `largest`.
+    pub wrap_text: Option<String>,
+    /// `@distT` / `@distB` / `@distL` / `@distR` on `wp:anchor` (the wrap
+    /// element's own, where it has them, win).
+    pub dist_top: i64,
+    pub dist_bottom: i64,
+    pub dist_left: i64,
+    pub dist_right: i64,
+    /// `@behindDoc`: drawn behind the text.
+    pub behind_doc: bool,
+    /// `@allowOverlap`.
+    pub allow_overlap: bool,
+    /// `@layoutInCell`.
+    pub layout_in_cell: bool,
+    /// `@locked`.
+    pub locked: bool,
+    /// `@relativeHeight`: z-order among floats.
+    pub relative_height: u32,
+    /// `@simplePos="1"` with `wp:simplePos` (x, y) from the page's
+    /// top-left: the position elements are ignored.
+    pub simple_pos: Option<(i64, i64)>,
+}
+
+/// One axis of a float's position (`wp:positionH` / `wp:positionV`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FloatPosition {
+    /// `@relativeFrom` as Word writes it (`page`, `margin`, `column`,
+    /// `character`, `paragraph`, `line`, `leftMargin`, …).
+    pub relative_from: String,
+    /// `wp:posOffset` in EMU.
+    pub offset: Option<i64>,
+    /// `wp:align` (`left` / `center` / `right` / `inside` / `outside`, or
+    /// `top` / `bottom` / …).
+    pub align: Option<String>,
+    /// `wp14:pctPosHOffset` / `wp14:pctPosVOffset`, in thousandths of a
+    /// percent, as written.
+    pub percent: Option<i64>,
+}
+
+/// How text wraps around a float.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FloatWrap {
+    /// `wp:wrapNone` (or no wrap element): in front of / behind the text.
+    #[default]
+    None,
+    Square,
+    Tight,
+    Through,
+    TopAndBottom,
+}
+
+impl FloatWrap {
+    /// Word's own name for the wrap element.
+    pub fn as_word(self) -> &'static str {
+        match self {
+            FloatWrap::None => "wrapNone",
+            FloatWrap::Square => "wrapSquare",
+            FloatWrap::Tight => "wrapTight",
+            FloatWrap::Through => "wrapThrough",
+            FloatWrap::TopAndBottom => "wrapTopAndBottom",
+        }
+    }
 }
 
 /// Direct paragraph formatting. `None` means "inherit"; all lengths in twips.
@@ -503,6 +804,35 @@ pub struct Section {
     /// `w:type/@w:val` — how the section starts (thoughts ADR 029).
     #[serde(default)]
     pub kind: SectionKind,
+    /// The headers this section shows, after Word's inheritance
+    /// (thoughts ADR 033).
+    #[serde(default)]
+    pub headers: HeaderFooterSet,
+    /// The footers this section shows, after Word's inheritance.
+    #[serde(default)]
+    pub footers: HeaderFooterSet,
+    /// `w:titlePg`: the section's first page shows the `first` header and
+    /// footer. Per section, not inherited.
+    #[serde(default)]
+    pub title_page: bool,
+    /// `w:pgMar/@w:header`: the header's distance from the page top, twips.
+    #[serde(default)]
+    pub header_distance: Option<i32>,
+    /// `w:pgMar/@w:footer`: the footer's distance from the page bottom.
+    #[serde(default)]
+    pub footer_distance: Option<i32>,
+    /// `w:pgNumType/@w:start`: the section's page numbering starts over.
+    #[serde(default)]
+    pub page_number_start: Option<i32>,
+    /// `w:pgNumType/@w:fmt` as Word writes it (`decimal`, `lowerRoman`, …).
+    #[serde(default)]
+    pub page_number_format: Option<String>,
+    /// The section's own `w:footnotePr` (thoughts ADR 034).
+    #[serde(default)]
+    pub footnote_props: NoteProps,
+    /// The section's own `w:endnotePr`.
+    #[serde(default)]
+    pub endnote_props: NoteProps,
 }
 
 /// Word line spacing (`w:spacing/@w:line` with its `@w:lineRule`).
@@ -556,8 +886,21 @@ impl Default for Section {
             column_widths: Vec::new(),
             first_block: 0,
             kind: SectionKind::NextPage,
+            headers: HeaderFooterSet::default(),
+            footers: HeaderFooterSet::default(),
+            title_page: false,
+            header_distance: None,
+            footer_distance: None,
+            page_number_start: None,
+            page_number_format: None,
+            footnote_props: NoteProps::default(),
+            endnote_props: NoteProps::default(),
         }
     }
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Word's gap between columns when `w:cols/@w:space` is absent (720 twips,

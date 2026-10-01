@@ -1,0 +1,110 @@
+{
+ "source": "scripts/word-headers-probe.sh: Microsoft Word saved headers_docx() (w:evenAndOddHeaders on) and the same document without w:evenAndOddHeaders as PDF; pdftotext -bbox, per page the words Word draws in the header band (y < 54 pt, the top margin), the body and the footer band (y > 138 pt). Every header/footer is its label plus a PAGE field, so 'p3' is the page NUMBER Word gives the page.",
+ "date": "2026-10-01",
+ "word": "Microsoft Word for Mac 16.113.3",
+ "findings": [
+  "A section without references shows the previous section's, per kind (S2 shows S1's; S3 its own default with S1's first and even).",
+  "titlePg is per section, not inherited (S2's first page shows the default header).",
+  "A kind no section has referenced is blank (S1's first and even footers), not the default.",
+  "With evenAndOddHeaders, Word inserted a BLANK page (no header, no footer) before S2, whose numbering restarts at 1 after page 3: two odd numbers in a row become odd, blank even, odd. Without evenAndOddHeaders there is no blank page."
+ ],
+ "even_and_odd": [
+  {
+   "header": "H1-first p1",
+   "body": "S1 page 1",
+   "footer": ""
+  },
+  {
+   "header": "H1-even p2",
+   "body": "S1 page 2",
+   "footer": ""
+  },
+  {
+   "header": "H1-default p3",
+   "body": "S1 page 3",
+   "footer": "F1-default p3"
+  },
+  {
+   "header": "",
+   "body": "",
+   "footer": ""
+  },
+  {
+   "header": "H1-default p1",
+   "body": "S2 page 1",
+   "footer": "F1-default p1"
+  },
+  {
+   "header": "H1-even p2",
+   "body": "S2 page 2",
+   "footer": ""
+  },
+  {
+   "header": "H1-default p3",
+   "body": "S2 page 3",
+   "footer": "F1-default p3"
+  },
+  {
+   "header": "H1-first p4",
+   "body": "S3 page 1",
+   "footer": ""
+  },
+  {
+   "header": "H3-default p5",
+   "body": "S3 page 2",
+   "footer": "F1-default p5"
+  },
+  {
+   "header": "H1-even p6",
+   "body": "S3 page 3",
+   "footer": ""
+  }
+ ],
+ "no_even_and_odd": [
+  {
+   "header": "H1-first p1",
+   "body": "S1 page 1",
+   "footer": ""
+  },
+  {
+   "header": "H1-default p2",
+   "body": "S1 page 2",
+   "footer": "F1-default p2"
+  },
+  {
+   "header": "H1-default p3",
+   "body": "S1 page 3",
+   "footer": "F1-default p3"
+  },
+  {
+   "header": "H1-default p1",
+   "body": "S2 page 1",
+   "footer": "F1-default p1"
+  },
+  {
+   "header": "H1-default p2",
+   "body": "S2 page 2",
+   "footer": "F1-default p2"
+  },
+  {
+   "header": "H1-default p3",
+   "body": "S2 page 3",
+   "footer": "F1-default p3"
+  },
+  {
+   "header": "H1-first p4",
+   "body": "S3 page 1",
+   "footer": ""
+  },
+  {
+   "header": "H3-default p5",
+   "body": "S3 page 2",
+   "footer": "F1-default p5"
+  },
+  {
+   "header": "H3-default p6",
+   "body": "S3 page 3",
+   "footer": "F1-default p6"
+  }
+ ]
+}

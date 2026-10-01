@@ -48,9 +48,10 @@ pub use sections::LowerOptions;
 use sections::{SectionColumns, SectionPlacement};
 
 use ir::{
-    Diagnostic, LoweredBlock, LoweredCell, LoweredDoc, LoweredImage, LoweredParagraph, LoweredRun,
-    LoweredSection, LoweredSegment, LoweredStory, LoweredStyle, LoweredSwatch, LoweredTabStop,
-    LoweredTable, PropValue, StyleCollection, StyleProp,
+    Diagnostic, LoweredBlock, LoweredCell, LoweredDoc, LoweredFloat, LoweredFloatPosition,
+    LoweredHeaderFooter, LoweredHeaderFooterParts, LoweredImage, LoweredNoteNumbering,
+    LoweredParagraph, LoweredRun, LoweredSection, LoweredSegment, LoweredStory, LoweredStyle,
+    LoweredSwatch, LoweredTabStop, LoweredTable, PropValue, StyleCollection, StyleProp,
 };
 
 const PARA_PREFIX: &str = "ParagraphStyle/docx-";
@@ -133,7 +134,158 @@ fn lower_image(img: &docx_core::Image) -> LoweredImage {
         width_pt: emu_to_pt(img.width_emu),
         height_pt: emu_to_pt(img.height_emu),
         uri: format!("data:{};base64,{}", img.mime, b64),
+        float: img.float.as_ref().map(lower_float),
     }
+}
+
+/// A floating drawing's position and wrap, carried in points (ADR 035).
+fn lower_float(f: &docx_core::Float) -> LoweredFloat {
+    let pos = |p: &docx_core::FloatPosition| LoweredFloatPosition {
+        relative_from: p.relative_from.clone(),
+        offset_pt: p.offset.map(emu_to_pt),
+        align: p.align.clone(),
+        percent: p.percent.map(|v| v as f32 / 1000.0),
+    };
+    LoweredFloat {
+        horizontal: f.horizontal.as_ref().map(pos),
+        vertical: f.vertical.as_ref().map(pos),
+        wrap: f.wrap.as_word().to_string(),
+        wrap_text: f.wrap_text.clone(),
+        dist_top_pt: emu_to_pt(f.dist_top),
+        dist_bottom_pt: emu_to_pt(f.dist_bottom),
+        dist_left_pt: emu_to_pt(f.dist_left),
+        dist_right_pt: emu_to_pt(f.dist_right),
+        behind_doc: f.behind_doc,
+        allow_overlap: f.allow_overlap,
+        layout_in_cell: f.layout_in_cell,
+        locked: f.locked,
+        relative_height: f.relative_height,
+        simple_pos_pt: f.simple_pos.map(|(x, y)| (emu_to_pt(x), emu_to_pt(y))),
+    }
+}
+
+/// One axis of a float's position, for a diagnostic: `column +12 pt`.
+fn describe_position(p: &LoweredFloatPosition) -> String {
+    if let Some(a) = &p.align {
+        format!("{} {a}", p.relative_from)
+    } else if let Some(o) = p.offset_pt {
+        format!("{} {o:+.1} pt", p.relative_from)
+    } else if let Some(pc) = p.percent {
+        format!("{} {pc}%", p.relative_from)
+    } else {
+        p.relative_from.clone()
+    }
+}
+
+/// The ADR-007 diagnostic for one floating drawing placed inline (ADR 035
+/// work item 0): what it is, how Word places and wraps it, and what it gets.
+fn float_diagnostic(block: usize, img: &LoweredImage, f: &LoweredFloat) -> Diagnostic {
+    let mut how = f.wrap.clone();
+    if let Some(side) = &f.wrap_text {
+        how.push_str(&format!(" {side}"));
+    }
+    if f.behind_doc {
+        how.push_str(", behind the text");
+    }
+    let place = match (&f.simple_pos_pt, &f.horizontal, &f.vertical) {
+        (Some((x, y)), _, _) => format!("at ({x:.1}, {y:.1}) pt from the page's top-left"),
+        (None, h, v) => format!(
+            "horizontally {}, vertically {}",
+            h.as_ref().map_or("unset".into(), describe_position),
+            v.as_ref().map_or("unset".into(), describe_position)
+        ),
+    };
+    Diagnostic::warning(
+        format!(
+            "a floating picture in body block {block} ({:.1} x {:.1} pt; {how}; {place}) is \
+             placed INLINE at the start of its paragraph: Word's position and text wrap are \
+             not carried onto the page yet (thoughts ADR 035, RFI C-47/C-48), so the text \
+             does not flow around it",
+            img.width_pt, img.height_pt
+        ),
+        2,
+    )
+}
+
+/// Word's numbering vocabulary for a [`docx_core::NoteRestart`].
+fn restart_word(r: docx_core::NoteRestart) -> &'static str {
+    match r {
+        docx_core::NoteRestart::Continuous => "continuous",
+        docx_core::NoteRestart::EachSection => "eachSect",
+        docx_core::NoteRestart::EachPage => "eachPage",
+    }
+}
+
+fn lower_note_numbering(p: &docx_core::NoteProps) -> Option<LoweredNoteNumbering> {
+    (!p.is_empty()).then(|| LoweredNoteNumbering {
+        num_fmt: p.num_fmt.clone(),
+        num_start: p.num_start,
+        num_restart: p.num_restart.map(|r| restart_word(r).to_string()),
+        pos: p.pos.clone(),
+    })
+}
+
+/// A note numbering for a diagnostic, with Word's footnote defaults for what
+/// the document does not say: `lowerRoman from 3, eachSect, pageBottom`.
+fn describe_note_numbering(n: Option<&LoweredNoteNumbering>, endnote: bool) -> String {
+    let n = n.cloned().unwrap_or_default();
+    let dflt = |v: Option<String>, d: &str| v.unwrap_or_else(|| format!("{d} (default)"));
+    if n == LoweredNoteNumbering::default() {
+        return if endnote {
+            "Word's defaults".into()
+        } else {
+            "Word's defaults: decimal from 1, continuous, at the page bottom".into()
+        };
+    }
+    if endnote {
+        // Word's endnote defaults are not measured here: say only what the
+        // document says.
+        let said: Vec<String> = [
+            n.num_fmt,
+            n.num_start.map(|s| format!("from {s}")),
+            n.num_restart,
+            n.pos,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        return if said.is_empty() {
+            "Word's defaults".into()
+        } else {
+            said.join(", ")
+        };
+    }
+    format!(
+        "{} from {}, {}, {}",
+        dflt(n.num_fmt, "decimal"),
+        n.num_start
+            .map_or_else(|| "1 (default)".into(), |s| s.to_string()),
+        dflt(n.num_restart, "continuous"),
+        dflt(n.pos, "pageBottom")
+    )
+}
+
+/// ADR 033 — a section's headers and footers for the IR, by part name.
+fn lower_header_footer(doc: &DocxDocument, s: &Section) -> Option<LoweredHeaderFooter> {
+    let part = |r: Option<docx_core::HeaderFooterRef>| {
+        r.and_then(|r| doc.headers_footers.get(r.index))
+            .map(|h| h.part.clone())
+    };
+    let parts = |set: &docx_core::HeaderFooterSet| LoweredHeaderFooterParts {
+        default: part(set.default),
+        first: part(set.first),
+        even: part(set.even),
+    };
+    let hf = LoweredHeaderFooter {
+        header: parts(&s.headers),
+        footer: parts(&s.footers),
+        title_page: s.title_page,
+        header_distance_pt: s.header_distance.map(twip_to_pt),
+        footer_distance_pt: s.footer_distance.map(twip_to_pt),
+        page_number_start: s.page_number_start,
+        page_number_format: s.page_number_format.clone(),
+    };
+    (hf != LoweredHeaderFooter::default()).then_some(hf)
 }
 
 /// Word `w:jc` -> the IDML justification string paged expects
@@ -435,11 +587,12 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
         ctx.diagnostics.push(Diagnostic::info(msg, 3));
     }
 
-    // Footnotes / endnotes: the references and bodies are PARSED and preserved in
-    // the source package, but the native model has no note construct (there is no
-    // "insert footnote" mutation and no page-bottom note area), so nothing is
-    // placed. Say so rather than dropping them silently — and never fake a
-    // rendering by inlining note text into the flow.
+    // Footnotes / endnotes (ADR 034): the references, bodies and numbering
+    // (each section's own `w:footnotePr` / `w:endnotePr`, as Word reads it) are
+    // PARSED and the numbering is carried per section in the IR. Core has a
+    // native footnote, but there is no door to CREATE one (RFI C-43), and
+    // endnotes have no native construct, so nothing is placed. Say so, and
+    // never fake a rendering by inlining note text into the flow.
     if !doc.notes.is_empty() {
         let footnotes = doc.notes.iter().filter(|n| !n.endnote).count();
         let endnotes = doc.notes.len() - footnotes;
@@ -453,20 +606,49 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
             .flat_map(|p| p.runs.iter())
             .filter(|r| r.note_ref.is_some())
             .count();
+        let numbering = |endnote: bool| {
+            let per: Vec<Option<LoweredNoteNumbering>> = (0..doc.sections.len().max(1))
+                .map(|k| {
+                    lower_note_numbering(&if endnote {
+                        doc.endnote_numbering(k)
+                    } else {
+                        doc.footnote_numbering(k)
+                    })
+                })
+                .collect();
+            if per.windows(2).all(|w| w[0] == w[1]) {
+                describe_note_numbering(per[0].as_ref(), endnote)
+            } else {
+                "per section, differing (see the IR's sections)".to_string()
+            }
+        };
         let mut msg = String::new();
         if footnotes > 0 {
-            msg.push_str(&format!("{footnotes} footnote(s)"));
+            msg.push_str(&format!(
+                "{footnotes} footnote(s) (numbering: {})",
+                numbering(false)
+            ));
         }
         if endnotes > 0 {
             if !msg.is_empty() {
                 msg.push_str(" + ");
             }
-            msg.push_str(&format!("{endnotes} endnote(s)"));
+            msg.push_str(&format!(
+                "{endnotes} endnote(s) (numbering: {})",
+                numbering(true)
+            ));
         }
         msg.push_str(&format!(
-            " parsed ({refs} in-text reference(s)); the note text is preserved in \
-             the source .docx and round-trips on save, but is NOT placed on the \
-             page — the native model has no footnote construct yet"
+            " parsed ({refs} in-text reference(s)), the numbering carried per section; \
+             NOT placed on the page: neither the note text nor its reference mark is \
+             shown, because the engine's native footnotes have no create door yet \
+             (thoughts ADR 034, RFI C-43){}. The note text is preserved in the source \
+             .docx and round-trips on save",
+            if endnotes > 0 {
+                " and endnotes no native construct"
+            } else {
+                ""
+            }
         ));
         ctx.diagnostics.push(Diagnostic::info(msg, 3));
     }
@@ -505,9 +687,12 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
         }
     }
 
-    // HEADERS / FOOTERS. Parsed and preserved in the source package, but the
-    // native model places body content only — there is no header/footer story to
-    // pour them into — so they are not rendered. Say so.
+    // HEADERS / FOOTERS (ADR 033). Every section's references are read
+    // (default/first/even, `titlePg`, `evenAndOddHeaders`, inherited from
+    // the previous section where a section has none) and carried per
+    // section in the IR, but nothing places them: that needs masters in
+    // the skeleton (ADR 033 work item 6) and a grow rule that names them
+    // (RFI C-36). Say so.
     if !doc.headers_footers.is_empty() {
         let headers = doc.headers_footers.iter().filter(|h| !h.footer).count();
         let footers = doc.headers_footers.len() - headers;
@@ -521,12 +706,81 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
             }
             msg.push_str(&format!("{footers} footer(s)"));
         }
-        msg.push_str(
-            " parsed; their text is preserved in the source .docx and round-trips \
-             on save, but is NOT placed on the page — the native model has no \
-             header/footer story yet",
-        );
+        let mut kinds = Vec::new();
+        if doc.sections.iter().any(|s| s.title_page) {
+            kinds.push("a different first page");
+        }
+        if doc.even_and_odd_headers {
+            kinds.push("different even pages");
+        }
+        if doc.sections.iter().any(|s| {
+            [s.headers, s.footers].iter().any(|set| {
+                [set.default, set.first, set.even]
+                    .iter()
+                    .flatten()
+                    .any(|r| r.inherited)
+            })
+        }) {
+            kinds.push("inherited from an earlier section");
+        }
+        msg.push_str(&format!(
+            " parsed across {} section(s){}, each section's headers and footers carried \
+             in the IR; NOT placed on the page yet (the native pages get no master for \
+             them, thoughts ADR 033). Their text is preserved in the source .docx and \
+             round-trips on save",
+            doc.sections.len().max(1),
+            if kinds.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", kinds.join(", "))
+            }
+        ));
         ctx.diagnostics.push(Diagnostic::info(msg, 3));
+    }
+
+    // Word's blank page (measured, `fixtures/headers.word.json`): with
+    // different even and odd headers, a section whose numbering restarts
+    // gets a blank page before it when its first number has the parity of
+    // the page before it. Where that page falls depends on Word's
+    // pagination, which the lowering does not know: name the section.
+    if doc.even_and_odd_headers {
+        for (k, s) in doc.sections.iter().enumerate().skip(1) {
+            if let (Some(start), SectionKind::NextPage) = (s.page_number_start, s.kind) {
+                ctx.diagnostics.push(Diagnostic::info(
+                    format!(
+                        "section {} restarts its page numbering at {start} with different \
+                         even and odd headers: Word inserts a blank page before it when \
+                         that number has the parity of the page before it; the native \
+                         pages do not",
+                        k + 1
+                    ),
+                    3,
+                ));
+            }
+        }
+    }
+
+    // Pictures in table cells are not poured (a cell carries text only).
+    if ctx.cell_pictures > 0 {
+        ctx.diagnostics.push(Diagnostic::warning(
+            format!(
+                "{} picture(s) in table cells ({} of them floating) are NOT shown: \
+                 table cells are poured as text only",
+                ctx.cell_pictures, ctx.cell_floats
+            ),
+            2,
+        ));
+    }
+    // Drawings that are not pictures (ADR 035 decision 8).
+    for (block, n) in &ctx.other_drawings {
+        ctx.diagnostics.push(Diagnostic::warning(
+            format!(
+                "{n} drawing(s) in body block {block} that are not pictures (a shape, \
+                 text box, chart or SmartArt), or whose picture is linked or missing, \
+                 are NOT shown"
+            ),
+            2,
+        ));
     }
 
     // Symbol characters (`<w:sym>`): carried as their Unicode equivalent,
@@ -572,16 +826,23 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
         ));
     }
 
-    let section = lower_section(doc.sections.first());
+    let full = |k: usize, s: Option<&Section>| LoweredSection {
+        header_footer: s.and_then(|s| lower_header_footer(doc, s)),
+        footnote_numbering: lower_note_numbering(&doc.footnote_numbering(k)),
+        endnote_numbering: lower_note_numbering(&doc.endnote_numbering(k)),
+        ..lower_section(s)
+    };
+    let section = full(0, doc.sections.first());
     let sections = if doc.sections.is_empty() {
         vec![section.clone()]
     } else {
         doc.sections
             .iter()
+            .enumerate()
             .zip(&placements)
-            .map(|(s, p)| LoweredSection {
+            .map(|((k, s), p)| LoweredSection {
                 story: p.story,
-                ..lower_section(Some(s))
+                ..full(k, Some(s))
             })
             .collect()
     };
@@ -593,6 +854,7 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
         story: LoweredStory { blocks },
         section,
         sections,
+        even_and_odd_headers: doc.even_and_odd_headers,
         diagnostics: ctx.diagnostics,
     }
 }
@@ -647,6 +909,14 @@ struct Lowering {
     symbols_carried: BTreeMap<String, usize>,
     /// Symbol characters with no equivalent: (body block, font, code).
     symbols_dropped: Vec<(usize, String, String)>,
+    /// A table-cell paragraph is being lowered.
+    in_cell: bool,
+    /// Pictures in table cells (not poured: cells carry text only), and how
+    /// many of them float.
+    cell_pictures: usize,
+    cell_floats: usize,
+    /// Drawings that are not pictures, per body block.
+    other_drawings: BTreeMap<usize, u32>,
 }
 
 impl Lowering {
@@ -955,13 +1225,30 @@ impl Lowering {
             .map(|r| self.lower_run(r))
             .collect();
 
-        // Inline images ride on their own (empty-text) runs; collect them as
-        // anchored-frame placements for this paragraph.
-        let images = p
+        // Images ride on their own (empty-text) runs; collect them as
+        // anchored-frame placements for this paragraph. A floating one is
+        // placed inline too, and says so (ADR 035 work item 0).
+        let images: Vec<LoweredImage> = p
             .runs
             .iter()
-            .filter_map(|r| r.image.as_ref().map(lower_image))
+            .flat_map(|r| r.images.iter())
+            .map(lower_image)
             .collect();
+        let others: u32 = p.runs.iter().map(|r| r.other_drawings).sum();
+        if self.in_cell {
+            self.cell_pictures += images.len();
+            self.cell_floats += images.iter().filter(|i| i.float.is_some()).count();
+        } else {
+            for img in &images {
+                if let Some(f) = &img.float {
+                    self.diagnostics
+                        .push(float_diagnostic(self.current_block, img, f));
+                }
+            }
+        }
+        if others > 0 {
+            *self.other_drawings.entry(self.current_block).or_default() += others;
+        }
 
         (
             LoweredParagraph {
@@ -1063,7 +1350,12 @@ impl Lowering {
                         let paragraphs = cell
                             .paragraphs
                             .iter()
-                            .map(|p| self.lower_paragraph(p, 0))
+                            .map(|p| {
+                                self.in_cell = true;
+                                let lp = self.lower_paragraph(p, 0);
+                                self.in_cell = false;
+                                lp
+                            })
                             .collect();
                         let idx = cells.len();
                         cells.push(LoweredCell {
@@ -1552,6 +1844,9 @@ fn lower_section(section: Option<&Section>) -> LoweredSection {
         columns: s.columns.max(1),
         first_block: s.first_block,
         story: 0,
+        header_footer: None,
+        footnote_numbering: None,
+        endnote_numbering: None,
     }
 }
 
@@ -1648,7 +1943,6 @@ mod tests {
         Run {
             style_id: None,
             props,
-            image: None,
             hyperlink: None,
             text: text.into(),
             ..Default::default()

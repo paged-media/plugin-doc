@@ -26,12 +26,14 @@
 //! an unparseable main document part is a hard error.
 
 use docx_core::{
-    Block, BreakKind, CellPath, DocxDocument, HeaderFooter, Image, Justification, LineRule,
-    LineSpacing, ListKind, ListMarker, Note, ParaProps, Paragraph, PositionalTab, PtabAlignment,
-    PtabBase, Run, RunBreak, RunProps, RunSource, RunSymbol, Section, SectionKind, Style,
-    StyleCatalog, StyleKind, TabStop, VertAlign, LINE_BREAK, SOFT_HYPHEN,
+    Block, BreakKind, CellPath, DocxDocument, Float, FloatPosition, FloatWrap, HeaderFooter,
+    HeaderFooterKind, HeaderFooterRef, HeaderFooterSet, Image, Justification, LineRule,
+    LineSpacing, ListKind, ListMarker, Note, NoteProps, NoteRestart, ParaProps, Paragraph,
+    PositionalTab, PtabAlignment, PtabBase, Run, RunBreak, RunProps, RunSource, RunSymbol, Section,
+    SectionKind, Style, StyleCatalog, StyleKind, TabStop, VertAlign, LINE_BREAK, SOFT_HYPHEN,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
+use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_wordprocessing_drawing as wp;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
 use paged_ooxml::ooxmlsdk::simple_type::{
     HpsMeasureValue, OnOffValue, SignedHpsMeasureValue, SignedTwipsMeasureValue, TwipsMeasureValue,
@@ -138,6 +140,40 @@ pub fn import_docx_with_package(
 
     // Body mapping borrows the package (image resolution); scope the borrow so
     // the package can be moved into the return value once mapping is done.
+    // settings.xml (optional): even/odd headers and the document-wide note
+    // numbering.
+    let settings = settings_part(&pkg, &main_part)
+        .and_then(|name| pkg.part(&name).map(|b| (name, b)))
+        .and_then(|(name, b)| parse_root::<wml::Settings>(&name, b).ok());
+    let even_and_odd_headers = settings
+        .as_ref()
+        .and_then(|s| s.even_and_odd_headers.as_ref())
+        .is_some_and(|e| on(&e.val));
+    let footnote_props = settings
+        .as_ref()
+        .and_then(|s| s.footnote_document_wide_properties.as_deref())
+        .map(|f| {
+            note_props(
+                f.footnote_position.as_ref().map(|p| p.val.to_string()),
+                f.numbering_format.as_ref(),
+                f.numbering_start.as_ref(),
+                f.numbering_restart.as_ref(),
+            )
+        })
+        .unwrap_or_default();
+    let endnote_props = settings
+        .as_ref()
+        .and_then(|s| s.endnote_document_wide_properties.as_deref())
+        .map(|e| {
+            note_props(
+                e.endnote_position.as_ref().map(|p| p.val.to_string()),
+                e.numbering_format.as_ref(),
+                e.numbering_start.as_ref(),
+                e.numbering_restart.as_ref(),
+            )
+        })
+        .unwrap_or_default();
+
     let (body, sections, notes, headers_footers) = {
         let doc_rels = pkg
             .part(&rels::rels_part_name(&main_part))
@@ -151,19 +187,22 @@ pub fn import_docx_with_package(
                 base_dir: part_dir(&main_part).to_string(),
             },
         };
-        let (body, sections) = wml_doc
+        let (body, mut sections, refs) = wml_doc
             .body
             .as_deref()
             .map(|b| map_body(b, &ctx))
-            .unwrap_or_else(|| (Vec::new(), Vec::new()));
+            .unwrap_or_default();
         let notes = map_notes(&pkg, &main_part, &ctx);
-        let headers_footers = map_headers_footers(&pkg, &main_part, &wml_doc, &ctx);
+        let headers_footers = map_headers_footers(&pkg, &main_part, &mut sections, &refs, &ctx);
         (body, sections, notes, headers_footers)
     };
 
     let doc = DocxDocument {
         notes,
         headers_footers,
+        even_and_odd_headers,
+        footnote_props,
+        endnote_props,
         body,
         styles,
         sections,
@@ -246,80 +285,174 @@ fn endnote_paragraphs(choices: &[wml::EndnoteChoice], ctx: &ImportCtx) -> Vec<Pa
         .collect()
 }
 
-/// Parse every header/footer part the document's sections reference. The refs
-/// live on `sectPr` (`w:headerReference` / `w:footerReference`, each with an
-/// `r:id` and a `w:type`); the parts themselves are `w:hdr` / `w:ftr` roots.
+/// One `w:headerReference` / `w:footerReference`: footer?, kind, `r:id`.
+type HeaderFooterRefIn = (bool, HeaderFooterKind, String);
+
+/// A section's header/footer references, as written.
+fn section_refs(sp: &wml::SectionProperties) -> Vec<HeaderFooterRefIn> {
+    fn kind(v: wml::HeaderFooterValues) -> HeaderFooterKind {
+        match v {
+            wml::HeaderFooterValues::Default => HeaderFooterKind::Default,
+            wml::HeaderFooterValues::First => HeaderFooterKind::First,
+            wml::HeaderFooterValues::Even => HeaderFooterKind::Even,
+        }
+    }
+    sp.section_properties_choice
+        .iter()
+        .map(|c| match c {
+            wml::SectionPropertiesChoice::HeaderReference(h) => {
+                (false, kind(h.r#type), h.id.clone())
+            }
+            wml::SectionPropertiesChoice::FooterReference(f) => {
+                (true, kind(f.r#type), f.id.clone())
+            }
+        })
+        .collect()
+}
+
+/// Parse every header/footer part ANY section references (thoughts ADR 033;
+/// each section's references live on its own `sectPr`), once per part, and
+/// record on each section which part it shows per kind. A section without a
+/// reference of a kind shows the previous section's (Word's rule, ECMA-376
+/// §17.10.5); in the first section that is a blank one.
 fn map_headers_footers(
     pkg: &OpcPackage,
     main_part: &str,
-    doc: &wml::Document,
+    sections: &mut [Section],
+    refs: &[Vec<HeaderFooterRefIn>],
     ctx: &ImportCtx,
 ) -> Vec<HeaderFooter> {
-    let Some(rels_bytes) = pkg.part(&rels::rels_part_name(main_part)) else {
-        return Vec::new();
-    };
-    let rels = rels::Relationships::parse(rels_bytes);
+    let rels = pkg
+        .part(&rels::rels_part_name(main_part))
+        .map(rels::Relationships::parse)
+        .unwrap_or_default();
     let base = part_dir(main_part);
-    let Some(body) = doc.body.as_deref() else {
-        return Vec::new();
-    };
-    let Some(sect) = body.section_properties.as_deref() else {
-        return Vec::new();
-    };
-
-    let mut out = Vec::new();
-    for choice in &sect.section_properties_choice {
-        let (footer, id, kind) = match choice {
-            wml::SectionPropertiesChoice::HeaderReference(h) => (
-                false,
-                h.id.clone(),
-                Some(format!("{:?}", h.r#type).to_ascii_lowercase()),
-            ),
-            wml::SectionPropertiesChoice::FooterReference(f) => (
-                true,
-                f.id.clone(),
-                Some(format!("{:?}", f.r#type).to_ascii_lowercase()),
-            ),
+    let mut out: Vec<HeaderFooter> = Vec::new();
+    let mut prev = (HeaderFooterSet::default(), HeaderFooterSet::default());
+    for (k, section) in sections.iter_mut().enumerate() {
+        // Inherited unless the section says otherwise.
+        let inherit = |r: Option<HeaderFooterRef>| {
+            r.map(|r| HeaderFooterRef {
+                inherited: true,
+                ..r
+            })
         };
-        let Some(rel) = rels.by_id(&id) else { continue };
-        let name = resolve_target(base, &rel.target);
-        let Some(bytes) = pkg.part(&name) else {
-            continue;
+        let mut headers = HeaderFooterSet {
+            default: inherit(prev.0.default),
+            first: inherit(prev.0.first),
+            even: inherit(prev.0.even),
         };
-        let paragraphs = if footer {
-            parse_root::<wml::Footer>(&name, bytes)
-                .ok()
-                .map(|f| {
-                    f.footer_choice
-                        .iter()
-                        .filter_map(|c| match c {
-                            wml::FooterChoice::Paragraph(p) => Some(map_paragraph(p, ctx, 0, None)),
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            parse_root::<wml::Header>(&name, bytes)
-                .ok()
-                .map(|h| {
-                    h.header_choice
-                        .iter()
-                        .filter_map(|c| match c {
-                            wml::HeaderChoice::Paragraph(p) => Some(map_paragraph(p, ctx, 0, None)),
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
+        let mut footers = HeaderFooterSet {
+            default: inherit(prev.1.default),
+            first: inherit(prev.1.first),
+            even: inherit(prev.1.even),
         };
-        out.push(HeaderFooter {
-            footer,
-            kind,
-            paragraphs,
-        });
+        for (footer, kind, id) in refs.get(k).map(Vec::as_slice).unwrap_or_default() {
+            let Some(rel) = rels.by_id(id) else { continue };
+            let name = resolve_target(base, &rel.target);
+            let index = match out.iter().position(|h| h.part == name) {
+                Some(i) => i,
+                None => {
+                    let Some(bytes) = pkg.part(&name) else {
+                        continue;
+                    };
+                    out.push(HeaderFooter {
+                        footer: *footer,
+                        kind: Some(
+                            match kind {
+                                HeaderFooterKind::Default => "default",
+                                HeaderFooterKind::First => "first",
+                                HeaderFooterKind::Even => "even",
+                            }
+                            .to_string(),
+                        ),
+                        part: name.clone(),
+                        section: k,
+                        paragraphs: header_footer_paragraphs(*footer, &name, bytes, ctx),
+                    });
+                    out.len() - 1
+                }
+            };
+            let set = if *footer { &mut footers } else { &mut headers };
+            let slot = match kind {
+                HeaderFooterKind::Default => &mut set.default,
+                HeaderFooterKind::First => &mut set.first,
+                HeaderFooterKind::Even => &mut set.even,
+            };
+            *slot = Some(HeaderFooterRef {
+                index,
+                inherited: false,
+            });
+        }
+        section.headers = headers;
+        section.footers = footers;
+        prev = (headers, footers);
     }
     out
+}
+
+/// A header (`w:hdr`) or footer (`w:ftr`) part's paragraphs. Not save-back
+/// patchable yet (the body ordinal is 0, no cell provenance).
+fn header_footer_paragraphs(
+    footer: bool,
+    name: &str,
+    bytes: &[u8],
+    ctx: &ImportCtx,
+) -> Vec<Paragraph> {
+    if footer {
+        parse_root::<wml::Footer>(name, bytes)
+            .ok()
+            .map(|f| {
+                f.footer_choice
+                    .iter()
+                    .filter_map(|c| match c {
+                        wml::FooterChoice::Paragraph(p) => Some(map_paragraph(p, ctx, 0, None)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        parse_root::<wml::Header>(name, bytes)
+            .ok()
+            .map(|h| {
+                h.header_choice
+                    .iter()
+                    .filter_map(|c| match c {
+                        wml::HeaderChoice::Paragraph(p) => Some(map_paragraph(p, ctx, 0, None)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// The settings part name (via the main document's `.rels`).
+fn settings_part(pkg: &OpcPackage, main_part: &str) -> Option<String> {
+    let rels_bytes = pkg.part(&rels::rels_part_name(main_part))?;
+    let rels = rels::Relationships::parse(rels_bytes);
+    let r = rels.by_type_suffix("/settings")?;
+    Some(resolve_target(part_dir(main_part), &r.target))
+}
+
+/// `w:footnotePr` / `w:endnotePr` children -> [`NoteProps`].
+fn note_props(
+    pos: Option<String>,
+    fmt: Option<&wml::NumberingFormat>,
+    start: Option<&wml::NumberingStart>,
+    restart: Option<&wml::NumberingRestart>,
+) -> NoteProps {
+    NoteProps {
+        num_fmt: fmt.map(|f| f.val.to_string()),
+        num_start: start.map(|s| u32::from(s.val)),
+        num_restart: restart.map(|r| match r.val {
+            wml::RestartNumberValues::Continuous => NoteRestart::Continuous,
+            wml::RestartNumberValues::EachSection => NoteRestart::EachSection,
+            wml::RestartNumberValues::EachPage => NoteRestart::EachPage,
+        }),
+        pos,
+    }
 }
 
 /// A notes part name (via the main document's `.rels`), by relationship suffix.
@@ -450,7 +583,11 @@ fn numbering_sample(fmt: &wml::NumberFormatValues) -> &'static str {
     }
 }
 
-fn map_body(body: &wml::Body, ctx: &ImportCtx) -> (Vec<Block>, Vec<Section>) {
+/// The body's blocks, its sections, and each section's header/footer
+/// references (parallel to the sections).
+type MappedBody = (Vec<Block>, Vec<Section>, Vec<Vec<HeaderFooterRefIn>>);
+
+fn map_body(body: &wml::Body, ctx: &ImportCtx) -> MappedBody {
     let mut blocks = Vec::new();
     // Ordinal among the direct `<w:p>` children of `<w:body>` — the save-back
     // patcher's paragraph key. Only body paragraphs advance it (tables and any
@@ -462,6 +599,7 @@ fn map_body(body: &wml::Body, ctx: &ImportCtx) -> (Vec<Block>, Vec<Section>) {
     // (that `sectPr` describes the section it closes); the body-level
     // `sectPr` describes the last one.
     let mut sections = Vec::new();
+    let mut refs = Vec::new();
     let mut section_start = 0usize;
     for choice in &body.body_choice {
         match choice {
@@ -476,6 +614,7 @@ fn map_body(body: &wml::Body, ctx: &ImportCtx) -> (Vec<Block>, Vec<Section>) {
                     let mut section = map_section(sp);
                     section.first_block = section_start;
                     sections.push(section);
+                    refs.push(section_refs(sp));
                     section_start = blocks.len();
                 }
             }
@@ -490,8 +629,9 @@ fn map_body(body: &wml::Body, ctx: &ImportCtx) -> (Vec<Block>, Vec<Section>) {
         let mut section = map_section(sp);
         section.first_block = section_start;
         sections.push(section);
+        refs.push(section_refs(sp));
     }
-    (blocks, sections)
+    (blocks, sections, refs)
 }
 
 fn map_paragraph(
@@ -789,7 +929,8 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
     }
     let mut text = String::new();
     let mut breaks = Vec::new();
-    let mut image = None;
+    let mut images = Vec::new();
+    let mut other_drawings = 0u32;
     let mut note_ref = None;
     let mut ptabs = Vec::new();
     let mut symbols = Vec::new();
@@ -866,11 +1007,12 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
                 });
                 text.push('\t');
             }
-            wml::RunChoice::Drawing(d) => {
-                if image.is_none() {
-                    image = map_drawing(d, ctx);
-                }
-            }
+            // Every picture in the run; anything else a drawing can be
+            // (shape, text box, chart) is counted, not carried.
+            wml::RunChoice::Drawing(d) => match map_drawing(d, ctx) {
+                Some(img) => images.push(img),
+                None => other_drawings += 1,
+            },
             // A footnote/endnote reference mark — the run carries no text; the
             // note body lives in the notes part, keyed by this id.
             wml::RunChoice::FootnoteReference(f) => note_ref = Some(f.id),
@@ -885,7 +1027,8 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
         breaks,
         ptabs,
         symbols,
-        image,
+        images,
+        other_drawings,
         hyperlink: None,
         // The caller (map_paragraph) stamps the real provenance from context.
         source: None,
@@ -900,9 +1043,9 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
 /// (Typed navigation avoids linking `ooxmlsdk`'s serializer, keeping the wasm
 /// lean — `to_xml()` would pull in the whole schema's `write_to` codegen.)
 fn map_drawing(d: &wml::Drawing, ctx: &ImportCtx) -> Option<Image> {
-    let (width_emu, height_emu, graphic) = match d.drawing_choice.as_ref()? {
-        wml::DrawingChoice::Inline(i) => (i.extent.cx, i.extent.cy, &i.graphic),
-        wml::DrawingChoice::Anchor(a) => (a.extent.cx, a.extent.cy, &a.graphic),
+    let (width_emu, height_emu, graphic, float) = match d.drawing_choice.as_ref()? {
+        wml::DrawingChoice::Inline(i) => (i.extent.cx, i.extent.cy, &i.graphic, None),
+        wml::DrawingChoice::Anchor(a) => (a.extent.cx, a.extent.cy, &a.graphic, Some(map_float(a))),
     };
     let embed_id = blip_embed(graphic)?;
     let (bytes, mime) = ctx.images.resolve(embed_id)?;
@@ -911,7 +1054,123 @@ fn map_drawing(d: &wml::Drawing, ctx: &ImportCtx) -> Option<Image> {
         mime,
         width_emu,
         height_emu,
+        float,
     })
+}
+
+/// A `wp:anchor`'s position and wrap (thoughts ADR 035), as written.
+fn map_float(a: &wp::Anchor) -> Float {
+    let mut f = Float {
+        dist_top: i64::from(a.distance_from_top.unwrap_or(0)),
+        dist_bottom: i64::from(a.distance_from_bottom.unwrap_or(0)),
+        dist_left: i64::from(a.distance_from_left.unwrap_or(0)),
+        dist_right: i64::from(a.distance_from_right.unwrap_or(0)),
+        behind_doc: a.behind_doc.as_bool(),
+        allow_overlap: a.allow_overlap.as_bool(),
+        layout_in_cell: a.layout_in_cell.as_bool(),
+        locked: a.locked.as_bool(),
+        relative_height: a.relative_height.unwrap_or(0),
+        ..Float::default()
+    };
+    if a.simple_pos.is_some_and(|b| b.as_bool()) {
+        f.simple_pos = a
+            .simple_position
+            .as_ref()
+            .map(|p| (coordinate(&p.x), coordinate(&p.y)));
+    }
+    f.horizontal = a.horizontal_position.as_deref().map(|h| {
+        use wp::HorizontalPositionChoice as C;
+        let mut p = FloatPosition {
+            relative_from: h.relative_from.to_string(),
+            offset: None,
+            align: None,
+            percent: None,
+        };
+        match &h.horizontal_position_choice {
+            Some(C::HorizontalAlignment(v)) => p.align = Some(v.to_string()),
+            Some(C::PositionOffset(v)) => p.offset = Some(i64::from(*v)),
+            Some(C::PercentagePositionHeightOffset(v)) => p.percent = percent(&v.to_string()),
+            None => {}
+        }
+        p
+    });
+    f.vertical = a.vertical_position.as_deref().map(|v| {
+        use wp::VerticalPositionChoice as C;
+        let mut p = FloatPosition {
+            relative_from: v.relative_from.to_string(),
+            offset: None,
+            align: None,
+            percent: None,
+        };
+        match &v.vertical_position_choice {
+            Some(C::VerticalAlignment(a)) => p.align = Some(a.to_string()),
+            Some(C::PositionOffset(o)) => p.offset = Some(i64::from(*o)),
+            Some(C::PercentagePositionVerticalOffset(o)) => p.percent = percent(&o.to_string()),
+            None => {}
+        }
+        p
+    });
+    use wp::AnchorChoice as W;
+    match &a.anchor_choice {
+        None | Some(W::WrapNone) => f.wrap = FloatWrap::None,
+        Some(W::WrapSquare(w)) => {
+            f.wrap = FloatWrap::Square;
+            f.wrap_text = Some(w.wrap_text.to_string());
+            if let Some(v) = w.distance_from_top {
+                f.dist_top = i64::from(v);
+            }
+            if let Some(v) = w.distance_from_bottom {
+                f.dist_bottom = i64::from(v);
+            }
+            if let Some(v) = w.distance_from_left {
+                f.dist_left = i64::from(v);
+            }
+            if let Some(v) = w.distance_from_right {
+                f.dist_right = i64::from(v);
+            }
+        }
+        Some(W::WrapTight(w)) => {
+            f.wrap = FloatWrap::Tight;
+            f.wrap_text = Some(w.wrap_text.to_string());
+            if let Some(v) = w.distance_from_left {
+                f.dist_left = i64::from(v);
+            }
+            if let Some(v) = w.distance_from_right {
+                f.dist_right = i64::from(v);
+            }
+        }
+        Some(W::WrapThrough(w)) => {
+            f.wrap = FloatWrap::Through;
+            f.wrap_text = Some(w.wrap_text.to_string());
+            if let Some(v) = w.distance_from_left {
+                f.dist_left = i64::from(v);
+            }
+            if let Some(v) = w.distance_from_right {
+                f.dist_right = i64::from(v);
+            }
+        }
+        Some(W::WrapTopBottom(w)) => {
+            f.wrap = FloatWrap::TopAndBottom;
+            if let Some(v) = w.distance_from_top {
+                f.dist_top = i64::from(v);
+            }
+            if let Some(v) = w.distance_from_bottom {
+                f.dist_bottom = i64::from(v);
+            }
+        }
+    }
+    f
+}
+
+/// A DrawingML coordinate as EMU (its XML text is an integer, or a
+/// universal measure we do not expect in `wp:simplePos`).
+fn coordinate<T: std::fmt::Display>(v: &T) -> i64 {
+    v.to_string().trim().parse().unwrap_or(0)
+}
+
+/// A `wp14:pctPos*Offset` (thousandths of a percent) as written.
+fn percent(s: &str) -> Option<i64> {
+    s.trim().trim_end_matches('%').parse().ok()
 }
 
 /// The `r:embed` rel id of the first picture blip in a DrawingML graphic.
@@ -1184,6 +1443,29 @@ fn map_section(sp: &wml::SectionProperties) -> Section {
         if let Some(v) = pm.right.as_ref().and_then(twips_u) {
             s.margin_right = v;
         }
+        s.header_distance = pm.header.as_ref().and_then(twips_u);
+        s.footer_distance = pm.footer.as_ref().and_then(twips_u);
+    }
+    s.title_page = sp.title_page.as_ref().is_some_and(|t| on(&t.val));
+    if let Some(n) = &sp.page_number_type {
+        s.page_number_start = n.start;
+        s.page_number_format = n.format.map(|f| f.to_string());
+    }
+    if let Some(f) = sp.footnote_properties.as_deref() {
+        s.footnote_props = note_props(
+            f.footnote_position.as_ref().map(|p| p.val.to_string()),
+            f.numbering_format.as_ref(),
+            f.numbering_start.as_ref(),
+            f.numbering_restart.as_ref(),
+        );
+    }
+    if let Some(e) = sp.endnote_properties.as_deref() {
+        s.endnote_props = note_props(
+            e.endnote_position.as_ref().map(|p| p.val.to_string()),
+            e.numbering_format.as_ref(),
+            e.numbering_start.as_ref(),
+            e.numbering_restart.as_ref(),
+        );
     }
     if let Some(cols) = &sp.columns {
         if let Some(n) = cols.column_count {

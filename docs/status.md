@@ -287,8 +287,23 @@ ops use.)
   An engine that refuses the properties is detected by the refused style
   batch on open; the bundle then lowers with a page break per column change
   and reopens.)
-  (Numbering/lists, tables, inline images, hyperlinks and footnotes have SHIPPED
-  — see the tier sections above.)
+  (Numbering/lists, tables, inline images and hyperlinks have SHIPPED — see
+  the tier sections above. Footnotes and headers/footers are PARSED, carried
+  in the IR and diagnosed, not placed.)
+- **Headers, footnote numbering, floating drawings (RFI DOC-05/06/07,
+  thoughts ADR 033/034/035)** — every section's header/footer references are
+  read (default/first/even, `titlePg`, `evenAndOddHeaders`, `pgNumType`,
+  header/footer distances) with Word's inheritance, checked page by page
+  against Word's PDF (`fixtures/headers.word.json`, which also found Word's
+  blank page before a numbering restart under even/odd headers). Footnote
+  numbering (`w:footnotePr`) is parsed per section and from `settings.xml`;
+  Word numbers by the section's own settings alone, which
+  `NoteProps::note_number` reproduces for every mark in
+  `fixtures/footnote-numbering.word.json`. Floating drawings (`wp:anchor`)
+  carry their position and wrap in the IR (`LoweredImage.float`), stay
+  placed inline, and each gets a warning; every drawing in a run is kept.
+  None of the three is placed on the page yet: that needs core (ADR 033
+  work item 6 / C-36, ADR 034 C-43, ADR 035 C-47/C-48).
 - **In-editor live render / real `host.nativeDocument`** — the bundle is written to
   the shipped contract and exercised to the seam; full end-to-end is
   host-integration-verified in a later milestone (needs the editor checkout + a

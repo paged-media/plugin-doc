@@ -347,7 +347,7 @@ fn inline_image_resolves_media_and_lowers_to_anchored_frame() {
     let img = img_para
         .runs
         .iter()
-        .find_map(|r| r.image.as_ref())
+        .find_map(|r| r.images.first())
         .expect("the drawing run resolved an image");
     assert!(img.bytes.starts_with(b"\x89PNG"));
     assert_eq!(img.mime, "image/png");

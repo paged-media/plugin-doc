@@ -49,6 +49,10 @@ pub struct LoweredDoc {
     /// open pours each section's blocks into that section's own story.
     #[serde(default)]
     pub sections: Vec<LoweredSection>,
+    /// ADR 033 — `settings.xml` `w:evenAndOddHeaders`: even pages show the
+    /// `even` header and footer.
+    #[serde(default)]
+    pub even_and_odd_headers: bool,
     /// Honest ADR-007 diagnostics for anything not lowered natively this pass.
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -217,7 +221,7 @@ pub struct LoweredSegment {
     pub para_style_id: Option<String>,
 }
 
-/// An inline image lowered to an anchored-frame placement.
+/// An image lowered to an anchored-frame placement.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoweredImage {
@@ -225,6 +229,65 @@ pub struct LoweredImage {
     pub height_pt: f32,
     /// A self-contained `data:<mime>;base64,…` URI the anchored frame links to.
     pub uri: String,
+    /// For a FLOATING Word drawing (`wp:anchor`), where Word positions it and
+    /// how text wraps around it (thoughts ADR 035). It is still placed
+    /// INLINE at its paragraph's start, with a diagnostic, until the engine
+    /// can create a positioned, wrapped anchored object (RFI C-47/C-48);
+    /// this carries what that later lowering needs. Absent for an inline
+    /// picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float: Option<LoweredFloat>,
+}
+
+/// A floating drawing's position and wrap, in points (thoughts ADR 035).
+/// Word's vocabulary is kept as written (`relativeFrom`, `wrapSquare`,
+/// `bothSides`): the mapping onto anchored-object settings is decided by the
+/// lowering that places it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoweredFloat {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizontal: Option<LoweredFloatPosition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vertical: Option<LoweredFloatPosition>,
+    /// `wrapNone` / `wrapSquare` / `wrapTight` / `wrapThrough` /
+    /// `wrapTopAndBottom`.
+    pub wrap: String,
+    /// `bothSides` / `left` / `right` / `largest` (square, tight, through).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap_text: Option<String>,
+    /// Distance from the text, top / bottom / left / right.
+    pub dist_top_pt: f32,
+    pub dist_bottom_pt: f32,
+    pub dist_left_pt: f32,
+    pub dist_right_pt: f32,
+    pub behind_doc: bool,
+    pub allow_overlap: bool,
+    pub layout_in_cell: bool,
+    pub locked: bool,
+    /// z-order among the floats (higher is in front).
+    pub relative_height: u32,
+    /// `wp:simplePos` (x, y) from the page's top-left, when it is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simple_pos_pt: Option<(f32, f32)>,
+}
+
+/// One axis of a float's position.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoweredFloatPosition {
+    /// `page`, `margin`, `column`, `character`, `paragraph`, `line`, …
+    pub relative_from: String,
+    /// `wp:posOffset`, in points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_pt: Option<f32>,
+    /// `wp:align`: `left` / `center` / `right` / `inside` / `outside` /
+    /// `top` / `bottom`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<String>,
+    /// `wp14:pctPos*Offset`, in percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<f32>,
 }
 
 /// A run: its text and an effective (Word or synthesized) character style
@@ -263,6 +326,75 @@ pub struct LoweredSection {
     /// same page (`continuous` / `nextColumn`, see `sections`).
     #[serde(default)]
     pub story: usize,
+    /// ADR 033 — the headers and footers this section shows (after Word's
+    /// inheritance), its `titlePg`, numbering and distances. Carried, not
+    /// yet placed (a diagnostic says so).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_footer: Option<LoweredHeaderFooter>,
+    /// ADR 034 — the footnote numbering in force in this section: its own
+    /// `w:footnotePr` alone (Word takes nothing from `settings.xml` or the
+    /// previous section, `fixtures/footnote-numbering.word.json`). Absent
+    /// when the section says nothing (Word's defaults: decimal from 1,
+    /// continuous, page bottom).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footnote_numbering: Option<LoweredNoteNumbering>,
+    /// ADR 034 — the endnote numbering in force in this section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endnote_numbering: Option<LoweredNoteNumbering>,
+}
+
+/// One section's headers and footers (thoughts ADR 033): which header/footer
+/// part each page kind shows, by part name (`word/header1.xml`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoweredHeaderFooter {
+    pub header: LoweredHeaderFooterParts,
+    pub footer: LoweredHeaderFooterParts,
+    /// `w:titlePg`: the section's first page shows the `first` pair.
+    pub title_page: bool,
+    /// `w:pgMar/@w:header`: the header's distance from the page top.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_distance_pt: Option<f32>,
+    /// `w:pgMar/@w:footer`: the footer's distance from the page bottom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_distance_pt: Option<f32>,
+    /// `w:pgNumType/@w:start`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_number_start: Option<i32>,
+    /// `w:pgNumType/@w:fmt` (`decimal`, `lowerRoman`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_number_format: Option<String>,
+}
+
+/// The header (or footer) part of each kind; `None` is blank.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoweredHeaderFooterParts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub even: Option<String>,
+}
+
+/// Footnote or endnote numbering (thoughts ADR 034), Word's vocabulary. A
+/// field is absent when neither the section nor the document says it (Word's
+/// default applies).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoweredNoteNumbering {
+    /// `decimal`, `lowerRoman`, `upperLetter`, `chicago`, …
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_fmt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_start: Option<u32>,
+    /// `continuous` / `eachSect` / `eachPage`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_restart: Option<String>,
+    /// `pageBottom` / `beneathText` / `sectEnd` / `docEnd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<String>,
 }
 
 impl Default for LoweredSection {
@@ -278,6 +410,9 @@ impl Default for LoweredSection {
             columns: 1,
             first_block: 0,
             story: 0,
+            header_footer: None,
+            footnote_numbering: None,
+            endnote_numbering: None,
         }
     }
 }

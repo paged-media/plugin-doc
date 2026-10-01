@@ -80,12 +80,48 @@ export interface LoweredSegment {
   paraStyleId?: string | null;
 }
 
-/** An inline image lowered to an anchored-frame placement. */
+/** An image lowered to an anchored-frame placement. */
 export interface LoweredImage {
   widthPt: number;
   heightPt: number;
   /** A self-contained `data:<mime>;base64,…` URI. */
   uri: string;
+  /** ADR 035 — a FLOATING Word drawing's position and wrap, carried for the
+   *  later lowering. It is still placed inline (with a diagnostic) until the
+   *  engine can create a positioned, wrapped anchored object. Absent for an
+   *  inline picture. */
+  float?: LoweredFloat;
+}
+
+/** A floating drawing's position and wrap, in points, Word's vocabulary. */
+export interface LoweredFloat {
+  horizontal?: LoweredFloatPosition;
+  vertical?: LoweredFloatPosition;
+  /** `wrapNone` / `wrapSquare` / `wrapTight` / `wrapThrough` / `wrapTopAndBottom`. */
+  wrap: string;
+  /** `bothSides` / `left` / `right` / `largest`. */
+  wrapText?: string;
+  distTopPt: number;
+  distBottomPt: number;
+  distLeftPt: number;
+  distRightPt: number;
+  behindDoc: boolean;
+  allowOverlap: boolean;
+  layoutInCell: boolean;
+  locked: boolean;
+  relativeHeight: number;
+  /** `wp:simplePos` (x, y) from the page's top-left, when used. */
+  simplePosPt?: [number, number];
+}
+
+/** One axis of a float's position. */
+export interface LoweredFloatPosition {
+  /** `page`, `margin`, `column`, `character`, `paragraph`, `line`, … */
+  relativeFrom: string;
+  offsetPt?: number;
+  align?: string;
+  /** `wp14:pctPos*Offset`, in percent. */
+  percent?: number;
 }
 
 /** The body as a sequence of blocks (paragraphs + tables) in document order. */
@@ -129,6 +165,41 @@ export interface LoweredSection {
    *  the same page (continuous / nextColumn). Absent from older lowerings:
    *  every section is its own story. */
   story?: number;
+  /** ADR 033 — the headers and footers this section shows (after Word's
+   *  inheritance). Carried, not yet placed. */
+  headerFooter?: LoweredHeaderFooter;
+  /** ADR 034 — the section's own footnote numbering (Word reads nothing
+   *  else). Absent: Word's defaults. */
+  footnoteNumbering?: LoweredNoteNumbering;
+  endnoteNumbering?: LoweredNoteNumbering;
+}
+
+/** One section's headers and footers, by part name (`word/header1.xml`). */
+export interface LoweredHeaderFooter {
+  header: LoweredHeaderFooterParts;
+  footer: LoweredHeaderFooterParts;
+  titlePage: boolean;
+  headerDistancePt?: number;
+  footerDistancePt?: number;
+  pageNumberStart?: number;
+  pageNumberFormat?: string;
+}
+
+/** The part of each kind; absent is blank. */
+export interface LoweredHeaderFooterParts {
+  default?: string;
+  first?: string;
+  even?: string;
+}
+
+/** Footnote/endnote numbering, Word's vocabulary; absent fields are Word's defaults. */
+export interface LoweredNoteNumbering {
+  numFmt?: string;
+  numStart?: number;
+  /** `continuous` / `eachSect` / `eachPage`. */
+  numRestart?: string;
+  /** `pageBottom` / `beneathText` / `sectEnd` / `docEnd`. */
+  pos?: string;
 }
 
 export interface Diagnostic {
@@ -146,6 +217,8 @@ export interface LoweredDoc {
   /** ADR 029 — every section in order (standalone open pours each into its
    *  own story). Absent from older lowerings: treat as `[section]`. */
   sections?: LoweredSection[];
+  /** ADR 033 — `w:evenAndOddHeaders`: even pages show the `even` pair. */
+  evenAndOddHeaders?: boolean;
   diagnostics: Diagnostic[];
 }
 

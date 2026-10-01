@@ -120,7 +120,7 @@ fn annual_report_fixture_lowers_every_tier() {
     let images: Vec<_> = paras
         .iter()
         .flat_map(|p| p.runs.iter())
-        .filter_map(|r| r.image.as_ref())
+        .flat_map(|r| r.images.iter())
         .collect();
     assert_eq!(images.len(), 1, "exactly one embedded image");
     assert!(images[0].bytes.starts_with(b"\x89PNG\r\n\x1a\n"));

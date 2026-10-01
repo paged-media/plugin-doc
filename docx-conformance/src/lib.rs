@@ -1716,3 +1716,335 @@ pub fn one_paragraph_docx() -> Vec<u8> {
         ("word/document.xml", document.as_bytes()),
     ])
 }
+
+const W_NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships""#;
+
+/// A plain one-run paragraph (Word's default formatting), optionally ending
+/// its section with `sect` (a `w:sectPr`).
+fn plain_para(text: &str, sect: &str) -> String {
+    let ppr = if sect.is_empty() {
+        String::new()
+    } else {
+        format!("<w:pPr>{sect}</w:pPr>")
+    };
+    format!(r#"<w:p>{ppr}<w:r><w:t xml:space="preserve">{text}</w:t></w:r></w:p>"#)
+}
+
+/// A paragraph that holds only a page break.
+const PAGE_BREAK_PARA: &str = r#"<w:p><w:r><w:br w:type="page"/></w:r></w:p>"#;
+
+/// The header/footer parts of [`headers_docx`]: (rel id, part, footer?, label).
+pub const HEADER_PARTS: &[(&str, &str, bool, &str)] = &[
+    ("rH1d", "header1.xml", false, "H1-default"),
+    ("rH1f", "header2.xml", false, "H1-first"),
+    ("rH1e", "header3.xml", false, "H1-even"),
+    ("rF1d", "footer1.xml", true, "F1-default"),
+    ("rH3d", "header4.xml", false, "H3-default"),
+];
+
+/// thoughts ADR 033 / RFI DOC-05 — which header and footer Word shows on
+/// each page of a three-section document (`scripts/word-headers-probe.sh`
+/// has Word save it as PDF; `fixtures/headers.word.json` records, per page,
+/// the header and footer text).
+///
+/// `settings.xml` has `w:evenAndOddHeaders`. Every section is three pages
+/// (two page breaks), each page's one body line names it (`S2 page 1`), and
+/// every header/footer is its label plus a `PAGE` field.
+///
+/// - **S1** (`titlePg`): header default / first / even, footer default
+///   only (so its first and even footers are blank, unless Word says
+///   otherwise).
+/// - **S2**: NO references and no `titlePg`, page numbering restarting at 1
+///   (`w:pgNumType w:start="1"`): its headers are S1's, and its first page
+///   is number 1, odd, though it is the fourth sheet.
+/// - **S3** (`titlePg`): its own default header only: the first and even
+///   headers and every footer come from S1.
+pub fn headers_docx() -> Vec<u8> {
+    let mut content_types = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>
+"#,
+    );
+    let mut rels = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rSet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>
+"#,
+    );
+    let mut parts: Vec<(String, String)> = Vec::new();
+    for (id, part, footer, label) in HEADER_PARTS {
+        let (kind, root) = if *footer {
+            ("footer", "ftr")
+        } else {
+            ("header", "hdr")
+        };
+        content_types.push_str(&format!(
+            r#"  <Override PartName="/word/{part}" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.{kind}+xml"/>
+"#
+        ));
+        rels.push_str(&format!(
+            r#"  <Relationship Id="{id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/{kind}" Target="{part}"/>
+"#
+        ));
+        parts.push((
+            format!("word/{part}"),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:{root} {W_NS}><w:p><w:r><w:t xml:space="preserve">{label} p</w:t></w:r><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p></w:{root}>"#
+            ),
+        ));
+    }
+    content_types.push_str("</Types>");
+    rels.push_str("</Relationships>");
+    let settings = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings {W_NS}><w:evenAndOddHeaders/></w:settings>"#
+    );
+    let page = r#"<w:pgSz w:w="7200" w:h="3840"/><w:pgMar w:top="1080" w:right="720" w:bottom="1080" w:left="720" w:header="360" w:footer="360" w:gutter="0"/>"#;
+    let s1 = format!(
+        r#"<w:sectPr><w:headerReference w:type="default" r:id="rH1d"/><w:headerReference w:type="first" r:id="rH1f"/><w:headerReference w:type="even" r:id="rH1e"/><w:footerReference w:type="default" r:id="rF1d"/>{page}<w:titlePg/></w:sectPr>"#
+    );
+    let s2 = format!(
+        r#"<w:sectPr><w:type w:val="nextPage"/>{page}<w:pgNumType w:start="1"/></w:sectPr>"#
+    );
+    let s3 = format!(
+        r#"<w:sectPr><w:headerReference w:type="default" r:id="rH3d"/><w:type w:val="nextPage"/>{page}<w:titlePg/></w:sectPr>"#
+    );
+    let mut body = String::new();
+    for (k, sect) in [(1, s1.as_str()), (2, s2.as_str())] {
+        body.push_str(&plain_para(&format!("S{k} page 1"), ""));
+        body.push_str(PAGE_BREAK_PARA);
+        body.push_str(&plain_para(&format!("S{k} page 2"), ""));
+        body.push_str(PAGE_BREAK_PARA);
+        body.push_str(&plain_para(&format!("S{k} page 3"), sect));
+    }
+    body.push_str(&plain_para("S3 page 1", ""));
+    body.push_str(PAGE_BREAK_PARA);
+    body.push_str(&plain_para("S3 page 2", ""));
+    body.push_str(PAGE_BREAK_PARA);
+    body.push_str(&plain_para("S3 page 3", ""));
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document {W_NS}><w:body>{body}{s3}</w:body></w:document>"#
+    );
+    let mut all: Vec<(&str, &[u8])> = vec![
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", rels.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/settings.xml", settings.as_bytes()),
+    ];
+    for (name, xml) in &parts {
+        all.push((name.as_str(), xml.as_bytes()));
+    }
+    zip_parts(&all)
+}
+
+/// The sections of [`footnote_numbering_docx`]: (label, its own
+/// `w:footnotePr` children, pages, footnotes per page).
+pub const FOOTNOTE_NUMBERING_SECTIONS: &[(&str, &str, u32, u32)] = &[
+    ("S1", r#"<w:numStart w:val="3"/>"#, 1, 2),
+    (
+        "S2",
+        r#"<w:numFmt w:val="upperLetter"/><w:numRestart w:val="eachSect"/>"#,
+        1,
+        2,
+    ),
+    ("S3", "", 1, 2),
+    ("S4", r#"<w:numRestart w:val="eachPage"/>"#, 2, 2),
+];
+
+/// thoughts ADR 034 / RFI DOC-06 — footnote numbering ground truth
+/// (`scripts/word-footnotes-probe.sh`; `fixtures/footnote-numbering.word.json`
+/// records each note's mark as Word prints it).
+///
+/// `settings.xml` says `w:footnotePr/w:numFmt="lowerRoman"`; each section of
+/// [`FOOTNOTE_NUMBERING_SECTIONS`] has its own `w:footnotePr` (or none), and
+/// each page carries its footnotes, named `S2-p1-n2`. The questions: does a
+/// section's `w:footnotePr` override the document's field by field or
+/// whole; does a section without one inherit the previous section's; where
+/// does an `eachSect` / `eachPage` restart start.
+pub fn footnote_numbering_docx() -> Vec<u8> {
+    let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>
+  <Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>
+</Types>"#;
+    let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rSet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>
+  <Relationship Id="rFn" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>
+</Relationships>"#;
+    let settings = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings {W_NS}><w:footnotePr><w:numFmt w:val="lowerRoman"/><w:footnote w:id="-1"/><w:footnote w:id="0"/></w:footnotePr></w:settings>"#
+    );
+    let page = r#"<w:pgSz w:w="7200" w:h="5760"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/>"#;
+    let mut notes = String::from(
+        r#"<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>"#,
+    );
+    let mut body = String::new();
+    let mut id = 1;
+    let n = FOOTNOTE_NUMBERING_SECTIONS.len();
+    for (k, (label, pr, pages, per_page)) in FOOTNOTE_NUMBERING_SECTIONS.iter().enumerate() {
+        let fpr = if pr.is_empty() {
+            String::new()
+        } else {
+            format!("<w:footnotePr>{pr}</w:footnotePr>")
+        };
+        let sect = format!(r#"<w:sectPr>{fpr}<w:type w:val="nextPage"/>{page}</w:sectPr>"#);
+        for pg in 1..=*pages {
+            let mut runs =
+                format!(r#"<w:r><w:t xml:space="preserve">{label} page {pg}</w:t></w:r>"#);
+            for note in 1..=*per_page {
+                let name = format!("{label}-p{pg}-n{note}");
+                runs.push_str(&format!(
+                    r#"<w:r><w:t xml:space="preserve"> {name}</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="{id}"/></w:r>"#
+                ));
+                notes.push_str(&format!(
+                    r#"<w:footnote w:id="{id}"><w:p><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> note {name}</w:t></w:r></w:p></w:footnote>"#
+                ));
+                id += 1;
+            }
+            let last_page = pg == *pages;
+            let ppr = if last_page && k + 1 < n {
+                format!("<w:pPr>{sect}</w:pPr>")
+            } else {
+                String::new()
+            };
+            body.push_str(&format!("<w:p>{ppr}{runs}</w:p>"));
+            if !last_page {
+                body.push_str(PAGE_BREAK_PARA);
+            }
+        }
+        if k + 1 == n {
+            body.push_str(&sect);
+        }
+    }
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document {W_NS}><w:body>{body}</w:body></w:document>"#
+    );
+    let footnotes = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:footnotes {W_NS}>{notes}</w:footnotes>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", rels.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/settings.xml", settings.as_bytes()),
+        ("word/footnotes.xml", footnotes.as_bytes()),
+    ])
+}
+
+/// A `w:drawing` holding a picture of `cx` × `cy` EMU, as `wp:inline`
+/// (`anchor` empty) or as a `wp:anchor` whose attributes are `anchor` and
+/// whose position/wrap children are `children`.
+fn picture_drawing(anchor: &str, children: &str, cx: i64, cy: i64) -> String {
+    let graphic = format!(
+        r#"<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="image1.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rImg"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"#
+    );
+    if anchor.is_empty() {
+        format!(
+            r#"<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/><wp:docPr id="1" name="Picture"/>{graphic}</wp:inline></w:drawing>"#
+        )
+    } else {
+        format!(
+            r#"<w:drawing><wp:anchor {anchor}>{children}<wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>{{WRAP}}<wp:docPr id="2" name="Float"/>{graphic}</wp:anchor></w:drawing>"#
+        )
+    }
+}
+
+/// The floating drawings of [`floats_docx`], one paragraph each: (label,
+/// `wp:anchor` attributes, position children, wrap element).
+pub const FLOAT_CASES: &[(&str, &str, &str, &str)] = &[
+    (
+        "F1 square beside its paragraph",
+        r#"distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="251659264" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1""#,
+        r#"<wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:posOffset>152400</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>"#,
+        r#"<wp:wrapSquare wrapText="bothSides"/>"#,
+    ),
+    (
+        "F2 top and bottom, centred on the margin",
+        r#"distT="25400" distB="50800" distL="0" distR="0" simplePos="0" relativeHeight="251660288" behindDoc="0" locked="1" layoutInCell="1" allowOverlap="0""#,
+        r#"<wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="margin"><wp:align>center</wp:align></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>914400</wp:posOffset></wp:positionV>"#,
+        r#"<wp:wrapTopAndBottom/>"#,
+    ),
+    (
+        "F3 behind the text",
+        r#"distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="251661312" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1""#,
+        r#"<wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:align>left</wp:align></wp:positionH><wp:positionV relativeFrom="margin"><wp:align>top</wp:align></wp:positionV>"#,
+        r#"<wp:wrapNone/>"#,
+    ),
+    (
+        "F4 simple position",
+        r#"distT="0" distB="0" distL="0" distR="0" simplePos="1" relativeHeight="251662336" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1""#,
+        r#"<wp:simplePos x="1270000" y="2540000"/><wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>"#,
+        r#"<wp:wrapTight wrapText="right" distL="38100" distR="38100"><wp:wrapPolygon edited="0"><wp:start x="0" y="0"/><wp:lineTo x="0" y="21600"/><wp:lineTo x="21600" y="21600"/><wp:lineTo x="21600" y="0"/><wp:lineTo x="0" y="0"/></wp:wrapPolygon></wp:wrapTight>"#,
+    ),
+];
+
+/// thoughts ADR 035 / RFI DOC-07 — floating drawings (`wp:anchor`): one
+/// paragraph per [`FLOAT_CASES`] entry, each with its float as the
+/// paragraph's first run (72 × 54 pt); then a paragraph whose ONE run holds
+/// an inline picture and a floating one; then a table cell holding a float;
+/// then a paragraph holding a drawing that is not a picture (a chart
+/// reference).
+pub fn floats_docx() -> Vec<u8> {
+    let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#;
+    let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rImg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>"#;
+    let (cx, cy) = (914400, 685800);
+    let float = |attrs: &str, children: &str, wrap: &str| {
+        picture_drawing(attrs, children, cx, cy).replace("{WRAP}", wrap)
+    };
+    let mut body = String::new();
+    for (label, attrs, children, wrap) in FLOAT_CASES {
+        body.push_str(&format!(
+            r#"<w:p><w:r>{}</w:r><w:r><w:t xml:space="preserve">{label}: the paragraph the float is anchored in.</w:t></w:r></w:p>"#,
+            float(attrs, children, wrap)
+        ));
+    }
+    let (_, a1, c1, w1) = FLOAT_CASES[0];
+    body.push_str(&format!(
+        r#"<w:p><w:r>{}{}</w:r><w:r><w:t xml:space="preserve">F5 two drawings in one run.</w:t></w:r></w:p>"#,
+        picture_drawing("", "", cx, cy),
+        float(a1, c1, w1)
+    ));
+    body.push_str(&format!(
+        r#"<w:tbl><w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:tc><w:p><w:r>{}</w:r><w:r><w:t xml:space="preserve">F6 in a cell.</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#,
+        float(a1, c1, w1)
+    ));
+    body.push_str(
+        r#"<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="914400" cy="685800"/><wp:docPr id="9" name="Chart"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rChart"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r><w:r><w:t xml:space="preserve">F7 a chart.</w:t></w:r></w:p>"#,
+    );
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>"#
+    );
+    let png = b"\x89PNG\r\n\x1a\n-fake-image-bytes-for-conformance-";
+    zip_parts(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", rels.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/media/image1.png", png),
+    ])
+}

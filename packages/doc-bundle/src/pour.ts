@@ -20,7 +20,7 @@
 // (open.ts, one call per Word section story — ADR 029).
 
 import type { StoryStep } from "@paged-media/doc-host-model";
-import type { BundleHost, ElementId } from "@paged-media/plugin-api";
+import type { BundleHost, ElementId, Mutation } from "@paged-media/plugin-api";
 
 /** A conservative story-offset advance past a table paragraph. The exact
  *  footprint is refined during editor integration (a table occupies one
@@ -108,3 +108,41 @@ export async function pourSteps(host: BundleHost, steps: readonly StoryStep[]): 
   }
 
 }
+
+/** Diagnostics key for style properties the engine refused. */
+export const STYLE_DIAGNOSTICS_KEY = "media.paged.doc/styles";
+
+/**
+ * Apply the style catalog. One batch first (one undo step). A batch is
+ * all-or-nothing, so a single property the engine cannot set (an older
+ * engine refuses many paragraph paths at style level, and the break-before
+ * rule needs protocol 64) would cost the document EVERY style. On a refused
+ * batch, apply the ops one by one instead, and report each refusal as a
+ * warning rather than lose the rest silently (ADR-007).
+ */
+export async function applyStyleOps(
+  host: BundleHost,
+  ops: readonly Mutation[],
+): Promise<string[]> {
+  if (ops.length === 0) return [];
+  const whole = await host.document.mutate({ op: "batch", args: { ops: [...ops] } } as Mutation);
+  if (whole.applied) {
+    host.diagnostics.set(STYLE_DIAGNOSTICS_KEY, []);
+    return [];
+  }
+  const refused: string[] = [];
+  for (const op of ops) {
+    const one = await host.document.mutate(op);
+    if (!one.applied) {
+      const args = (op as { args?: { styleId?: string; path?: string } }).args;
+      const what = args?.path ? `${args.path} on ${args.styleId ?? "?"}` : (op as { op?: string }).op ?? "?";
+      refused.push(`This engine cannot apply ${what}: ${JSON.stringify(one.error)}`);
+    }
+  }
+  host.diagnostics.set(
+    STYLE_DIAGNOSTICS_KEY,
+    refused.map((message) => ({ severity: "warning" as const, message })),
+  );
+  return refused;
+}
+

@@ -29,7 +29,7 @@ import { buildStoryBlocks, buildStyleMutations, sectionBlocks } from "@paged-med
 import type { BundleHost, ElementId } from "@paged-media/plugin-api";
 
 import type { DocEngine } from "./engine.js";
-import { pourSteps } from "./pour.js";
+import { applyStyleOps, pourSteps } from "./pour.js";
 
 /** What a standalone open produced: the section stories (save-back reads
  *  them back in this order) and the frame carrying the binding. */
@@ -63,9 +63,7 @@ export async function openStandalone(
 
   // 2. Style catalog + swatches, once, before any applyStyle references them.
   const styleOps = buildStyleMutations(ir);
-  if (styleOps.length > 0) {
-    await host.document.mutate({ op: "batch", args: { ops: styleOps } });
-  }
+  await applyStyleOps(host, styleOps);
 
   // 3. Each section's blocks into its own story. The engine grows each
   //    story's pages as the pour oversets its frame.

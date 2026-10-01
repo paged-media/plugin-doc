@@ -25,7 +25,7 @@
 
 import type { LoweredDoc } from "@paged-media/doc-host-model";
 import { buildStory, buildStyleMutations } from "@paged-media/doc-host-model";
-import { pourSteps } from "./pour.js";
+import { applyStyleOps, pourSteps } from "./pour.js";
 import type { BundleHost, Diagnostic, ElementId, PageId } from "@paged-media/plugin-api";
 
 /** The diagnostics key this plugin publishes under. */
@@ -111,9 +111,7 @@ export async function placeEmbedded(
 
   // 1. Style catalog + swatches (must exist before applyStyle references them).
   const styleOps = buildStyleMutations(ir);
-  if (styleOps.length > 0) {
-    await host.document.mutate({ op: "batch", args: { ops: styleOps } });
-  }
+  await applyStyleOps(host, styleOps);
 
   // 2. Pour the story plan (text steps batched, tables insert-then-fill).
   await pourSteps(host, buildStory(ir, storyId));

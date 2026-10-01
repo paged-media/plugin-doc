@@ -226,6 +226,14 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
     }
 
     let section = lower_section(doc.sections.first());
+    let sections = if doc.sections.is_empty() {
+        vec![section.clone()]
+    } else {
+        doc.sections
+            .iter()
+            .map(|s| lower_section(Some(s)))
+            .collect()
+    };
     let styles = ctx.ordered_styles();
 
     LoweredDoc {
@@ -233,6 +241,7 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
         styles,
         story: LoweredStory { blocks },
         section,
+        sections,
         diagnostics: ctx.diagnostics,
     }
 }
@@ -591,6 +600,20 @@ impl Lowering {
         if let Some(v) = p.space_after {
             out.push(len("paragraphSpaceAfter", twip_to_pt(v)));
         }
+        // Word line spacing (ADR 029). `exact` IS a leading; `atLeast` is one
+        // too unless the font's own line is taller (the engine has no
+        // at-least mode, so that case lays out a little tight). `auto` single
+        // spacing is the engine's auto leading; other `auto` multiples need
+        // the run's size and are not lowered yet.
+        if let Some(ls) = p.line_spacing {
+            use docx_core::LineRule;
+            match ls.rule {
+                LineRule::Exact | LineRule::AtLeast => {
+                    out.push(len("characterLeading", twip_to_pt(ls.value)));
+                }
+                LineRule::Auto => {}
+            }
+        }
         // Word's keepNext is a boolean; paged's keepWithNext is a line count, so
         // "on" maps to a single-line hold.
         if p.keep_next == Some(true) {
@@ -742,6 +765,7 @@ fn lower_section(section: Option<&Section>) -> LoweredSection {
         margin_left_pt: twip_to_pt(s.margin_left),
         margin_right_pt: twip_to_pt(s.margin_right),
         columns: s.columns.max(1),
+        first_block: s.first_block,
     }
 }
 

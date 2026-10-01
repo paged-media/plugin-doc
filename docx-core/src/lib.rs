@@ -230,6 +230,10 @@ pub struct ParaProps {
     pub hanging_indent: Option<i32>,
     pub space_before: Option<i32>,
     pub space_after: Option<i32>,
+    /// `w:spacing/@w:line` + `@w:lineRule` (ADR 029). For `exact` and
+    /// `atLeast` the value is twips; for `auto` it is 240ths of a line.
+    #[serde(default)]
+    pub line_spacing: Option<LineSpacing>,
     pub keep_next: Option<bool>,
     pub keep_lines: Option<bool>,
     /// `w:tabs` — explicit tab stops (empty = inherit).
@@ -391,6 +395,25 @@ pub struct Section {
     /// `w:type/@w:val` — how the section starts (thoughts ADR 029).
     #[serde(default)]
     pub kind: SectionKind,
+}
+
+/// Word line spacing (`w:spacing/@w:line` with its `@w:lineRule`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineSpacing {
+    pub value: i32,
+    pub rule: LineRule,
+}
+
+/// `w:spacing/@w:lineRule`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LineRule {
+    /// A multiple of single spacing (`value` in 240ths of a line).
+    #[default]
+    Auto,
+    /// Exactly `value` twips.
+    Exact,
+    /// At least `value` twips.
+    AtLeast,
 }
 
 /// `w:sectPr/w:type` — where a section starts.

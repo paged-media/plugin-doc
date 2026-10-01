@@ -31,6 +31,9 @@ import { contributeMenu } from "./menu";
 import { createDocStore } from "./panels/outline-model.js";
 import { makeOutlinePanel } from "./panels/outline-panel.js";
 import { placeEmbedded } from "./place.js";
+import { openStandalone } from "./open.js";
+import { mergeSectionContents, sectionBlocks } from "@paged-media/doc-host-model";
+import type { StoryContentLike } from "@paged-media/doc-host-model";
 
 const PANEL_ID = "media.paged.doc.panel.outline";
 const DOCX_MIME =
@@ -42,7 +45,11 @@ const DOCX_MIME =
 interface LastDoc {
   fileName: string;
   source: Uint8Array;
-  storyId: string | null;
+  /** The story or stories the document lives in: one when placed embedded,
+   *  one per Word section when opened standalone (ADR 029), in order. */
+  storyIds: string[];
+  /** Paragraph blocks poured per story (save-back trims join artifacts). */
+  pouredParagraphs: number[];
 }
 
 export function activate(host: BundleHost): BundleHandle {
@@ -58,23 +65,45 @@ export function activate(host: BundleHost): BundleHandle {
     try {
       engine.loadDocx(bytes);
       const ir = engine.lowered();
-      const placed = await placeEmbedded(host, ir, bytes);
-      last = { fileName: name, source: bytes, storyId: placed?.storyId ?? null };
-      docStore.set({
-        fileName: name,
-        ir,
-        frameId: placed?.frameId ?? null,
-        storyId: placed?.storyId ?? null,
-      });
-      host.shell.openPanel(PANEL_ID);
-      // Standalone "open as the whole canvas" needs the docx->native-bytes
-      // producer (deferred); when that + host.nativeDocument.open are wired we
-      // switch File/Open to a true open. Until then this is embedded placement.
-      if (!host.supports("document.openNative@1")) {
+      const paragraphCounts = sectionBlocks(ir).map(
+        (blocks) => blocks.filter((b) => b.kind === "paragraph").length,
+      );
+      // ADR 029 — a Word document opens as the WHOLE document: a page per
+      // section that grows like Word's. Hosts without the native-open door
+      // get the embedded placement instead.
+      const opened = await openStandalone(host, engine, ir, bytes, name);
+      if (opened) {
+        last = {
+          fileName: name,
+          source: bytes,
+          storyIds: opened.storyIds,
+          pouredParagraphs: paragraphCounts,
+        };
+        docStore.set({
+          fileName: name,
+          ir,
+          frameId: opened.frameId,
+          storyId: opened.storyIds[0] ?? null,
+        });
+      } else {
+        const placed = await placeEmbedded(host, ir, bytes);
+        last = {
+          fileName: name,
+          source: bytes,
+          storyIds: placed?.storyId ? [placed.storyId] : [],
+          pouredParagraphs: [paragraphCounts.reduce((a, b) => a + b, 0)],
+        };
+        docStore.set({
+          fileName: name,
+          ir,
+          frameId: placed?.frameId ?? null,
+          storyId: placed?.storyId ?? null,
+        });
         host.log.info(
           "paged.doc: host has no openNative door — placed as embedded content",
         );
       }
+      host.shell.openPanel(PANEL_ID);
     } finally {
       engine.dispose();
     }
@@ -97,7 +126,7 @@ export function activate(host: BundleHost): BundleHandle {
   } | null> {
     if (!last) return null;
     const verbatim = { bytes: last.source, fileName: last.fileName };
-    if (!host.supports("document.readStory@1") || !last.storyId) {
+    if (!host.supports("document.readStory@1") || last.storyIds.length === 0) {
       return verbatim;
     }
     try {
@@ -111,8 +140,15 @@ export function activate(host: BundleHost): BundleHandle {
           storyContent(storyId: string): Promise<unknown | null>;
         }
       ).storyContent;
-      const content = await readStory.call(host.document, last.storyId);
-      if (!content) return verbatim;
+      // One read per story, merged in order into the one body the import
+      // baseline is (a standalone document has a story per Word section).
+      const contents: StoryContentLike[] = [];
+      for (const id of last.storyIds) {
+        const c = (await readStory.call(host.document, id)) as StoryContentLike | null;
+        if (!c) return verbatim;
+        contents.push(c);
+      }
+      const content = mergeSectionContents(contents, last.pouredParagraphs);
       const engine = await DocEngine.boot();
       try {
         engine.loadDocx(last.source);

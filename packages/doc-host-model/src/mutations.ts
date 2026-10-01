@@ -8,6 +8,7 @@
 import type { Mutation } from "@paged-media/plugin-api";
 
 import type {
+  LoweredBlock,
   LoweredCell,
   LoweredDoc,
   LoweredParagraph,
@@ -304,6 +305,21 @@ export type StoryStep =
 /** Split the story's blocks into executable steps: consecutive paragraph blocks
  *  coalesce into one text step; each table becomes a table step. */
 export function buildStory(ir: LoweredDoc, storyId: string): StoryStep[] {
+  return buildStoryBlocks(ir.story.blocks, storyId);
+}
+
+/** ADR 029 — the story's blocks split per Word section, in order, using each
+ *  section's `firstBlock` (blocks map 1:1 to Word body blocks). A lowering
+ *  without `sections` is one section holding every block. */
+export function sectionBlocks(ir: LoweredDoc): LoweredBlock[][] {
+  const blocks = ir.story.blocks;
+  const sections = ir.sections && ir.sections.length > 0 ? ir.sections : [ir.section];
+  const starts = sections.map((s) => s.firstBlock ?? 0);
+  return starts.map((start, k) => blocks.slice(start, k + 1 < starts.length ? starts[k + 1] : blocks.length));
+}
+
+/** {@link buildStory} over an explicit block list (one section's blocks). */
+export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: string): StoryStep[] {
   const steps: StoryStep[] = [];
   let pending: LoweredParagraph[] = [];
   const flush = () => {
@@ -319,7 +335,7 @@ export function buildStory(ir: LoweredDoc, storyId: string): StoryStep[] {
         buildTextPour(paras, storyId, textBase, styleBase).mutations,
     });
   };
-  for (const block of ir.story.blocks) {
+  for (const block of blocks) {
     if (block.kind === "table") {
       flush();
       const table: LoweredTable = block;
@@ -348,4 +364,35 @@ export function buildDocumentMutations(ir: LoweredDoc, opts: { storyId: string }
     ...buildTextPour(paragraphs, opts.storyId, 0).mutations,
   ];
   return { op: "batch", args: { ops } } as Mutation;
+}
+
+/** The read-back shape of one story (`host.document.storyContent`), kept
+ *  structural so this package needs no newer plugin-api than it builds on. */
+export interface StoryContentLike {
+  selfId?: string;
+  paragraphs: Array<{ runs: Array<{ text: string }> } & Record<string, unknown>>;
+}
+
+/**
+ * ADR 029 — save-back reads a standalone document back SECTION BY SECTION
+ * (one story each) and needs ONE body, as the import baseline is one body.
+ * Concatenates the stories in section order. A story can end in an empty
+ * paragraph the skeleton left (its single empty paragraph, which the pour
+ * extends): trailing EMPTY paragraphs beyond the paragraph count the section
+ * was poured with are dropped, so the joins add no paragraphs the Word
+ * document never had. `pouredParagraphs[k]` is that count for section k.
+ */
+export function mergeSectionContents(
+  contents: readonly StoryContentLike[],
+  pouredParagraphs: readonly number[],
+): StoryContentLike {
+  const isEmpty = (p: { runs: Array<{ text: string }> }) => p.runs.every((r) => r.text === "");
+  const paragraphs: StoryContentLike["paragraphs"] = [];
+  contents.forEach((c, k) => {
+    const ps = [...c.paragraphs];
+    const expected = pouredParagraphs[k] ?? ps.length;
+    while (ps.length > expected && isEmpty(ps[ps.length - 1])) ps.pop();
+    paragraphs.push(...ps);
+  });
+  return { selfId: contents[0]?.selfId, paragraphs };
 }

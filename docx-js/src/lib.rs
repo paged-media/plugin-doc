@@ -69,6 +69,30 @@ mod wasm {
             self.session.as_ref().map(|s| s.block_count()).unwrap_or(0)
         }
 
+        /// ADR 029 — the `.paged` page skeleton for standalone open.
+        pub fn skeleton_paged(&self, name: &str) -> Result<Vec<u8>, JsValue> {
+            let session = self
+                .session
+                .as_ref()
+                .ok_or_else(|| JsValue::from_str("no document loaded"))?;
+            session
+                .skeleton(name)
+                .map(|s| s.paged)
+                .map_err(|e| JsValue::from_str(&e))
+        }
+
+        /// The section story ids of the skeleton, in section order, as JSON.
+        pub fn skeleton_stories(&self) -> Result<String, JsValue> {
+            let session = self
+                .session
+                .as_ref()
+                .ok_or_else(|| JsValue::from_str("no document loaded"))?;
+            let ids: Vec<String> = (0..session.model().sections.len())
+                .map(docx_skeleton::section_story_id)
+                .collect();
+            serde_json::to_string(&ids).map_err(|e| JsValue::from_str(&e.to_string()))
+        }
+
         /// Zero-edit save-back (verbatim carry-through of the retained package).
         pub fn save_verbatim(&self) -> Result<Vec<u8>, JsValue> {
             self.session

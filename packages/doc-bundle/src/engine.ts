@@ -42,6 +42,8 @@ interface WasmDocEngine {
   save_verbatim(): Uint8Array;
   save_edited_from_content(contentJson: string): Uint8Array;
   last_save_skips(): string;
+  skeleton_paged(name: string): Uint8Array;
+  skeleton_stories(): string;
   free(): void;
 }
 
@@ -71,6 +73,18 @@ export class DocEngine {
   /** The Tier-0 lowering (the host-model input). */
   lowered(): LoweredDoc {
     return parseLoweredDoc(this.inner.lowered_json());
+  }
+
+  /** ADR 029 — the `.paged` page skeleton for standalone open: a page, a
+   *  margin-box frame and a GROWING story per Word section, for
+   *  `host.nativeDocument.open`. The pour fills the stories afterwards. */
+  skeletonPaged(name: string): Uint8Array {
+    return this.inner.skeleton_paged(name);
+  }
+
+  /** The skeleton's section story ids, in section order (the pour targets). */
+  skeletonStories(): string[] {
+    return JSON.parse(this.inner.skeleton_stories()) as string[];
   }
 
   /** Number of top-level body blocks. */

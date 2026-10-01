@@ -43,8 +43,12 @@ pub struct LoweredDoc {
     pub styles: Vec<LoweredStyle>,
     /// The body poured as a single native story of paragraphs.
     pub story: LoweredStory,
-    /// The first section's page geometry (points).
+    /// The first section's page geometry (points). Embedded placement uses it.
     pub section: LoweredSection,
+    /// ADR 029 — EVERY section, in order, with its first block. Standalone
+    /// open pours each section's blocks into that section's own story.
+    #[serde(default)]
+    pub sections: Vec<LoweredSection>,
     /// Honest ADR-007 diagnostics for anything not lowered natively this pass.
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -229,6 +233,10 @@ pub struct LoweredSection {
     pub margin_left_pt: f32,
     pub margin_right_pt: f32,
     pub columns: u32,
+    /// ADR 029 — index into `story.blocks` of this section's first block
+    /// (blocks map 1:1 to Word body blocks); it runs to the next section's.
+    #[serde(default)]
+    pub first_block: usize,
 }
 
 impl Default for LoweredSection {
@@ -242,6 +250,7 @@ impl Default for LoweredSection {
             margin_left_pt: 72.0,
             margin_right_pt: 72.0,
             columns: 1,
+            first_block: 0,
         }
     }
 }

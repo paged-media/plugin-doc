@@ -25,30 +25,8 @@
 
 import type { LoweredDoc } from "@paged-media/doc-host-model";
 import { buildStory, buildStyleMutations } from "@paged-media/doc-host-model";
+import { pourSteps } from "./pour.js";
 import type { BundleHost, Diagnostic, ElementId, PageId } from "@paged-media/plugin-api";
-
-/** A conservative story-offset advance past a table paragraph. The exact
- *  footprint is refined during editor integration (a table occupies one
- *  paragraph position in the story). */
-/**
- * A table's footprint in the STYLE-range (contiguous character) space is ZERO:
- * `insertTable` pushes a host paragraph carrying the table with NO runs
- * (`Paragraph { table: Some(..), ..Default::default() }` in core's
- * `apply_insert_table`), and the contiguous space counts only `CharacterRun`
- * text. In the `insertText` address space it is 1 — that space counts a synthetic
- * inter-paragraph break, which the host paragraph still has.
- *
- * These are two DIFFERENT address spaces (see docs/status.md, "Offset
- * convention"), so they are tracked separately below.
- */
-const TABLE_FOOTPRINT_STYLE = 0;
-const TABLE_FOOTPRINT_TEXT = 1;
-
-/** Extract the bare table id string from an `insertTable` outcome's createdId. */
-function tableIdOf(id: ElementId | null): string | null {
-  if (id && id.kind === "table") return id.id.table_id;
-  return null;
-}
 
 /** The diagnostics key this plugin publishes under. */
 export const DIAGNOSTICS_KEY = "media.paged.doc";
@@ -137,65 +115,8 @@ export async function placeEmbedded(
     await host.document.mutate({ op: "batch", args: { ops: styleOps } });
   }
 
-  // 2. Walk the story plan in order: text runs pour at the running offset;
-  //    tables insert (the outcome mints the id) then pour their cells.
-  // `styleOffset` addresses the CONTIGUOUS character space (applyStyle /
-  // insertAnchoredFrame / insertHyperlink ranges); `textOffset` addresses
-  // insertText's byte+synthetic-break space. They diverge as soon as the story
-  // contains a table, which is why they are no longer one counter.
-  let styleOffset = 0;
-  let textOffset = 0;
-  // C-14 ADOPTED (core PR #46): `Mutation::Batch` can carry text ops on new
-  // engines, so each text step pours as ONE atomic batch (one undo step per
-  // step). An OLD engine rejects the whole batch (`notImplemented:
-  // Mutation::Batch` — the same wire, so no capability flag distinguishes
-  // them); the rejection applies NOTHING, which makes try-then-fall-back a
-  // safe runtime probe. The verdict is cached for the rest of the placement.
-  // (One batch for the WHOLE story stays impossible: table inserts mint ids
-  // mid-pour that their cell pours need.)
-  let engineBatchesText: boolean | null = null;
-  for (const step of buildStory(ir, storyId)) {
-    if (step.kind === "text") {
-      const ops = step.mutations(textOffset, styleOffset);
-      let sequential = engineBatchesText === false || ops.length <= 1;
-      if (!sequential) {
-        const outcome = await host.document.mutate({ op: "batch", args: { ops } });
-        if (outcome.applied) {
-          engineBatchesText = true;
-        } else {
-          // Pre-C-14 engine (or another whole-batch rejection): nothing was
-          // applied, so the sequential pour below replays the SAME ops.
-          engineBatchesText = false;
-          sequential = true;
-        }
-      }
-      if (sequential) {
-        // The pre-C-14 lane (see RFI DOC-04): op-by-op, not atomic — a
-        // mid-pour rejection leaves a partly-poured frame. We report that
-        // rather than hide it (ADR-007 — never a silent drop).
-        for (const op of ops) {
-          const poured = await host.document.mutate(op);
-          if (!poured.applied) {
-            host.log.warn(
-              `paged.doc: the engine rejected a pour op (${
-                (op as { op?: string }).op ?? "?"
-              }): ${JSON.stringify(poured.error)}`,
-            );
-          }
-        }
-      }
-      styleOffset += step.length;
-      textOffset += step.byteLength;
-    } else {
-      const outcome = await host.document.mutate(step.insert);
-      const tableId = outcome.applied ? tableIdOf(outcome.createdId) : null;
-      if (tableId) {
-        await host.document.mutate(step.cells(tableId));
-      }
-      styleOffset += TABLE_FOOTPRINT_STYLE;
-      textOffset += TABLE_FOOTPRINT_TEXT;
-    }
-  }
+  // 2. Pour the story plan (text steps batched, tables insert-then-fill).
+  await pourSteps(host, buildStory(ir, storyId));
 
   // Persist the source package (travels with the .paged file) + the binding.
   // Relative to this plugin's `paged/media.paged.doc/` subtree — the host

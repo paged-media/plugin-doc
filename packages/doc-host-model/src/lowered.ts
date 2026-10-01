@@ -110,6 +110,8 @@ export interface LoweredSection {
   marginLeftPt: number;
   marginRightPt: number;
   columns: number;
+  /** ADR 029 — index into `story.blocks` of this section's first block. */
+  firstBlock?: number;
 }
 
 export interface Diagnostic {
@@ -124,6 +126,9 @@ export interface LoweredDoc {
   styles: LoweredStyle[];
   story: LoweredStory;
   section: LoweredSection;
+  /** ADR 029 — every section in order (standalone open pours each into its
+   *  own story). Absent from older lowerings: treat as `[section]`. */
+  sections?: LoweredSection[];
   diagnostics: Diagnostic[];
 }
 

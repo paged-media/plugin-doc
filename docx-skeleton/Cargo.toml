@@ -1,0 +1,22 @@
+[package]
+name = "docx-skeleton"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "paged.doc standalone open (thoughts ADR 029): a Word document's SECTIONS as a native page skeleton (a page per section, its margin-box frame, an empty story that grows) packaged as `.paged` for host.nativeDocument.open. The TS pour fills each section's story afterwards."
+
+[lints]
+workspace = true
+
+[dependencies]
+docx-core.workspace = true
+paged-model.workspace = true
+paged-scene.workspace = true
+paged-store.workspace = true
+
+[dev-dependencies]
+docx-conformance = { path = "../docx-conformance" }
+docx-import.workspace = true
+zip.workspace = true

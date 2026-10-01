@@ -26,9 +26,9 @@
 //! an unparseable main document part is a hard error.
 
 use docx_core::{
-    Block, CellPath, DocxDocument, HeaderFooter, Image, Justification, ListKind, ListMarker, Note,
-    ParaProps, Paragraph, Run, RunProps, RunSource, Section, SectionKind, Style, StyleCatalog,
-    StyleKind, TabStop, VertAlign,
+    Block, CellPath, DocxDocument, HeaderFooter, Image, Justification, LineRule, LineSpacing,
+    ListKind, ListMarker, Note, ParaProps, Paragraph, Run, RunProps, RunSource, Section,
+    SectionKind, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
@@ -1040,6 +1040,17 @@ fn para_props(
     if let Some(sp) = spacing {
         p.space_before = sp.before.as_ref().and_then(stwips);
         p.space_after = sp.after.as_ref().and_then(stwips);
+        if let Some(value) = sp.line.as_ref().and_then(stwips) {
+            use wml::LineSpacingRuleValues as R;
+            p.line_spacing = Some(LineSpacing {
+                value,
+                rule: match sp.line_rule {
+                    Some(R::Exact) => LineRule::Exact,
+                    Some(R::AtLeast) => LineRule::AtLeast,
+                    _ => LineRule::Auto,
+                },
+            });
+        }
     }
     if keep_next {
         p.keep_next = Some(true);

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "paged.doc standalone open (thoughts ADR 029): a Word document's SECTIONS as a native page skeleton (a page per section, its margin-box frame, an empty story that grows) packaged as `.paged` for host.nativeDocument.open. The TS pour fills each section's story afterwards."
+description = "paged.doc standalone open (thoughts ADR 029): a Word document's SECTIONS as a page skeleton (a page per section, its margin-box frame, an empty story) written as a minimal IDML package for host.nativeDocument.open. No core dependency. The bundle sets each story's grow rule on the wire and pours it afterwards."
 
 [lints]
 workspace = true
@@ -13,11 +13,9 @@ workspace = true
 [dependencies]
 docx-core.workspace = true
 docx-lower.workspace = true
-paged-model.workspace = true
-paged-scene.workspace = true
-paged-store.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 docx-conformance = { path = "../docx-conformance" }
 docx-import.workspace = true
-zip.workspace = true
+quick-xml.workspace = true

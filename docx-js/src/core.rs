@@ -80,15 +80,15 @@ impl DocSession {
         &self.model
     }
 
-    /// Number of top-level body blocks.
-    /// ADR 029 — the native page skeleton for standalone open: `.paged`
-    /// bytes (a page, margin-box frame and growing story per Word section
-    /// that starts a page; continuous sections can join the story before)
-    /// plus the story ids, in order, for the pour.
+    /// ADR 029 — the page skeleton for standalone open: IDML bytes (a page,
+    /// margin-box frame and empty story per Word section that starts a page;
+    /// continuous sections can join the story before) plus the story ids, in
+    /// order, for the grow rules and the pour.
     pub fn skeleton(&self, name: &str) -> Result<docx_skeleton::Skeleton, String> {
         docx_skeleton::skeleton(self.model(), name)
     }
 
+    /// Number of top-level body blocks.
     pub fn block_count(&self) -> usize {
         self.model.body.len()
     }

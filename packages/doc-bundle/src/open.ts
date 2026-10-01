@@ -17,16 +17,19 @@
  */
 
 // Standalone open (thoughts ADR 029): a Word document becomes the WHOLE
-// document, not content in a frame. The engine's skeleton (docx-skeleton)
-// gives each Word section a page of its size, its margin box as the frame,
-// and a story whose grow rule lets the engine add pages while it oversets,
-// matching Word's own pagination (measured against Word's PDF export of
-// docx_conformance::pagination_docx()). This file opens that skeleton and
-// pours each section's blocks into its story with the shared pour.
+// document, not content in a frame. The engine's skeleton (docx-skeleton, a
+// minimal IDML package it writes itself — no core contact) gives each Word
+// section a page of its size, its margin box as the frame, and an empty
+// story. IDML cannot carry a grow rule, so after opening, each story gets
+// one on the wire (`setFlowGrowRule`, protocol 64): the engine then adds
+// pages while the story oversets, matching Word's own pagination (measured
+// against Word's PDF export of docx_conformance::pagination_docx()). This
+// file opens that skeleton, sets the rules, and pours each section's blocks
+// into its story with the shared pour.
 
 import type { LoweredDoc } from "@paged-media/doc-host-model";
 import { buildStoryBlocks, buildStyleMutations, sectionBlocks } from "@paged-media/doc-host-model";
-import type { BundleHost, ElementId } from "@paged-media/plugin-api";
+import type { BundleHost, ElementId, Mutation } from "@paged-media/plugin-api";
 
 import type { DocEngine } from "./engine.js";
 import { applyStyleOps, pourSteps } from "./pour.js";
@@ -36,6 +39,62 @@ import { applyStyleOps, pourSteps } from "./pour.js";
 export interface Opened {
   storyIds: string[];
   frameId: ElementId;
+}
+
+/** Diagnostics key for what standalone open could not do on this engine. */
+export const OPEN_DIAGNOSTICS_KEY = "media.paged.doc/open";
+
+/**
+ * The protocol-64 grow rule for one section story (thoughts ADR 026/029):
+ * generated pages after the story's last frame while it oversets, keeping
+ * the section frame's options (`LeadingOffset`, zero insets, columns) —
+ * Word's line-box fit on every page. The published plugin-api predates the
+ * op, so it is typed here and cast at the door (as activate.ts does for
+ * `storyContent`); drop the cast when the canary carrying it publishes.
+ */
+export function growRuleOp(storyId: string): Mutation {
+  return {
+    op: "setFlowGrowRule",
+    args: { storyId, grow: true, maxPages: null, copyFrameOptions: true },
+  } as unknown as Mutation;
+}
+
+/**
+ * Set every section story's grow rule: one batch (one rebuild), op by op if
+ * the batch is refused. An engine without the op (before protocol 64)
+ * refuses it; the document stays open, it just does not grow, and the
+ * refusal is reported (ADR-007). Returns the story ids that refused.
+ */
+export async function setGrowRules(host: BundleHost, storyIds: readonly string[]): Promise<string[]> {
+  if (storyIds.length === 0) return [];
+  const ops = storyIds.map(growRuleOp);
+  const refused: string[] = [];
+  let error: unknown = null;
+  const whole = await host.document.mutate({ op: "batch", args: { ops } } as Mutation);
+  if (!whole.applied) {
+    for (let k = 0; k < ops.length; k++) {
+      const one = await host.document.mutate(ops[k]);
+      if (!one.applied) {
+        refused.push(storyIds[k]);
+        error ??= one.error;
+      }
+    }
+  }
+  host.diagnostics.set(
+    OPEN_DIAGNOSTICS_KEY,
+    refused.length === 0
+      ? []
+      : [
+          {
+            severity: "warning" as const,
+            message:
+              `This engine cannot grow pages (setFlowGrowRule, protocol 64): ` +
+              `${refused.length} of ${storyIds.length} Word section(s) stay on one page, ` +
+              `and text past it is overset. ${JSON.stringify(error)}`,
+          },
+        ],
+  );
+  return refused;
 }
 
 /** True when this host can open a native document (the standalone path). */
@@ -57,9 +116,12 @@ export async function openStandalone(
 ): Promise<Opened | null> {
   if (!canOpenStandalone(host)) return null;
 
-  // 1. The skeleton: a page, frame and growing story per section.
+  // 1. The skeleton: a page, frame and empty story per section (IDML).
   const storyIds = engine.skeletonStories();
-  await host.nativeDocument.open(engine.skeletonPaged(name));
+  await host.nativeDocument.open(engine.skeletonIdml(name));
+
+  // 1b. The grow rules IDML cannot carry, before the pour oversets.
+  await setGrowRules(host, storyIds);
 
   // 2. Style catalog + swatches, once, before any applyStyle references them.
   const styleOps = buildStyleMutations(ir);

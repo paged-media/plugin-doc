@@ -53,11 +53,6 @@ docx-export = { path = "docx-export" }
 docx-js = { path = "docx-js" }
 docx-skeleton = { path = "docx-skeleton" }
 
-# The core model crates, for the DOCX standalone-open skeleton (ADR 029) only,
-# git-pinned like plugin-publish pins them. docx-lower stays core-free.
-paged-model = { git = "https://github.com/paged-media/core", rev = "5703902f64c406933bee791f6094f52da14b246a" }
-paged-scene = { git = "https://github.com/paged-media/core", rev = "5703902f64c406933bee791f6094f52da14b246a" }
-paged-store = { git = "https://github.com/paged-media/core", rev = "5703902f64c406933bee791f6094f52da14b246a" }
 
 [workspace.lints.clippy]
 all = "warn"

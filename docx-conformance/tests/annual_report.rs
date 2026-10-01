@@ -76,7 +76,8 @@ fn annual_report_fixture_lowers_every_tier() {
 
     // ── lists: bullet + decimal, both at TWO levels ─────────────────────────
     let markers: Vec<_> = paras.iter().filter_map(|p| p.list.as_ref()).collect();
-    let has = |kind: ListKind, level: u8| markers.iter().any(|m| m.kind == kind && m.level == level);
+    let has =
+        |kind: ListKind, level: u8| markers.iter().any(|m| m.kind == kind && m.level == level);
     assert!(has(ListKind::Bullet, 0), "level-0 bullet");
     assert!(has(ListKind::Bullet, 1), "level-1 bullet");
     assert!(has(ListKind::Numbered, 0), "level-0 decimal");
@@ -100,9 +101,20 @@ fn annual_report_fixture_lowers_every_tier() {
         })
         .expect("the circulation table");
     assert_eq!(table.column_widths.len(), 3);
-    assert_eq!(table.rows[0].cells[0].grid_span, 3, "the spanning title cell");
-    assert_eq!(table.rows[2].cells[0].v_merge, VMerge::Restart, "Alpine restarts");
-    assert_eq!(table.rows[3].cells[0].v_merge, VMerge::Continue, "…and continues");
+    assert_eq!(
+        table.rows[0].cells[0].grid_span, 3,
+        "the spanning title cell"
+    );
+    assert_eq!(
+        table.rows[2].cells[0].v_merge,
+        VMerge::Restart,
+        "Alpine restarts"
+    );
+    assert_eq!(
+        table.rows[3].cells[0].v_merge,
+        VMerge::Continue,
+        "…and continues"
+    );
 
     // ── the embedded image: ONE real PNG ────────────────────────────────────
     let images: Vec<_> = paras
@@ -114,7 +126,10 @@ fn annual_report_fixture_lowers_every_tier() {
     assert!(images[0].bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert_eq!(images[0].mime, "image/png");
     // 1524000 x 1016000 EMU = the 120 x 80 pt plate mark.
-    assert_eq!((images[0].width_emu, images[0].height_emu), (1524000, 1016000));
+    assert_eq!(
+        (images[0].width_emu, images[0].height_emu),
+        (1524000, 1016000)
+    );
 
     // ── hyperlinks: BOTH Word forms resolve to their external URLs ──────────
     let urls: Vec<&str> = paras
@@ -145,16 +160,22 @@ fn annual_report_fixture_lowers_every_tier() {
     // (The fixture authors a dot leader too, but leader glyphs are a labelled
     // later-tier refinement — the importer carries position + alignment only.)
     assert!(
-        paras
+        paras.iter().any(|p| p
+            .props
+            .tabs
             .iter()
-            .any(|p| p.props.tabs.iter().any(|t| t.position == 4320
-                && t.alignment.as_deref() == Some("right"))),
+            .any(|t| t.position == 4320 && t.alignment.as_deref() == Some("right"))),
         "the right-aligned ledger tab stop"
     );
 
     // ── lowering: synthesized styles, native list props, zero errors ────────
     let ir = lower(&doc);
-    for suffix in ["docx-Normal", "docx-Heading1", "docx-Heading2", "docx-Caption"] {
+    for suffix in [
+        "docx-Normal",
+        "docx-Heading1",
+        "docx-Heading2",
+        "docx-Caption",
+    ] {
         assert!(
             ir.styles.iter().any(|s| s.id.ends_with(suffix)),
             "synthesized {suffix}"
@@ -189,9 +210,12 @@ fn annual_report_fixture_lowers_every_tier() {
         .story
         .paragraphs()
         .iter()
-        .any(|p| p.images.iter().any(|i| i.uri.starts_with("data:image/png;base64,")
-            && i.width_pt == 120.0
-            && i.height_pt == 80.0)));
+        .any(|p| p
+            .images
+            .iter()
+            .any(|i| i.uri.starts_with("data:image/png;base64,")
+                && i.width_pt == 120.0
+                && i.height_pt == 80.0)));
 
     // Both link runs carry the URL for the native insertHyperlink lane.
     let lowered_urls: Vec<&str> = ir

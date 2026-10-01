@@ -60,10 +60,18 @@
 //!     filled a page (J, L, and the first part of H, N, P). A split section
 //!     that ends its story where Word leaves it unbalanced (two layouts in
 //!     the story) is balanced on its last page (diagnosed). Two
-//!     multi-column sections in a row would be ONE split block to the
-//!     engine (consecutive split paragraphs merge, with the first one's
-//!     count), so the second opens a new story on a new page, with a
-//!     warning (H3, N3, P3).
+//!     multi-column sections in a row with another count or gap are two
+//!     split blocks: the engine ends a block where the count, the inside or
+//!     the outside gutter changes, balances each on its own and starts the
+//!     next directly below the deepest sub-column (core `d4311c7`, ADR 028
+//!     addendum) — Word's map (H3, N3, P3).
+//!     Two multi-column sections in a row with the SAME count and gap: Word
+//!     balances each on its own (Q; R before a page-starting section). The
+//!     engine has no boundary there (no setting changes, and its frame
+//!     columns have none at all), so they share one column flow on the same
+//!     page, with a warning. No honest native construct separates them: a
+//!     gutter difference would move the text, and a paragraph between them
+//!     would be content Word does not have.
 //!
 //!   An engine that refuses those properties (before protocol 64) gets the
 //!   page-break lowering instead ([`LowerOptions::mid_page_columns`] off):
@@ -368,11 +376,6 @@ fn join(
                 "this engine cannot change columns mid-page (span/split columns need \
                  protocol 64)",
             )
-        } else if prev_cols > 1 && cols > 1 {
-            Some(
-                "two multi-column sections in a row would be one split-column block to the \
-                 engine",
-            )
         } else {
             None
         };
@@ -387,6 +390,23 @@ fn join(
             ));
             return None;
         }
+    }
+    if (prev_cols, prev_gap) == (cols, gap) && cols > 1 && sec.kind == SectionKind::Continuous {
+        // Measured (columns_docx Q, R): Word balances each of the two
+        // sections on its own. The engine starts a new split block only
+        // where the count or a gutter changes, and its frame columns have
+        // no boundary at all, so the two share one column flow. Kept on
+        // the same page (a page break would move every later line).
+        diagnostics.push(Diagnostic::warning(
+            format!(
+                "section {} is continuous with the same {cols} columns as the section before \
+                 it: Word balances each section's columns on its own; the engine ends a \
+                 column block only where the count or the gap changes, so the two sections \
+                 share one column flow (same page, other column breaks)",
+                k + 1
+            ),
+            3,
+        ));
     }
     let left = twips(sec.margin_left - base.margin_left);
     let right = twips(sec.margin_right - base.margin_right);

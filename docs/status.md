@@ -276,10 +276,14 @@ ops use.)
   matched against Word's maps `continuous.word.json` and
   `columns.word.json`: a story whose last section Word leaves unbalanced keeps
   the frame's columns and its one-column sections span them; every other
-  story keeps one column and its multi-column sections split it. Still
-  different from Word: a multi-column section right after another (the engine
-  would merge the two split blocks) opens a page; unequal columns are laid out
-  equal; a split section that ends its story is balanced where Word is not.
+  story keeps one column and its multi-column sections split it. A
+  multi-column section right after another with another count or gap is a
+  second split block (core `d4311c7` ends a block where the count or a gutter
+  changes), balanced on its own as Word does. Still different from Word: two
+  multi-column sections in a row with the SAME count and gap share one column
+  flow (Word balances each; the engine has no boundary there, warned);
+  unequal columns are laid out equal; a split section that ends its story is
+  balanced where Word is not.
   An engine that refuses the properties is detected by the refused style
   batch on open; the bundle then lowers with a page break per column change
   and reopens.)

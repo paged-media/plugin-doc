@@ -1105,6 +1105,15 @@ pub const COLUMNS_CASES: &[ColumnsCase] = {
             ..c("P3", "continuous", 4, 2)
         },
         c("P4", "continuous", 1, 1),
+        // (q) two columns into two columns with the SAME gap.
+        c("Q1", "nextPage", 2, 1),
+        c("Q2", "continuous", 5, 2),
+        c("Q3", "continuous", 5, 2),
+        c("Q4", "continuous", 1, 1),
+        // (r) the same, the second before a nextPage section.
+        c("R1", "nextPage", 2, 1),
+        c("R2", "continuous", 5, 2),
+        c("R3", "continuous", 5, 2),
         // (o) the document ends in two columns.
         c("O1", "nextPage", 2, 1),
         c("O2", "continuous", 5, 2),

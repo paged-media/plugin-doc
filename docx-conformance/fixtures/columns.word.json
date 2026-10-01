@@ -1,13 +1,13 @@
 {
  "fixture": "docx_conformance::columns_docx() (sections: docx_conformance::COLUMNS_CASES)",
  "produced_by": "scripts/word-columns-probe.sh (Microsoft Word 16, PDF export, macOS)",
- "measured": "2026-10-01",
+ "measured": "2026-10-01 (re-run with (q) and (r) added; pages of the other cases unchanged)",
  "method": "pdftotext -bbox: per page its size and, per line, the label (its only word), x (left edge) and top (top of its bbox), in pt from the page's top-left. Base page 360 x 312 pt, 0.5 in margins, 12 pt exact lines: a line's top is 36 + 12 n + ~2.03; a column's x is 36.02 + c x (column width + gap)",
  "fonts_used_by_word": [
   "Calibri (Inter missing)",
   "Aptos"
  ],
- "page_count": 11,
+ "page_count": 13,
  "pages": [
   {
    "page": 1,
@@ -976,6 +976,149 @@
   },
   {
    "page": 11,
+   "size_pt": [
+    360.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "Q1-01",
+     "x": 36.02,
+     "top": 38.02
+    },
+    {
+     "label": "Q1-02",
+     "x": 36.02,
+     "top": 50.05
+    },
+    {
+     "label": "Q2-01",
+     "x": 36.02,
+     "top": 62.05
+    },
+    {
+     "label": "Q2-02",
+     "x": 36.02,
+     "top": 74.07
+    },
+    {
+     "label": "Q2-03",
+     "x": 36.02,
+     "top": 86.08
+    },
+    {
+     "label": "Q3-01",
+     "x": 36.02,
+     "top": 98.07
+    },
+    {
+     "label": "Q3-02",
+     "x": 36.02,
+     "top": 110.1
+    },
+    {
+     "label": "Q3-03",
+     "x": 36.02,
+     "top": 122.1
+    },
+    {
+     "label": "Q4-01",
+     "x": 36.02,
+     "top": 134.12
+    },
+    {
+     "label": "Q2-04",
+     "x": 198.15,
+     "top": 62.05
+    },
+    {
+     "label": "Q2-05",
+     "x": 198.15,
+     "top": 74.07
+    },
+    {
+     "label": "Q3-04",
+     "x": 198.15,
+     "top": 98.07
+    },
+    {
+     "label": "Q3-05",
+     "x": 198.15,
+     "top": 110.1
+    }
+   ]
+  },
+  {
+   "page": 12,
+   "size_pt": [
+    360.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "R1-01",
+     "x": 36.02,
+     "top": 38.02
+    },
+    {
+     "label": "R1-02",
+     "x": 36.02,
+     "top": 50.05
+    },
+    {
+     "label": "R2-01",
+     "x": 36.02,
+     "top": 62.05
+    },
+    {
+     "label": "R2-02",
+     "x": 36.02,
+     "top": 74.07
+    },
+    {
+     "label": "R2-03",
+     "x": 36.02,
+     "top": 86.08
+    },
+    {
+     "label": "R3-01",
+     "x": 36.02,
+     "top": 98.07
+    },
+    {
+     "label": "R3-02",
+     "x": 36.02,
+     "top": 110.1
+    },
+    {
+     "label": "R3-03",
+     "x": 36.02,
+     "top": 122.1
+    },
+    {
+     "label": "R3-04",
+     "x": 36.02,
+     "top": 134.12
+    },
+    {
+     "label": "R3-05",
+     "x": 36.02,
+     "top": 146.12
+    },
+    {
+     "label": "R2-04",
+     "x": 198.15,
+     "top": 62.05
+    },
+    {
+     "label": "R2-05",
+     "x": 198.15,
+     "top": 74.07
+    }
+   ]
+  },
+  {
+   "page": 13,
    "size_pt": [
     360.0,
     312.0

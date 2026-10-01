@@ -34,11 +34,15 @@
 //!   columns by line count (`ceil(lines / k)` each); the span sits at the
 //!   full width below the deepest line above it; the text after it starts
 //!   below it and fills the columns in turn. Consecutive SPLIT paragraphs
-//!   form one block in the current column, `k` sub-columns
-//!   `(column − (k − 1) × inside) / k` wide (outside 0), balanced by line
-//!   count; the next paragraph starts below the deepest sub-column; a block
-//!   that does not fit fills its sub-columns to the bottom and continues,
-//!   balanced again, in the next column or page.
+//!   with the same count, inside and outside gutter form one block in the
+//!   current column (core `d4311c7`: a block ends where any of the three
+//!   changes), `k` sub-columns `(column − 2 × outside − (k − 1) × inside)
+//!   / k` wide, balanced by line count; the next paragraph or block starts
+//!   below the deepest sub-column, a block boundary spaced by
+//!   `max(SpaceAfter + SpaceBefore, ending block's SpanColumnMinSpaceAfter,
+//!   starting block's SpanColumnMinSpaceBefore)` (0 in the fixtures, which
+//!   this model asserts); a block that does not fit fills its sub-columns to
+//!   the bottom and continues, balanced again, in the next column or page.
 //!
 //! A first line's top sits 2.03 pt below its 12 pt row in Word's PDF (the
 //! glyph box, not the line box).
@@ -302,8 +306,26 @@ pub fn lay_out(ir: &LoweredDoc, placed: &[SectionPlacement]) -> Vec<Page> {
                 }
                 Kind::Split { k, inside, outside } => {
                     let end = (p..blocks.len())
-                        .find(|&e| !matches!(kinds[e], Kind::Split { .. }))
+                        .find(|&e| kinds[e] != kinds[p])
                         .unwrap_or(blocks.len());
+                    if p > 0 && matches!(kinds[p - 1], Kind::Split { .. }) {
+                        // A block boundary: the engine's spacing rule, in
+                        // whole rows (the fixtures space nothing).
+                        let (prev, this) = (style(&blocks[p - 1]), style(&blocks[p]));
+                        let gap = (length(ir, prev.as_deref(), "paragraphSpaceAfter")
+                            + length(ir, this.as_deref(), "paragraphSpaceBefore"))
+                        .max(length(
+                            ir,
+                            prev.as_deref(),
+                            "paragraphSpanColumnMinSpaceAfter",
+                        ))
+                        .max(length(
+                            ir,
+                            this.as_deref(),
+                            "paragraphSpanColumnMinSpaceBefore",
+                        ));
+                        assert_eq!(gap, 0.0, "the model spaces split blocks by whole rows only");
+                    }
                     let sub_w = (flow.col_w - 2.0 * outside - (k as f64 - 1.0) * inside) / k as f64;
                     let mut from = p;
                     while from < end {

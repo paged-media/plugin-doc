@@ -1031,6 +1031,148 @@ pub fn continuous_docx() -> Vec<u8> {
     ])
 }
 
+/// One section of [`columns_docx`]: its label prefix, how it starts, its
+/// paragraph count and its `w:cols` (count, `w:space`, and for unequal
+/// columns each `w:col` as `(w, space)` twips). Page and margins are
+/// [`CONTINUOUS_PAGE`] / [`CONTINUOUS_MARGINS`] throughout.
+#[derive(Debug, Clone, Copy)]
+pub struct ColumnsCase {
+    pub label: &'static str,
+    pub kind: &'static str,
+    pub lines: u32,
+    pub columns: u32,
+    /// `w:cols/@w:space` (twips).
+    pub space: i32,
+    /// Unequal columns (`w:equalWidth="0"`): each column's `(w, space)`.
+    pub widths: &'static [(i32, i32)],
+}
+
+/// The sections of [`columns_docx`], in order.
+pub const COLUMNS_CASES: &[ColumnsCase] = {
+    const fn c(label: &'static str, kind: &'static str, lines: u32, columns: u32) -> ColumnsCase {
+        ColumnsCase {
+            label,
+            kind,
+            lines,
+            columns,
+            space: 720,
+            widths: &[],
+        }
+    }
+    &[
+        // (h) 1 → 2 → 3 → 1: two column counts change into each other.
+        c("H1", "nextPage", 2, 1),
+        c("H2", "continuous", 6, 2),
+        c("H3", "continuous", 7, 3),
+        c("H4", "continuous", 2, 1),
+        // (i) a page-starting two-column section, a one-column one, and two
+        //     columns again before a nextPage section.
+        c("I1", "nextPage", 7, 2),
+        c("I2", "continuous", 2, 1),
+        c("I3", "continuous", 5, 2),
+        // (j) two columns with a 0.25 in gap.
+        c("J1", "nextPage", 2, 1),
+        ColumnsCase {
+            space: 360,
+            ..c("J2", "continuous", 6, 2)
+        },
+        c("J3", "continuous", 2, 1),
+        // (k) unequal columns: 2.5 in, 0.25 in gap, 1.25 in.
+        c("K1", "nextPage", 2, 1),
+        ColumnsCase {
+            space: 360,
+            widths: &[(3600, 360), (1800, 0)],
+            ..c("K2", "continuous", 6, 2)
+        },
+        c("K3", "continuous", 2, 1),
+        // (l) two columns running past the page, then one column.
+        c("L1", "nextPage", 3, 1),
+        c("L2", "continuous", 50, 2),
+        c("L3", "continuous", 2, 1),
+        // (m) two columns running past the page before a nextPage section.
+        c("M1", "nextPage", 3, 1),
+        c("M2", "continuous", 40, 2),
+        // (n) 3 → 2 directly.
+        c("N1", "nextPage", 2, 1),
+        c("N2", "continuous", 7, 3),
+        c("N3", "continuous", 5, 2),
+        c("N4", "continuous", 1, 1),
+        // (p) two columns into two columns with another gap.
+        c("P1", "nextPage", 2, 1),
+        c("P2", "continuous", 4, 2),
+        ColumnsCase {
+            space: 360,
+            ..c("P3", "continuous", 4, 2)
+        },
+        c("P4", "continuous", 1, 1),
+        // (o) the document ends in two columns.
+        c("O1", "nextPage", 2, 1),
+        c("O2", "continuous", 5, 2),
+    ]
+};
+
+/// ADR 029 — where Word puts a `continuous` section that CHANGES THE
+/// COLUMNS mid-page, in the cases [`continuous_docx`] leaves open: one count
+/// into another, a page-starting multi-column section, another gap, unequal
+/// columns, a section running past the page (balanced on its last page or
+/// not), and a document that ends in columns
+/// (`scripts/word-columns-probe.sh`; `fixtures/columns.word.json`). Every
+/// paragraph is one line holding only its label (`<section>-NN`), short
+/// enough for a 72 pt sub-column.
+pub fn columns_docx() -> Vec<u8> {
+    let (w, h) = CONTINUOUS_PAGE;
+    let (t, r, b, l) = CONTINUOUS_MARGINS;
+    let sect = |c: &ColumnsCase| {
+        let cols = if c.widths.is_empty() {
+            format!(r#"<w:cols w:num="{}" w:space="{}"/>"#, c.columns, c.space)
+        } else {
+            let each: String = c
+                .widths
+                .iter()
+                .map(|(cw, sp)| format!(r#"<w:col w:w="{cw}" w:space="{sp}"/>"#))
+                .collect();
+            format!(
+                r#"<w:cols w:num="{}" w:space="{}" w:equalWidth="0">{each}</w:cols>"#,
+                c.columns, c.space
+            )
+        };
+        format!(
+            r#"<w:sectPr><w:type w:val="{kind}"/><w:pgSz w:w="{w}" w:h="{h}"/><w:pgMar w:top="{t}" w:right="{r}" w:bottom="{b}" w:left="{l}" w:header="360" w:footer="360" w:gutter="0"/>{cols}</w:sectPr>"#,
+            kind = c.kind,
+        )
+    };
+    let mut body = String::new();
+    let last = COLUMNS_CASES.len() - 1;
+    for (k, case) in COLUMNS_CASES.iter().enumerate() {
+        for n in 1..=case.lines {
+            let s = if n == case.lines && k != last {
+                sect(case)
+            } else {
+                String::new()
+            };
+            body.push_str(&breaks_para(
+                "",
+                &breaks_run(&format!("{}-{n:02}", case.label)),
+                &s,
+            ));
+        }
+    }
+    let tail = sect(&COLUMNS_CASES[last]);
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}{tail}</w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+    ])
+}
+
 /// A document with a Normal paragraph, a centered Heading1 paragraph, and a
 /// paragraph mixing a plain run with a bold red run — enough to exercise style
 /// application, direct-format synthesis, and swatch minting. Also carries an

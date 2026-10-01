@@ -271,8 +271,18 @@ ops use.)
   `docx-lower/src/sections.rs`): same geometry joins invisibly; other
   left/right margins join as paragraph indents; other top/bottom margins join
   with a diagnostic (later pages keep the earlier margins); another page size
-  is Word's own new page; a COLUMN-COUNT change mid-page still opens a new
-  page, with a warning — the engine has no IDML split/span columns.)
+  is Word's own new page. A COLUMN change mid-page (count or gap) lowers to
+  the engine's span/split columns (IDML `SpanColumnType`, core protocol 64),
+  matched against Word's maps `continuous.word.json` and
+  `columns.word.json`: a story whose last section Word leaves unbalanced keeps
+  the frame's columns and its one-column sections span them; every other
+  story keeps one column and its multi-column sections split it. Still
+  different from Word: a multi-column section right after another (the engine
+  would merge the two split blocks) opens a page; unequal columns are laid out
+  equal; a split section that ends its story is balanced where Word is not.
+  An engine that refuses the properties is detected by the refused style
+  batch on open; the bundle then lowers with a page break per column change
+  and reopens.)
   (Numbering/lists, tables, inline images, hyperlinks and footnotes have SHIPPED
   — see the tier sections above.)
 - **In-editor live render / real `host.nativeDocument`** — the bundle is written to

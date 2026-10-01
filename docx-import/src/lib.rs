@@ -1189,6 +1189,23 @@ fn map_section(sp: &wml::SectionProperties) -> Section {
         if let Some(n) = cols.column_count {
             s.columns = (n as u32).max(1);
         }
+        if let Some(v) = cols.space.as_ref().and_then(twips_u) {
+            s.column_space = v;
+        }
+        let equal = cols.equal_width.is_none() || on(&cols.equal_width);
+        if !equal && !cols.column.is_empty() {
+            s.column_widths = cols
+                .column
+                .iter()
+                .map(|c| {
+                    (
+                        c.width.as_ref().and_then(stwips).unwrap_or(0),
+                        c.space.as_ref().and_then(stwips).unwrap_or(0),
+                    )
+                })
+                .collect();
+            s.columns = s.column_widths.len() as u32;
+        }
     }
     s
 }

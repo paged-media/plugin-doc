@@ -37,12 +37,14 @@
 //! `__feat__` names link these tests to the Cockpit feature row.
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+#[path = "support/layout.rs"]
+mod layout;
 
 use docx_conformance::{continuous_docx, CONTINUOUS_CASES};
 use docx_core::SectionKind;
 use docx_import::import_docx;
 use docx_lower::ir::{LoweredBlock, LoweredDoc, PropValue};
+use layout::{assert_page, label, labels, lay_out, length, resolved, word_pages};
 
 fn word_map() -> serde_json::Value {
     serde_json::from_str(include_str!("../fixtures/continuous.word.json"))
@@ -53,37 +55,9 @@ fn lowered() -> LoweredDoc {
     docx_lower::lower(&import_docx(&continuous_docx()).expect("import"))
 }
 
-/// A paragraph style property, resolved through the lowered `basedOn` chain
-/// (nearest first), as the engine cascades it.
-fn resolved(ir: &LoweredDoc, style: Option<&str>, path: &str) -> Option<PropValue> {
-    let by_id: HashMap<&str, _> = ir.styles.iter().map(|s| (s.id.as_str(), s)).collect();
-    let mut next = style;
-    let mut depth = 0;
-    while let Some(id) = next {
-        let s = by_id.get(id)?;
-        if let Some(p) = s.props.iter().rev().find(|p| p.path == path) {
-            return Some(p.value.clone());
-        }
-        next = s.based_on.as_deref();
-        depth += 1;
-        assert!(depth < 32, "basedOn cycle");
-    }
-    None
-}
-
-fn length(ir: &LoweredDoc, style: Option<&str>, path: &str) -> f32 {
-    match resolved(ir, style, path) {
-        Some(PropValue::Length(v)) => v,
-        _ => 0.0,
-    }
-}
-
-fn label(block: &LoweredBlock) -> String {
-    let LoweredBlock::Paragraph(p) = block else {
-        panic!("the fixture has no tables")
-    };
-    let text: String = p.runs.iter().map(|r| r.text.as_str()).collect();
-    text.split_whitespace().next().unwrap_or("").to_string()
+fn placements(options: docx_lower::LowerOptions) -> Vec<docx_lower::sections::SectionPlacement> {
+    let doc = import_docx(&continuous_docx()).expect("import");
+    docx_lower::sections::place_sections_with(&doc.sections, options, &mut Vec::new())
 }
 
 /// The story index of every section, by its label.
@@ -143,45 +117,58 @@ fn continuous_sections_join_the_story_word_continues__feat__plugin_doc_word_pagi
             ("A1", 0),
             ("A2", 0),
             ("A3", 0),
-            // (b) the column count changes: each its own story (a new page).
+            // (b) the column count changes mid-page: one story in two
+            //     columns, its one-column sections spanning them.
             ("B1", 1),
-            ("B2", 2),
-            ("B3", 3),
-            ("B4", 4),
+            ("B2", 1),
+            ("B3", 1),
+            ("B4", 1),
             // (d) nextColumn: joins.
-            ("D1", 5),
-            ("D2", 5),
+            ("D1", 2),
+            ("D2", 2),
             // (c1) other left/right margins: joins (as indents).
-            ("C1", 6),
-            ("C2", 6),
-            ("C3", 6),
+            ("C1", 3),
+            ("C2", 3),
+            ("C3", 3),
             // (c2) other top/bottom margins: joins (later pages differ).
-            ("E1", 7),
-            ("E2", 7),
+            ("E1", 4),
+            ("E2", 4),
             // (c3) another page size: Word itself starts a new page.
-            ("F1", 8),
-            ("F2", 9),
-            ("G1", 10),
+            ("F1", 5),
+            ("F2", 6),
+            ("G1", 7),
         ]
     );
+    let placed = placements(docx_lower::LowerOptions::default());
+    let frame = |k: usize| (placed[k].frame.count, placed[k].frame.gutter_pt);
+    assert_eq!(
+        frame(3),
+        (2, 36.0),
+        "B's story: Word's two columns, 0.5 in apart"
+    );
+    use docx_lower::sections::SectionColumns::{Frame, SpanAll};
+    assert_eq!(
+        placed[3..7].iter().map(|p| p.columns).collect::<Vec<_>>(),
+        vec![SpanAll, Frame, SpanAll, Frame]
+    );
 
-    // Every difference from Word is diagnosed, nothing else.
+    // Every difference from Word is diagnosed, nothing else: no warning,
+    // the span/split lowering said once, the top/bottom margins once.
     let warnings: Vec<&str> = ir
         .diagnostics
         .iter()
         .filter(|d| d.severity == "warning")
         .map(|d| d.message.as_str())
         .collect();
-    assert_eq!(warnings.len(), 3, "{warnings:?}");
-    for (w, n) in warnings
+    assert_eq!(warnings, Vec::<&str>::new());
+    let columns: Vec<&str> = ir
+        .diagnostics
         .iter()
-        .zip(["section 5 ", "section 6 ", "section 7 "])
-    {
-        assert!(
-            w.starts_with(n) && w.contains("column") && w.contains("new page"),
-            "{w}"
-        );
-    }
+        .filter(|d| d.message.contains("mid-page"))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(columns.len(), 1, "{columns:?}");
+    assert!(columns[0].starts_with("sections 4–7 "), "{}", columns[0]);
     let margins: Vec<&str> = ir
         .diagnostics
         .iter()
@@ -196,6 +183,43 @@ fn continuous_sections_join_the_story_word_continues__feat__plugin_doc_word_pagi
             .any(|d| d.message.contains("section 16 ")),
         "another page size is Word's own new page: no loss to report"
     );
+}
+
+/// An engine that refuses span/split columns (before protocol 64) gets
+/// the page-break lowering: each column change opens a new page, with a
+/// warning, and no paragraph carries a span/split property.
+#[test]
+fn without_span_columns_a_column_change_opens_a_page__feat__plugin_doc_word_pagination() {
+    let options = docx_lower::LowerOptions {
+        mid_page_columns: false,
+    };
+    let ir = docx_lower::lower_with(&import_docx(&continuous_docx()).expect("import"), options);
+    let b: Vec<(&str, usize)> = stories(&ir)[3..7].to_vec();
+    assert_eq!(b, vec![("B1", 1), ("B2", 2), ("B3", 3), ("B4", 4)]);
+    let warnings: Vec<&str> = ir
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == "warning")
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(warnings.len(), 3, "{warnings:?}");
+    for (w, n) in warnings
+        .iter()
+        .zip(["section 5 ", "section 6 ", "section 7 "])
+    {
+        assert!(
+            w.starts_with(n) && w.contains("protocol 64") && w.contains("new page"),
+            "{w}"
+        );
+    }
+    assert!(!ir
+        .styles
+        .iter()
+        .flat_map(|s| &s.props)
+        .any(|p| p.path.contains("SpanColumn") || p.path.contains("SplitColumn")));
+    // The page map is today's: B's four sections on four pages.
+    let ours = lay_out(&ir, &placements(options));
+    assert_eq!(ours.len(), word_pages(&word_map()).len() + 3);
 }
 
 /// The joined sections' paragraphs: `nextColumn` carries the rule, other
@@ -250,200 +274,45 @@ fn joined_sections_carry_word_s_column_start_and_margins__feat__plugin_doc_word_
     }
 }
 
-/// One laid-out line: its page, label, x and top (pt from the page's
-/// top-left), as Word's map records them.
-#[derive(Debug, Clone, PartialEq)]
-struct Line {
-    label: String,
-    x: f64,
-    top: f64,
-}
-
-/// Lay the lowering out with the engine's rule on the skeleton's frames:
-/// every story starts on a new page of its first section's geometry, its
-/// frame is that margin box in that many columns (36 pt gap), lines are
-/// 12 pt and fill a column top-down (a line fits only if its whole 12 pt box
-/// does), the story grows pages with the same frame, `NextColumn` opens the
-/// next column (or page) unless the paragraph already opens one, and a
-/// paragraph's left indent shifts its x. A first line's top sits 2.03 pt
-/// below the frame's top in Word's PDF (the glyph box, not the line box).
-fn lay_out(ir: &LoweredDoc) -> Vec<(Vec<f64>, Vec<Line>)> {
-    const PITCH: f64 = 12.0;
-    const GLYPH: f64 = 2.03;
-    let mut pages: Vec<(Vec<f64>, Vec<Line>)> = Vec::new();
-    let groups = {
-        let mut g: Vec<(usize, usize)> = Vec::new(); // (section, end block)
-        for (k, s) in ir.sections.iter().enumerate() {
-            if k == 0 || ir.sections[k - 1].story != s.story {
-                g.push((k, 0));
-            }
-        }
-        let starts: Vec<usize> = g.iter().map(|(k, _)| ir.sections[*k].first_block).collect();
-        for (i, e) in g.iter_mut().enumerate() {
-            e.1 = starts.get(i + 1).copied().unwrap_or(ir.story.blocks.len());
-        }
-        g
-    };
-    for (k, end) in groups {
-        let sec = &ir.sections[k];
-        let cols = sec.columns as usize;
-        let width = f64::from(sec.page_width_pt - sec.margin_left_pt - sec.margin_right_pt);
-        let col_w = (width - 36.0 * (cols as f64 - 1.0)) / cols as f64;
-        let body = f64::from(sec.page_height_pt - sec.margin_top_pt - sec.margin_bottom_pt);
-        let per_col = (body / PITCH).floor() as usize;
-        let size = vec![f64::from(sec.page_width_pt), f64::from(sec.page_height_pt)];
-        pages.push((size.clone(), Vec::new()));
-        let (mut col, mut line) = (0usize, 0usize);
-        for block in &ir.story.blocks[sec.first_block..end] {
-            let LoweredBlock::Paragraph(p) = block else {
-                unreachable!()
-            };
-            let style = p.para_style_id.as_deref();
-            let next = |col: &mut usize, line: &mut usize, pages: &mut Vec<_>| {
-                if *col + 1 < cols {
-                    (*col, *line) = (*col + 1, 0);
-                } else {
-                    pages.push((size.clone(), Vec::new()));
-                    (*col, *line) = (0, 0);
-                }
-            };
-            if let Some(PropValue::Text(t)) = resolved(ir, style, "paragraphStartParagraph") {
-                if t == "NextColumn" && line > 0 {
-                    next(&mut col, &mut line, &mut pages);
-                }
-            }
-            if line == per_col {
-                next(&mut col, &mut line, &mut pages);
-            }
-            let x = f64::from(sec.margin_left_pt)
-                + col as f64 * (col_w + 36.0)
-                + f64::from(length(ir, style, "paragraphLeftIndent"));
-            let top = f64::from(sec.margin_top_pt) + line as f64 * PITCH + GLYPH;
-            pages.last_mut().unwrap().1.push(Line {
-                label: label(block),
-                x,
-                top,
-            });
-            line += 1;
-        }
-    }
-    pages
-}
-
-fn word_pages() -> Vec<(Vec<f64>, Vec<Line>)> {
-    word_map()["pages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|p| {
-            let size = p["size_pt"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_f64().unwrap())
-                .collect();
-            let lines = p["lines"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|l| Line {
-                    label: l["label"].as_str().unwrap().to_string(),
-                    x: l["x"].as_f64().unwrap(),
-                    top: l["top"].as_f64().unwrap(),
-                })
-                .collect();
-            (size, lines)
-        })
-        .collect()
-}
-
-fn assert_page(ours: &(Vec<f64>, Vec<Line>), word: &(Vec<f64>, Vec<Line>), what: &str) {
-    assert_eq!(ours.0, word.0, "{what}: page size");
-    // Word's PDF lists a page's text column by column; ours fills in the
-    // same order. Word's glyph tops drift up to 0.2 pt from the exact 12 pt
-    // grid over a 20-line page (PDF rounding), and its second column starts
-    // 0.13 pt right of 36 + 126 + 36 (both columns are 126 pt either way),
-    // hence the tolerances.
-    let labels = |p: &(Vec<f64>, Vec<Line>)| -> Vec<String> {
-        p.1.iter().map(|l| l.label.clone()).collect()
-    };
-    assert_eq!(labels(ours), labels(word), "{what}: lines");
-    for (a, b) in ours.1.iter().zip(&word.1) {
-        assert!(
-            (a.x - b.x).abs() < 0.2 && (a.top - b.top).abs() < 0.25,
-            "{what}: {} at ({}, {}), Word ({}, {})",
-            a.label,
-            a.x,
-            a.top,
-            b.x,
-            b.top
-        );
-    }
-}
-
 /// The page map: every Word page is reproduced line for line (label, x,
-/// top) except the two documented differences, which are pinned as they are.
+/// top) except the one documented difference, which is pinned as it is.
 #[test]
 fn the_lowering_reproduces_words_page_map__feat__plugin_doc_word_pagination() {
     let ir = lowered();
-    let ours = lay_out(&ir);
-    let word = word_pages();
+    let ours = lay_out(&ir, &placements(docx_lower::LowerOptions::default()));
+    let word = word_pages(&word_map());
     assert_eq!(word.len(), 10);
+    assert_eq!(ours.len(), word.len(), "Word's page count");
 
     // (a) Word pages 1–2: the invisible boundary, A3 running on.
     assert_page(&ours[0], &word[0], "Word page 1");
     assert_page(&ours[1], &word[1], "Word page 2");
-
-    // (b) Word page 3 holds B1, the balanced two-column B2, B3 and B4 in
-    // one page. The engine cannot change the column count mid-page: each
-    // section opens a page, and B2 (one frame, two columns, nothing to
-    // balance against) fills its first column. Pinned as the known loss.
-    let labels = |p: &(Vec<f64>, Vec<Line>)| -> Vec<String> {
-        p.1.iter().map(|l| l.label.clone()).collect()
-    };
-    let b: Vec<Vec<String>> = ours[2..6].iter().map(labels).collect();
-    let section =
-        |s: &str, n: u32| -> Vec<String> { (1..=n).map(|i| format!("{s}-{i:02}")).collect() };
-    assert_eq!(
-        b,
-        vec![
-            section("B1", 3),
-            section("B2", 9),
-            section("B3", 3),
-            section("B4", 6)
-        ]
-    );
-    assert!(ours[3].1.iter().all(|l| (l.x - 36.0).abs() < 0.1));
-    let mut word_b = labels(&word[2]);
-    word_b.sort();
-    assert_eq!(
-        word_b,
-        b.concat().into_iter().collect::<Vec<_>>(),
-        "same lines"
-    );
-
-    // From here on, ours is three pages ahead.
-    let shift = 3;
+    // (b) Word page 3: B1, then B2 in two columns BALANCED 5 / 4 (a
+    // continuous break follows), B3 below the deeper column, and B4 in two
+    // columns NOT balanced (a nextPage section follows): all six lines in
+    // column 1. The story's frame has two columns; B1 and B3 span them; the
+    // engine balances the text above a span and fills the columns after the
+    // last one in turn — line for line Word's.
+    assert_page(&ours[2], &word[2], "Word page 3");
     // (d) nextColumn: D2 opens column 2 of the same page.
-    assert_page(&ours[3 + shift], &word[3], "Word page 4");
+    assert_page(&ours[3], &word[3], "Word page 4");
     // (c1) other left/right margins, applied mid-page and undone.
-    assert_page(&ours[4 + shift], &word[4], "Word page 5");
+    assert_page(&ours[4], &word[4], "Word page 5");
     // (c2) other top/bottom margins: the section continues on Word's page
     // under the old margins…
-    assert_page(&ours[5 + shift], &word[5], "Word page 6");
+    assert_page(&ours[5], &word[5], "Word page 6");
     // …but Word's next page uses the NEW 1 in top margin; the native story's
     // grown page keeps the first section's 0.5 in (the diagnosed loss). The
     // same lines land on it, 36 pt higher.
-    let (o, w) = (&ours[6 + shift], &word[6]);
+    let (o, w) = (&ours[6], &word[6]);
     assert_eq!(labels(o), labels(w));
     for (a, b) in o.1.iter().zip(&w.1) {
         assert!((b.top - a.top - 36.0).abs() < 0.25, "{}", a.label);
     }
     // (c3) another page size: Word's own new page, reproduced.
-    assert_page(&ours[7 + shift], &word[7], "Word page 8");
-    assert_page(&ours[8 + shift], &word[8], "Word page 9");
-    assert_page(&ours[9 + shift], &word[9], "Word page 10");
-    assert_eq!(ours.len(), word.len() + shift);
+    assert_page(&ours[7], &word[7], "Word page 8");
+    assert_page(&ours[8], &word[8], "Word page 9");
+    assert_page(&ours[9], &word[9], "Word page 10");
 }
 
 /// A page break ending the last paragraph of a section that a continuous

@@ -47,9 +47,7 @@
 use std::io::{Cursor, Write};
 
 use docx_core::{DocxDocument, Section};
-
-/// Word's default space between columns (`w:cols/@w:space`, 720 twips).
-const WORD_COLUMN_GAP_PT: f32 = 36.0;
+use docx_lower::sections::{LowerOptions, StoryColumns};
 
 /// The IDML package mimetype (stored, first entry: OCF).
 pub const IDML_MIMETYPE: &str = "application/vnd.adobe.indesign-idml-package";
@@ -125,14 +123,18 @@ impl SkeletonPage {
     }
 }
 
-/// The first section of every native story, in story order: a section that
-/// joins the story before it (`docx_lower::sections`) gets no page of its own.
-pub fn story_sections(doc: &DocxDocument) -> Vec<&Section> {
-    let placements = docx_lower::sections::place_sections(&doc.sections, &mut Vec::new());
+/// The first section of every native story, in story order, with the
+/// story frame's columns: a section that joins the story before it
+/// (`docx_lower::sections`) gets no page of its own, and a story whose
+/// sections change the columns mid-page gets the frame columns the lowering
+/// chose for it (span or split columns, ADR 029).
+pub fn story_sections(doc: &DocxDocument, options: LowerOptions) -> Vec<(&Section, StoryColumns)> {
+    let placements =
+        docx_lower::sections::place_sections_with(&doc.sections, options, &mut Vec::new());
     let mut out = Vec::new();
     for (sec, p) in doc.sections.iter().zip(&placements) {
         if p.story == out.len() {
-            out.push(sec);
+            out.push((sec, p.frame));
         }
     }
     out
@@ -140,17 +142,27 @@ pub fn story_sections(doc: &DocxDocument) -> Vec<&Section> {
 
 /// The story ids of the skeleton, in story order (the pour's targets).
 pub fn story_ids(doc: &DocxDocument) -> Vec<String> {
-    (0..story_sections(doc).len())
+    story_ids_with(doc, LowerOptions::default())
+}
+
+/// [`story_ids`] for an engine that can lay out what `options` says.
+pub fn story_ids_with(doc: &DocxDocument, options: LowerOptions) -> Vec<String> {
+    (0..story_sections(doc, options).len())
         .map(section_story_id)
         .collect()
 }
 
 /// The skeleton's pages, one per native story, in story order.
 pub fn skeleton_pages(doc: &DocxDocument) -> Vec<SkeletonPage> {
-    story_sections(doc)
+    skeleton_pages_with(doc, LowerOptions::default())
+}
+
+/// [`skeleton_pages`] for an engine that can lay out what `options` says.
+pub fn skeleton_pages_with(doc: &DocxDocument, options: LowerOptions) -> Vec<SkeletonPage> {
+    story_sections(doc, options)
         .into_iter()
         .enumerate()
-        .map(|(k, sec)| SkeletonPage {
+        .map(|(k, (sec, frame))| SkeletonPage {
             story_id: section_story_id(k),
             page_id: section_page_id(k),
             spread_id: section_spread_id(k),
@@ -162,8 +174,8 @@ pub fn skeleton_pages(doc: &DocxDocument) -> Vec<SkeletonPage> {
                 bottom: twips(sec.margin_bottom),
                 left: twips(sec.margin_left),
                 right: twips(sec.margin_right),
-                column_count: sec.columns.max(1),
-                column_gutter: WORD_COLUMN_GAP_PT,
+                column_count: frame.count.max(1),
+                column_gutter: frame.gutter_pt,
             },
         })
         .collect()
@@ -171,7 +183,16 @@ pub fn skeleton_pages(doc: &DocxDocument) -> Vec<SkeletonPage> {
 
 /// The skeleton packaged as IDML, named `name`.
 pub fn skeleton(doc: &DocxDocument, name: &str) -> Result<Skeleton, String> {
-    let pages = skeleton_pages(doc);
+    skeleton_with(doc, name, LowerOptions::default())
+}
+
+/// [`skeleton`] for an engine that can lay out what `options` says.
+pub fn skeleton_with(
+    doc: &DocxDocument,
+    name: &str,
+    options: LowerOptions,
+) -> Result<Skeleton, String> {
+    let pages = skeleton_pages_with(doc, options);
     let idml = write_idml(&pages, name).map_err(|e| format!("package the skeleton: {e}"))?;
     Ok(Skeleton {
         idml,

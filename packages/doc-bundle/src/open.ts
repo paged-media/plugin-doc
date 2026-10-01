@@ -32,17 +32,34 @@ import { buildStoryBlocks, buildStyleMutations, sectionBlocks } from "@paged-med
 import type { BundleHost, ElementId, Mutation } from "@paged-media/plugin-api";
 
 import type { DocEngine } from "./engine.js";
-import { applyStyleOps, pourSteps } from "./pour.js";
+import { applyStyleOpsReporting, pourSteps } from "./pour.js";
 
 /** What a standalone open produced: the section stories (save-back reads
- *  them back in this order) and the frame carrying the binding. */
+ *  them back in this order), the frame carrying the binding, the lowering
+ *  that was poured, and whether it uses span/split columns (save-back must
+ *  lower the same way, `DocEngine.setMidPageColumns`). */
 export interface Opened {
   storyIds: string[];
   frameId: ElementId;
+  ir: LoweredDoc;
+  midPageColumns: boolean;
 }
 
 /** Diagnostics key for what standalone open could not do on this engine. */
 export const OPEN_DIAGNOSTICS_KEY = "media.paged.doc/open";
+
+/** Diagnostics key for the mid-page column fallback (ADR 029). */
+export const COLUMNS_DIAGNOSTICS_KEY = "media.paged.doc/columns";
+
+/** The span/split column paths (core protocol 64, ADR 028 addendum) a
+ *  mid-page column change lowers to. An engine that refuses any of them
+ *  cannot lay the lowering out. */
+export const SPAN_COLUMN_PATHS: readonly string[] = [
+  "paragraphSpanColumnType",
+  "paragraphSpanSplitColumnCount",
+  "paragraphSplitColumnInsideGutter",
+  "paragraphSplitColumnOutsideGutter",
+];
 
 /**
  * The protocol-64 grow rule for one section story (thoughts ADR 026/029):
@@ -117,15 +134,39 @@ export async function openStandalone(
   if (!canOpenStandalone(host)) return null;
 
   // 1. The skeleton: a page, frame and empty story per section (IDML).
-  const storyIds = engine.skeletonStories();
+  let storyIds = engine.skeletonStories();
   await host.nativeDocument.open(engine.skeletonIdml(name));
 
-  // 1b. The grow rules IDML cannot carry, before the pour oversets.
-  await setGrowRules(host, storyIds);
-
   // 2. Style catalog + swatches, once, before any applyStyle references them.
-  const styleOps = buildStyleMutations(ir);
-  await applyStyleOps(host, styleOps);
+  //    They are also the probe for span/split columns: a Word section that
+  //    changes the columns mid-page lowers to them (protocol 64). An engine
+  //    that refuses them cannot lay that lowering out, and the plugin API
+  //    has no flag that says so up front, so the document is lowered again
+  //    with a page break at each column change (the lowering before span
+  //    columns: right page content, an extra page per change) and reopened.
+  let midPageColumns = engine.usesMidPageColumns();
+  const refusals = await applyStyleOpsReporting(host, buildStyleMutations(ir));
+  if (midPageColumns && SPAN_COLUMN_PATHS.some((p) => refusals.paths.has(p))) {
+    engine.setMidPageColumns(false);
+    midPageColumns = false;
+    ir = engine.lowered();
+    storyIds = engine.skeletonStories();
+    await host.nativeDocument.open(engine.skeletonIdml(name));
+    await applyStyleOpsReporting(host, buildStyleMutations(ir));
+    host.diagnostics.set(COLUMNS_DIAGNOSTICS_KEY, [
+      {
+        severity: "warning" as const,
+        message:
+          "This engine cannot change columns mid-page (span/split columns, protocol 64): " +
+          "each Word section that does opens a new page instead.",
+      },
+    ]);
+  } else {
+    host.diagnostics.set(COLUMNS_DIAGNOSTICS_KEY, []);
+  }
+
+  // 2b. The grow rules IDML cannot carry, before the pour oversets.
+  await setGrowRules(host, storyIds);
 
   // 3. Each section's blocks into its own story. The engine grows each
   //    story's pages as the pour oversets its frame.
@@ -147,5 +188,5 @@ export async function openStandalone(
   } catch (err) {
     host.log.warn(`paged.doc: could not persist source part: ${String(err)}`);
   }
-  return { storyIds, frameId };
+  return { storyIds, frameId, ir, midPageColumns };
 }

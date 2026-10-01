@@ -124,25 +124,44 @@ export async function applyStyleOps(
   host: BundleHost,
   ops: readonly Mutation[],
 ): Promise<string[]> {
-  if (ops.length === 0) return [];
+  return (await applyStyleOpsReporting(host, ops)).messages;
+}
+
+/** What [`applyStyleOpsReporting`] found the engine refuses. */
+export interface StyleRefusals {
+  /** One warning per refused op (also set as diagnostics). */
+  messages: string[];
+  /** The property paths of the refused `setStyleProperty` ops. */
+  paths: Set<string>;
+}
+
+/** [`applyStyleOps`], also saying WHICH property paths were refused (the
+ *  standalone open learns from them whether the engine has span/split
+ *  columns, ADR 029). */
+export async function applyStyleOpsReporting(
+  host: BundleHost,
+  ops: readonly Mutation[],
+): Promise<StyleRefusals> {
+  const out: StyleRefusals = { messages: [], paths: new Set() };
+  if (ops.length === 0) return out;
   const whole = await host.document.mutate({ op: "batch", args: { ops: [...ops] } } as Mutation);
   if (whole.applied) {
     host.diagnostics.set(STYLE_DIAGNOSTICS_KEY, []);
-    return [];
+    return out;
   }
-  const refused: string[] = [];
   for (const op of ops) {
     const one = await host.document.mutate(op);
     if (!one.applied) {
       const args = (op as { args?: { styleId?: string; path?: string } }).args;
       const what = args?.path ? `${args.path} on ${args.styleId ?? "?"}` : (op as { op?: string }).op ?? "?";
-      refused.push(`This engine cannot apply ${what}: ${JSON.stringify(one.error)}`);
+      out.messages.push(`This engine cannot apply ${what}: ${JSON.stringify(one.error)}`);
+      if (args?.path) out.paths.add(args.path);
     }
   }
   host.diagnostics.set(
     STYLE_DIAGNOSTICS_KEY,
-    refused.map((message) => ({ severity: "warning" as const, message })),
+    out.messages.map((message) => ({ severity: "warning" as const, message })),
   );
-  return refused;
+  return out;
 }
 

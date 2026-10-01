@@ -88,8 +88,26 @@ mod wasm {
                 .session
                 .as_ref()
                 .ok_or_else(|| JsValue::from_str("no document loaded"))?;
-            let ids = docx_skeleton::story_ids(session.model());
+            let ids = session.skeleton_stories();
             serde_json::to_string(&ids).map_err(|e| JsValue::from_str(&e.to_string()))
+        }
+
+        /// ADR 029 — lower a mid-page column change to span/split columns
+        /// (`true`, the default, protocol 64) or to a page break (`false`,
+        /// for an engine that refused them). Later lowerings, skeletons and
+        /// save-backs follow it.
+        pub fn set_mid_page_columns(&mut self, on: bool) -> Result<(), JsValue> {
+            self.session
+                .as_mut()
+                .map(|s| s.set_mid_page_columns(on))
+                .ok_or_else(|| JsValue::from_str("no document loaded"))
+        }
+
+        /// Whether the lowering uses span/split columns anywhere.
+        pub fn uses_mid_page_columns(&self) -> bool {
+            self.session
+                .as_ref()
+                .is_some_and(|s| s.uses_mid_page_columns())
         }
 
         /// Zero-edit save-back (verbatim carry-through of the retained package).

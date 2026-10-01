@@ -50,6 +50,9 @@ interface LastDoc {
   storyIds: string[];
   /** Paragraph blocks poured per story (save-back trims join artifacts). */
   pouredParagraphs: number[];
+  /** The lowering used span/split columns (ADR 029); save-back lowers its
+   *  baseline the same way. */
+  midPageColumns: boolean;
 }
 
 export function activate(host: BundleHost): BundleHandle {
@@ -71,15 +74,18 @@ export function activate(host: BundleHost): BundleHandle {
       // get the embedded placement instead.
       const opened = await openStandalone(host, engine, ir, bytes, name);
       if (opened) {
+        // The open may have lowered again for an engine without span/split
+        // columns (another story per column change): count what it poured.
         last = {
           fileName: name,
           source: bytes,
           storyIds: opened.storyIds,
-          pouredParagraphs: paragraphCounts,
+          pouredParagraphs: sectionBlocks(opened.ir).map(pouredParagraphCount),
+          midPageColumns: opened.midPageColumns,
         };
         docStore.set({
           fileName: name,
-          ir,
+          ir: opened.ir,
           frameId: opened.frameId,
           storyId: opened.storyIds[0] ?? null,
         });
@@ -90,6 +96,7 @@ export function activate(host: BundleHost): BundleHandle {
           source: bytes,
           storyIds: placed?.storyId ? [placed.storyId] : [],
           pouredParagraphs: [paragraphCounts.reduce((a, b) => a + b, 0)],
+          midPageColumns: true,
         };
         docStore.set({
           fileName: name,
@@ -150,6 +157,7 @@ export function activate(host: BundleHost): BundleHandle {
       const engine = await DocEngine.boot();
       try {
         engine.loadDocx(last.source);
+        engine.setMidPageColumns(last.midPageColumns);
         const bytes = engine.saveEditedFromContent(content);
         // Save-back refusal feedback (ADR-007 posture): the patcher's skip
         // ledger — edits refused rather than risking corruption (gridSpan

@@ -44,7 +44,8 @@ pub mod ir;
 pub mod line_height;
 pub mod sections;
 
-use sections::SectionPlacement;
+pub use sections::LowerOptions;
+use sections::{SectionColumns, SectionPlacement};
 
 use ir::{
     Diagnostic, LoweredBlock, LoweredCell, LoweredDoc, LoweredImage, LoweredParagraph, LoweredRun,
@@ -58,6 +59,15 @@ const PARA_PREFIX: &str = "ParagraphStyle/docx-";
 /// protocol 64 — older engines refuse it, and `applyStyleOps` then loses only
 /// the break, with a warning). Its value is InDesign's `StartParagraph` string.
 const START_PARAGRAPH: &str = "paragraphStartParagraph";
+
+/// IDML's span/split columns (`SpanColumnType` and companions; settable from
+/// core protocol 64, ADR 028 addendum). A mid-page column change lowers to
+/// them (`sections`); an older engine refuses them, and the bundle reopens
+/// the document with [`LowerOptions::mid_page_columns`] off.
+pub const SPAN_COLUMN_TYPE: &str = "paragraphSpanColumnType";
+pub const SPAN_SPLIT_COLUMN_COUNT: &str = "paragraphSpanSplitColumnCount";
+pub const SPLIT_COLUMN_INSIDE_GUTTER: &str = "paragraphSplitColumnInsideGutter";
+pub const SPLIT_COLUMN_OUTSIDE_GUTTER: &str = "paragraphSplitColumnOutsideGutter";
 
 /// Word's single line spacing (`w:spacing w:line="240" w:lineRule="auto"`),
 /// what Word lays when no line spacing is set anywhere (ADR 029; measured as
@@ -232,8 +242,15 @@ fn blank_line_styles(
     }
 }
 
-/// Lower a whole Word document to the native IR.
+/// Lower a whole Word document to the native IR, for an engine with every
+/// property the lowering uses ([`LowerOptions::default`]).
 pub fn lower(doc: &DocxDocument) -> LoweredDoc {
+    lower_with(doc, LowerOptions::default())
+}
+
+/// Lower a whole Word document to the native IR with `options` (what the
+/// target engine can lay out).
+pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
     let mut ctx = Lowering {
         word_styles: doc
             .styles
@@ -266,7 +283,7 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
     //    the native model can say what Word does (`sections` has the rules and
     //    Word's measurements): no break, a `NextColumn` rule, or the margin
     //    difference as paragraph indents.
-    let placements = sections::place_sections(&doc.sections, &mut ctx.diagnostics);
+    let placements = sections::place_sections_with(&doc.sections, options, &mut ctx.diagnostics);
     let section_starts: Vec<(usize, SectionKind, Option<&SectionPlacement>)> = doc
         .sections
         .iter()
@@ -285,6 +302,9 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
     let starts_story = |idx: usize| starts_section(idx).is_some_and(|(_, _, j)| j.is_none());
     let mut blocks = Vec::new();
     let mut carry: Option<BreakKind> = None;
+    // The text width of the story being lowered (its first section's page
+    // width less its margins).
+    let mut story_width = 0.0f32;
     for (idx, block) in doc.body.iter().enumerate() {
         ctx.current_block = idx;
         if idx == 0 || starts_story(idx) {
@@ -295,13 +315,23 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
                 .rev()
                 .find(|s| s.first_block <= idx)
                 .unwrap_or(&default);
-            ctx.text_width =
-                (s.columns <= 1).then(|| twip_to_pt(s.page_width - s.margin_left - s.margin_right));
+            story_width = twip_to_pt(s.page_width - s.margin_left - s.margin_right);
         }
         let section_start = starts_section(idx);
         if let Some((_, _, joined)) = section_start {
             let (l, r) = joined.map_or((0.0, 0.0), |p| (p.indent_left_pt, p.indent_right_pt));
             ctx.section_indent = (l, r);
+        }
+        if idx == 0 || section_start.is_some() {
+            // The section in force (the last one starting at or before
+            // `idx`) and where it sits in its story's columns.
+            let k = doc.sections.iter().rposition(|s| s.first_block <= idx);
+            ctx.section_columns = k
+                .and_then(|k| placements.get(k))
+                .map_or(SectionColumns::Frame, |p| p.columns);
+            let one_column = k.is_none_or(|k| doc.sections[k].columns <= 1);
+            // A one-column section spans the story's whole text width.
+            ctx.text_width = one_column.then_some(story_width);
         }
         if starts_story(idx) && idx > 0 {
             if let Some(kind) = carry.take() {
@@ -348,6 +378,16 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
                             "the section at body block {idx} starts with a table, which \
                              cannot carry its {rule} start; it starts on the section's \
                              own page whatever that page's parity"
+                        ),
+                        3,
+                    ));
+                }
+                if ctx.section_columns != SectionColumns::Frame {
+                    ctx.diagnostics.push(Diagnostic::info(
+                        format!(
+                            "the table at body block {idx} is in a section that changes the \
+                             columns mid-page; a table cannot span or split columns, so it \
+                             sits in the story's own column"
                         ),
                         3,
                     ));
@@ -592,6 +632,10 @@ struct Lowering {
     /// a continuous section with other margins, joined to the story before
     /// it (`sections`). Body paragraphs only.
     section_indent: (f32, f32),
+    /// How the section being lowered sits in its story's columns (span or
+    /// split columns for a mid-page column change, `sections`). Body
+    /// paragraphs only.
+    section_columns: SectionColumns,
     /// The text width in pt of the story being lowered (its first section's
     /// page width less its margins), or `None` for a multi-column section,
     /// whose column width the lowering does not know. Where an
@@ -855,6 +899,9 @@ impl Lowering {
         }
         if can_carry.is_some() && self.section_indent != (0.0, 0.0) {
             self.add_section_indent(p, &mut props);
+        }
+        if can_carry.is_some() {
+            props.extend(section_column_props(self.section_columns));
         }
         if let Some(stops) = self.ptab_stop(p, can_carry.is_some()) {
             props.retain(|sp| sp.path != "paragraphTabStops");
@@ -1505,6 +1552,26 @@ fn lower_section(section: Option<&Section>) -> LoweredSection {
         columns: s.columns.max(1),
         first_block: s.first_block,
         story: 0,
+    }
+}
+
+/// The span/split column properties of a paragraph in a section that sits
+/// `columns` in its story (empty in the story's own columns). Min spaces are
+/// left at the engine's 0: Word starts a section's text right under the
+/// previous section's deepest line (`fixtures/continuous.word.json`).
+fn section_column_props(columns: SectionColumns) -> Vec<StyleProp> {
+    match columns {
+        SectionColumns::Frame => Vec::new(),
+        SectionColumns::SpanAll => vec![
+            text(SPAN_COLUMN_TYPE, "SpanColumns"),
+            text(SPAN_SPLIT_COLUMN_COUNT, "All"),
+        ],
+        SectionColumns::Split { count, inside_pt } => vec![
+            text(SPAN_COLUMN_TYPE, "SplitColumns"),
+            text(SPAN_SPLIT_COLUMN_COUNT, &count.to_string()),
+            len(SPLIT_COLUMN_INSIDE_GUTTER, inside_pt),
+            len(SPLIT_COLUMN_OUTSIDE_GUTTER, 0.0),
+        ],
     }
 }
 

@@ -296,51 +296,64 @@ fn continuous_sections_share_the_story_of_the_page_they_continue() {
     assert_eq!(docx.sections.len(), 17);
     let sk = skeleton(&docx, "continuous.docx").expect("skeleton");
     let pkg = open(&sk.idml);
-    let spreads = pkg
-        .names
-        .iter()
-        .filter(|n| n.starts_with("Spreads/"))
-        .count();
-    let stories = pkg
-        .names
-        .iter()
-        .filter(|n| n.starts_with("Stories/"))
-        .count();
-    assert_eq!(spreads, 11, "a page per story, not per section");
-    assert_eq!(stories, 11);
-    for k in 0..11 {
+    let count =
+        |pkg: &Package, prefix: &str| pkg.names.iter().filter(|n| n.starts_with(prefix)).count();
+    assert_eq!(
+        count(&pkg, "Spreads/"),
+        8,
+        "a page per story, not per section"
+    );
+    assert_eq!(count(&pkg, "Stories/"), 8);
+    for k in 0..8 {
         let s = spread(&pkg, k);
         assert_eq!(s.frame["ParentStory"], section_story_id(k));
     }
 
     // Each story's page and frame are its FIRST section's: story 0 is A1's
-    // (A2, A3 join it), story 2 is B2's two columns, story 6 is C1's 0.5 in
-    // margins (C2's other margins become indents), story 9 is F2's 6 in page.
+    // (A2, A3 join it); story 1 is B1's page with the two columns the
+    // lowering chose for B (B1 and B3 span them, ADR 029); story 3 is C1's
+    // 0.5 in margins (C2's other margins become indents); story 6 is F2's
+    // 6 in page.
     let s0 = spread(&pkg, 0);
     assert_eq!((s0.page[3], s0.page[2]), (360.0, 312.0));
     assert_eq!(s0.frame_box, [36.0, 36.0, 276.0, 324.0]);
     assert!(!s0.frame_pref.contains_key("TextColumnCount"));
-    let s2 = spread(&pkg, 2);
-    assert_eq!(s2.frame_pref["TextColumnCount"], "2");
-    assert_eq!(s2.frame_pref["TextColumnGutter"], "36");
-    assert_eq!(s2.margin["ColumnCount"], "2");
+    let s1 = spread(&pkg, 1);
+    assert_eq!(s1.frame_pref["TextColumnCount"], "2");
+    assert_eq!(s1.frame_pref["TextColumnGutter"], "36");
+    assert_eq!(s1.margin["ColumnCount"], "2");
     assert_eq!(
-        spread(&pkg, 5).frame_pref["TextColumnCount"],
+        spread(&pkg, 2).frame_pref["TextColumnCount"],
         "2",
         "D1 + nextColumn D2"
     );
-    let s6 = spread(&pkg, 6);
-    assert_eq!((s6.frame_box[1], s6.frame_box[3]), (36.0, 324.0));
-    assert_eq!(spread(&pkg, 9).page[3], 432.0);
-    assert_eq!(spread(&pkg, 10).page[3], 360.0);
+    let s3 = spread(&pkg, 3);
+    assert_eq!((s3.frame_box[1], s3.frame_box[3]), (36.0, 324.0));
+    assert_eq!(spread(&pkg, 6).page[3], 432.0);
+    assert_eq!(spread(&pkg, 7).page[3], 360.0);
 
     // The pour's view agrees: one block group per skeleton story.
     let ir = docx_lower::lower(&docx);
     let story_of: Vec<usize> = ir.sections.iter().map(|s| s.story).collect();
     assert_eq!(
         story_of,
-        vec![0, 0, 0, 1, 2, 3, 4, 5, 5, 6, 6, 6, 7, 7, 8, 9, 10]
+        vec![0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 3, 4, 4, 5, 6, 7]
     );
     assert_eq!(sk.section_stories, docx_skeleton::story_ids(&docx));
     assert_eq!(sk.section_stories.len(), story_of.last().unwrap() + 1);
+
+    // An engine without span/split columns: B's four sections are four
+    // pages, as before, each frame with its own section's columns.
+    let old = docx_lower::sections::LowerOptions {
+        mid_page_columns: false,
+    };
+    let sk = docx_skeleton::skeleton_with(&docx, "continuous.docx", old).expect("skeleton");
+    let pkg = open(&sk.idml);
+    assert_eq!(count(&pkg, "Spreads/"), 11);
+    assert!(!spread(&pkg, 1).frame_pref.contains_key("TextColumnCount"));
+    assert_eq!(spread(&pkg, 2).frame_pref["TextColumnCount"], "2");
+    assert_eq!(
+        sk.section_stories,
+        docx_skeleton::story_ids_with(&docx, old)
+    );
 }

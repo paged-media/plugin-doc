@@ -44,6 +44,8 @@ interface WasmDocEngine {
   last_save_skips(): string;
   skeleton_idml(name: string): Uint8Array;
   skeleton_stories(): string;
+  set_mid_page_columns(on: boolean): void;
+  uses_mid_page_columns(): boolean;
   free(): void;
 }
 
@@ -86,6 +88,19 @@ export class DocEngine {
   /** The skeleton's section story ids, in section order (the pour targets). */
   skeletonStories(): string[] {
     return JSON.parse(this.inner.skeleton_stories()) as string[];
+  }
+
+  /** ADR 029 — lower a mid-page column change to span/split columns
+   *  (`true`, the default: protocol 64) or to a page break (`false`: the
+   *  engine refused them). The lowering, the skeleton and save-back follow
+   *  it, so set it the same way before each. */
+  setMidPageColumns(on: boolean): void {
+    this.inner.set_mid_page_columns(on);
+  }
+
+  /** Whether the lowering uses span/split columns anywhere. */
+  usesMidPageColumns(): boolean {
+    return this.inner.uses_mid_page_columns();
   }
 
   /** Number of top-level body blocks. */

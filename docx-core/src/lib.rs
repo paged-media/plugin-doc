@@ -486,6 +486,14 @@ pub struct Section {
     pub margin_right: i32,
     /// `w:cols/@w:num` — column count (default 1).
     pub columns: u32,
+    /// `w:cols/@w:space` — the gap between equal-width columns, in twips
+    /// (Word's default 720).
+    #[serde(default = "default_column_space")]
+    pub column_space: i32,
+    /// Unequal columns (`w:cols/@w:equalWidth="0"`): each `w:col` as
+    /// `(w, space)` in twips. Empty for equal-width columns.
+    #[serde(default)]
+    pub column_widths: Vec<(i32, i32)>,
     /// Index into [`DocxDocument::body`] of this section's FIRST block. A
     /// section runs to the next section's `first_block` (the last one to the
     /// end of the body). Word marks a section's end with a `sectPr` inside its
@@ -544,8 +552,16 @@ impl Default for Section {
             margin_left: 1440,
             margin_right: 1440,
             columns: 1,
+            column_space: default_column_space(),
+            column_widths: Vec::new(),
             first_block: 0,
             kind: SectionKind::NextPage,
         }
     }
+}
+
+/// Word's gap between columns when `w:cols/@w:space` is absent (720 twips,
+/// 0.5 in).
+pub fn default_column_space() -> i32 {
+    720
 }

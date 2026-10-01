@@ -30,7 +30,7 @@ use docx_export::{
 };
 use docx_import::import_docx_with_package;
 use docx_lower::ir::LoweredDoc;
-use docx_lower::lower;
+use docx_lower::{lower_with, LowerOptions};
 use paged_ooxml::OpcPackage;
 
 /// A loaded Word document session.
@@ -47,6 +47,10 @@ pub struct DocSession {
     main_part: String,
     /// The native↔OOXML provenance map for edited save-back.
     bindings: DocxBindings,
+    /// What the target engine can lay out (ADR 029: span/split columns for
+    /// a mid-page column change). The lowering, the skeleton and the
+    /// save-back baseline all use it, so they stay aligned.
+    options: LowerOptions,
 }
 
 impl DocSession {
@@ -62,12 +66,37 @@ impl DocSession {
             package,
             main_part,
             bindings,
+            options: LowerOptions::default(),
         })
     }
 
     /// The Tier-0 lowering (the IR the host-model turns into mutations).
     pub fn lowered(&self) -> LoweredDoc {
-        lower(&self.model)
+        lower_with(&self.model, self.options)
+    }
+
+    /// Lower a mid-page column change to span/split columns (`true`, the
+    /// default: protocol 64) or to a page break (`false`: an engine that
+    /// refused the properties). Applies to every later lowering, skeleton
+    /// and save-back.
+    pub fn set_mid_page_columns(&mut self, on: bool) {
+        self.options.mid_page_columns = on;
+    }
+
+    /// Whether the lowering uses span/split columns anywhere (the bundle
+    /// only needs to probe the engine then).
+    pub fn uses_mid_page_columns(&self) -> bool {
+        let ir = self.lowered();
+        ir.styles.iter().any(|s| {
+            s.props
+                .iter()
+                .any(|p| p.path == docx_lower::SPAN_COLUMN_TYPE)
+        })
+    }
+
+    /// The skeleton's story ids, in story order.
+    pub fn skeleton_stories(&self) -> Vec<String> {
+        docx_skeleton::story_ids_with(&self.model, self.options)
     }
 
     /// The lowering as a JSON string (the wasm boundary form).
@@ -85,7 +114,7 @@ impl DocSession {
     /// continuous sections can join the story before) plus the story ids, in
     /// order, for the grow rules and the pour.
     pub fn skeleton(&self, name: &str) -> Result<docx_skeleton::Skeleton, String> {
-        docx_skeleton::skeleton(self.model(), name)
+        docx_skeleton::skeleton_with(self.model(), name, self.options)
     }
 
     /// Number of top-level body blocks.

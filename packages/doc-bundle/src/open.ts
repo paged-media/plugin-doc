@@ -65,15 +65,14 @@ export const SPAN_COLUMN_PATHS: readonly string[] = [
  * The protocol-64 grow rule for one section story (thoughts ADR 026/029):
  * generated pages after the story's last frame while it oversets, keeping
  * the section frame's options (`LeadingOffset`, zero insets, columns) —
- * Word's line-box fit on every page. The published plugin-api predates the
- * op, so it is typed here and cast at the door (as activate.ts does for
- * `storyContent`); drop the cast when the canary carrying it publishes.
+ * Word's line-box fit on every page. Typed by the plugin-api canary's
+ * vendored v64 wire (0.2.37-canary.0), so no cast.
  */
 export function growRuleOp(storyId: string): Mutation {
   return {
     op: "setFlowGrowRule",
     args: { storyId, grow: true, maxPages: null, copyFrameOptions: true },
-  } as unknown as Mutation;
+  };
 }
 
 /**

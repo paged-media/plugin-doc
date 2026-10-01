@@ -135,16 +135,10 @@ export function activate(host: BundleHost): BundleHandle {
       return verbatim;
     }
     try {
-      // `storyContent` is a v54 read; it postdates the PUBLISHED plugin-api
-      // canary this bundle builds against (it exists on plugin-sdk main), so
-      // reach it through a narrow cast — the same pattern the v52/v53 mutation
-      // ops use. Drop the cast when the canary carrying it publishes. Guarded by
-      // the `readStory@1` probe above, so an older host never reaches this.
-      const readStory = (
-        host.document as unknown as {
-          storyContent(storyId: string): Promise<unknown | null>;
-        }
-      ).storyContent;
+      // `storyContent` is a v54 read, typed by the plugin-api canary this
+      // bundle builds against. Guarded by the `readStory@1` probe above, so an
+      // older host never reaches this.
+      const readStory = host.document.storyContent;
       // One read per story, merged in order into the one body the import
       // baseline is (a standalone document has a story per Word section).
       const contents: StoryContentLike[] = [];

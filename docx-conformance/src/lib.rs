@@ -447,6 +447,158 @@ pub fn line_spacing_docx() -> Vec<u8> {
     ])
 }
 
+/// One page of [`breaks_docx`]: 5 in × 2.667 in, 0.5 in margins → a
+/// 288 pt × 120 pt body = exactly ten 12 pt lines (two 126 pt columns in a
+/// two-column section).
+const BREAKS_PAGE: &str = r#"<w:pgSz w:w="7200" w:h="3840"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/>"#;
+
+/// `w:sectPr` for a [`breaks_docx`] section starting as `kind`, in `cols`
+/// columns.
+fn breaks_sect(kind: &str, cols: u32) -> String {
+    format!(
+        r#"<w:sectPr><w:type w:val="{kind}"/>{BREAKS_PAGE}<w:cols w:num="{cols}" w:space="720"/></w:sectPr>"#
+    )
+}
+
+/// The run properties every [`breaks_docx`] run carries.
+const BREAKS_RPR: &str =
+    r#"<w:rPr><w:rFonts w:ascii="Inter" w:hAnsi="Inter" w:cs="Inter"/><w:sz w:val="20"/></w:rPr>"#;
+
+/// A [`breaks_docx`] paragraph: `ppr` (extra `w:pPr` children that precede
+/// `w:spacing` in schema order, e.g. `<w:pageBreakBefore/>`), the inner run
+/// XML, and an optional section break (`w:sectPr`, which follows `w:spacing`).
+fn breaks_para(ppr: &str, inner: &str, sect: &str) -> String {
+    format!(
+        r#"<w:p><w:pPr>{ppr}<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="exact"/>{sect}</w:pPr>{inner}</w:p>"#
+    )
+}
+
+/// A plain text run.
+fn breaks_run(text: &str) -> String {
+    format!(r#"<w:r>{BREAKS_RPR}<w:t xml:space="preserve">{text}</w:t></w:r>"#)
+}
+
+/// ADR 028/029 — break ground truth: what Word does with every way a `.docx`
+/// says "start over" (`scripts/word-breaks-probe.sh` has Word export it as
+/// PDF; `fixtures/breaks.word.json` records the page map).
+///
+/// Every page is the same small size with a ten-line body (Inter 10 pt on an
+/// exact 12 pt grid, as [`pagination_docx`]), and every paragraph is one
+/// line whose first word is its label, so the page map reads straight off the
+/// PDF. The sections:
+///
+/// - **A** (one column): `A05` has `w:pageBreakBefore` mid-page; `A15` has it
+///   too but is the 11th line after `A05`, so it already opens a page; an
+///   EMPTY paragraph holding only `<w:br w:type="page"/>` follows `A17`; `A19`
+///   ENDS with a page break; `A21a`/`A21b` are one paragraph (one run) with a
+///   page break BETWEEN them.
+/// - **B** (`nextPage`, two columns): after `B03` an empty paragraph holds
+///   only `<w:br w:type="column"/>`; `B08a`/`B08b` are one paragraph with a
+///   column break between them.
+/// - **C** (`oddPage`) is planned to start where the next page is already odd,
+///   **D** (`oddPage`) where it is even (Word adds a blank page), **E**
+///   (`evenPage`) where it is already even, **F** (`evenPage`) where it is odd
+///   (a blank page again). Whether the plan held is Word's to say: the
+///   fixture records what Word did.
+pub fn breaks_docx() -> Vec<u8> {
+    let page_br = format!(r#"<w:r>{BREAKS_RPR}<w:br w:type="page"/></w:r>"#);
+    let col_br = format!(r#"<w:r>{BREAKS_RPR}<w:br w:type="column"/></w:r>"#);
+    let pbb = "<w:pageBreakBefore/>";
+    let mut body = String::new();
+    let plain = |label: &str| breaks_para("", &breaks_run(label), "");
+
+    // Section A.
+    for n in 1..=4 {
+        body.push_str(&plain(&format!("A{n:02} text")));
+    }
+    body.push_str(&breaks_para(pbb, &breaks_run("A05 pageBreakBefore"), ""));
+    for n in 6..=14 {
+        body.push_str(&plain(&format!("A{n:02} text")));
+    }
+    body.push_str(&breaks_para(
+        pbb,
+        &breaks_run("A15 pageBreakBefore top"),
+        "",
+    ));
+    body.push_str(&plain("A16 text"));
+    body.push_str(&plain("A17 text"));
+    body.push_str(&breaks_para("", &page_br, ""));
+    body.push_str(&plain("A18 after empty break"));
+    body.push_str(&breaks_para(
+        "",
+        &format!("{}{page_br}", breaks_run("A19 ends in break")),
+        "",
+    ));
+    body.push_str(&plain("A20 after end break"));
+    body.push_str(&breaks_para(
+        "",
+        &format!(
+            r#"<w:r>{BREAKS_RPR}<w:t xml:space="preserve">A21a before</w:t><w:br w:type="page"/><w:t xml:space="preserve">A21b after mid break</w:t></w:r>"#
+        ),
+        "",
+    ));
+    body.push_str(&plain("A22 text"));
+    body.push_str(&breaks_para(
+        "",
+        &breaks_run("A23 last of A"),
+        &breaks_sect("nextPage", 1),
+    ));
+
+    // Section B, two columns.
+    for n in 1..=3 {
+        body.push_str(&plain(&format!("B{n:02} col")));
+    }
+    body.push_str(&breaks_para("", &col_br, ""));
+    for n in 4..=7 {
+        body.push_str(&plain(&format!("B{n:02} col")));
+    }
+    body.push_str(&breaks_para(
+        "",
+        &format!(
+            r#"<w:r>{BREAKS_RPR}<w:t xml:space="preserve">B08a col</w:t><w:br w:type="column"/><w:t xml:space="preserve">B08b col</w:t></w:r>"#
+        ),
+        "",
+    ));
+    body.push_str(&breaks_para(
+        "",
+        &breaks_run("B09 last of B"),
+        &breaks_sect("nextPage", 2),
+    ));
+
+    // Sections C–F: three lines each; the section kind is on its own sectPr,
+    // which rides its LAST paragraph (F's is the body-level sectPr).
+    for (label, kind) in [
+        ("C", "oddPage"),
+        ("D", "oddPage"),
+        ("E", "evenPage"),
+        ("F", "evenPage"),
+    ] {
+        for n in 1..=3 {
+            let text = format!("{label}{n:02} {kind}");
+            let sect = if n == 3 && label != "F" {
+                breaks_sect(kind, 1)
+            } else {
+                String::new()
+            };
+            body.push_str(&breaks_para("", &breaks_run(&text), &sect));
+        }
+    }
+    let last = breaks_sect("evenPage", 1);
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}{last}</w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+    ])
+}
+
 /// A document with a Normal paragraph, a centered Heading1 paragraph, and a
 /// paragraph mixing a plain run with a bold red run — enough to exercise style
 /// application, direct-format synthesis, and swatch minting. Also carries an

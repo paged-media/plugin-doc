@@ -87,6 +87,11 @@ pub fn render_ppr(props: &ParaProps, pstyle: Option<&str>) -> Vec<u8> {
     if props.keep_lines == Some(true) {
         s.push_str("<w:keepLines/>");
     }
+    match props.page_break_before {
+        Some(true) => s.push_str("<w:pageBreakBefore/>"),
+        Some(false) => s.push_str("<w:pageBreakBefore w:val=\"0\"/>"),
+        None => {}
+    }
     // <w:spacing> carries before/after together.
     if props.space_before.is_some() || props.space_after.is_some() {
         s.push_str("<w:spacing");

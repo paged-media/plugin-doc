@@ -98,10 +98,20 @@ function poured(
   let offset = base;
   paragraphs.forEach((para, pIdx) => {
     const paraStart = offset;
+    // ADR 028/029 — a break inside the Word paragraph: a separator at each
+    // segment start (a new native paragraph), which, like every paragraph
+    // separator, does not advance the contiguous offsets.
+    const cuts = (para.segments ?? []).map((s) => s.at);
+    let local = 0;
     for (const run of para.runs) {
       const runStart = offset;
-      text += run.text;
-      offset += codePointLen(run.text);
+      const chars = Array.from(run.text);
+      chars.forEach((ch, i) => {
+        if (cuts.includes(local + i) && local + i > 0) text += "\n";
+        text += ch;
+      });
+      local += chars.length;
+      offset += chars.length;
       if (run.charStyleId) {
         ranges.push({ start: runStart, end: offset, style: run.charStyleId, scope: "character" });
       }
@@ -109,9 +119,20 @@ function poured(
         links.push({ start: runStart, end: offset, url: run.hyperlinkUrl });
       }
     }
+    // Breaks at the paragraph's very end (an empty trailing part).
+    for (const at of cuts) if (at >= local) text += "\n";
+    const segs = para.segments ?? [];
+    const firstEnd = segs.length > 0 ? paraStart + segs[0].at : offset;
     if (para.paraStyleId) {
-      ranges.push({ start: paraStart, end: offset, style: para.paraStyleId, scope: "paragraph" });
+      ranges.push({ start: paraStart, end: firstEnd, style: para.paraStyleId, scope: "paragraph" });
     }
+    segs.forEach((seg, k) => {
+      const start = paraStart + seg.at;
+      const end = k + 1 < segs.length ? paraStart + segs[k + 1].at : offset;
+      if (seg.paraStyleId) {
+        ranges.push({ start, end, style: seg.paraStyleId, scope: "paragraph" });
+      }
+    });
     // Images anchor at the paragraph level (paged anchors a frame to a
     // paragraph), so any offset within the paragraph resolves to it.
     for (const img of para.images ?? []) {
@@ -316,6 +337,16 @@ export function sectionBlocks(ir: LoweredDoc): LoweredBlock[][] {
   const sections = ir.sections && ir.sections.length > 0 ? ir.sections : [ir.section];
   const starts = sections.map((s) => s.firstBlock ?? 0);
   return starts.map((start, k) => blocks.slice(start, k + 1 < starts.length ? starts[k + 1] : blocks.length));
+}
+
+/** How many native paragraphs a block list pours as: one per paragraph block,
+ *  plus one per break that splits a paragraph (ADR 028/029). Save-back trims
+ *  the section joins against this count. */
+export function pouredParagraphCount(blocks: readonly LoweredBlock[]): number {
+  return blocks.reduce(
+    (n, b) => (b.kind === "paragraph" ? n + 1 + (b.segments?.length ?? 0) : n),
+    0,
+  );
 }
 
 /** {@link buildStory} over an explicit block list (one section's blocks). */

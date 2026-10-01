@@ -165,9 +165,15 @@ pub struct Run {
     pub style_id: Option<String>,
     /// Direct character formatting (`w:rPr`).
     pub props: RunProps,
-    /// The concatenated text of the run's `w:t` children (tabs/breaks preserved
-    /// as `\t` / `\n`).
+    /// The concatenated text of the run's `w:t` children (tabs and
+    /// text-wrapping breaks preserved as `\t` / `\n`). Page and column breaks
+    /// are NOT in the text: they are [`Run::breaks`].
     pub text: String,
+    /// `w:br w:type="page"|"column"` in this run, each at the char offset into
+    /// [`Run::text`] where it sits (thoughts ADR 028/029: the content after
+    /// one starts on a new page or column).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breaks: Vec<RunBreak>,
     /// A `w:drawing` image carried on this run (`text` is empty for such a run).
     pub image: Option<Image>,
     /// When this run sits inside a `w:hyperlink`, its resolved target (an
@@ -191,6 +197,27 @@ pub struct Run {
     /// are handled separately (see [`Run::hyperlink`]).
     #[serde(default)]
     pub field: Option<String>,
+}
+
+/// A page or column break inside a run (`w:br` with `w:type` `page` or
+/// `column`; a typeless or `textWrapping` break is a line break, `\n` in the
+/// text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunBreak {
+    /// Char (Unicode scalar) offset into the run's text: the break sits
+    /// before the `at`-th char (`at == text.chars().count()` = after it all).
+    pub at: usize,
+    pub kind: BreakKind,
+}
+
+/// What a [`RunBreak`] starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BreakKind {
+    /// `w:br w:type="page"`: the next page.
+    Page,
+    /// `w:br w:type="column"`: the next column (the next page when the
+    /// section has one column).
+    Column,
 }
 
 /// A header or footer part's content (`w:hdr` / `w:ftr`), reached from a
@@ -236,6 +263,10 @@ pub struct ParaProps {
     pub line_spacing: Option<LineSpacing>,
     pub keep_next: Option<bool>,
     pub keep_lines: Option<bool>,
+    /// `w:pageBreakBefore` (ADR 028/029): the paragraph starts a new page.
+    /// `Some(false)` is an explicit `w:val="0"`, which turns off a style's.
+    #[serde(default)]
+    pub page_break_before: Option<bool>,
     /// `w:tabs` — explicit tab stops (empty = inherit).
     pub tabs: Vec<TabStop>,
 }

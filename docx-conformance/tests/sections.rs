@@ -59,11 +59,18 @@ fn exact_line_spacing_lowers_to_a_leading() {
     assert_eq!((ls.value, ls.rule), (240, docx_core::LineRule::Exact));
 
     let lowered = docx_lower::lower(&doc);
+    // The first paragraph's own (synthesized) style carries it. (Word's
+    // named styles carry a leading too since every unset line spacing lowers
+    // to Word's single.)
+    let first = lowered.story.paragraphs()[0]
+        .para_style_id
+        .clone()
+        .expect("a styled paragraph");
     let leading = lowered
         .styles
         .iter()
-        .flat_map(|s| s.props.iter())
-        .find(|p| p.path == "characterLeading")
+        .find(|s| s.id == first)
+        .and_then(|s| s.props.iter().find(|p| p.path == "characterLeading"))
         .map(|p| p.value.clone());
     assert_eq!(leading, Some(docx_lower::ir::PropValue::Length(12.0)));
 

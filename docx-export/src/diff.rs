@@ -277,6 +277,14 @@ fn invert_para_props(props: &[StyleProp]) -> docx_core::ParaProps {
             ("paragraphSpaceAfter", PropValue::Length(v)) => p.space_after = Some(tw(*v)),
             ("paragraphKeepWithNext", PropValue::Length(v)) => p.keep_next = Some(*v > 0.0),
             ("paragraphKeepLinesTogether", PropValue::Bool(b)) => p.keep_lines = Some(*b),
+            // The lowering also gives a paragraph NextPage when a page break
+            // ended the paragraph before it; re-emitted as pageBreakBefore
+            // that lays out the same (it already opens the page).
+            ("paragraphStartParagraph", PropValue::Text(v)) => match v.as_str() {
+                "NextPage" => p.page_break_before = Some(true),
+                "Anywhere" => p.page_break_before = Some(false),
+                _ => {}
+            },
             ("paragraphTabStops", PropValue::TabStops(stops)) => {
                 p.tabs = stops
                     .iter()

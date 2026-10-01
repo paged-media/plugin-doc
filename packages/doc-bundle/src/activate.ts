@@ -32,7 +32,7 @@ import { createDocStore } from "./panels/outline-model.js";
 import { makeOutlinePanel } from "./panels/outline-panel.js";
 import { placeEmbedded } from "./place.js";
 import { openStandalone } from "./open.js";
-import { mergeSectionContents, sectionBlocks } from "@paged-media/doc-host-model";
+import { mergeSectionContents, pouredParagraphCount, sectionBlocks } from "@paged-media/doc-host-model";
 import type { StoryContentLike } from "@paged-media/doc-host-model";
 
 const PANEL_ID = "media.paged.doc.panel.outline";
@@ -65,9 +65,7 @@ export function activate(host: BundleHost): BundleHandle {
     try {
       engine.loadDocx(bytes);
       const ir = engine.lowered();
-      const paragraphCounts = sectionBlocks(ir).map(
-        (blocks) => blocks.filter((b) => b.kind === "paragraph").length,
-      );
+      const paragraphCounts = sectionBlocks(ir).map(pouredParagraphCount);
       // ADR 029 — a Word document opens as the WHOLE document: a page per
       // section that grows like Word's. Hosts without the native-open door
       // get the embedded placement instead.

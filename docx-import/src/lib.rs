@@ -26,9 +26,9 @@
 //! an unparseable main document part is a hard error.
 
 use docx_core::{
-    Block, CellPath, DocxDocument, HeaderFooter, Image, Justification, LineRule, LineSpacing,
-    ListKind, ListMarker, Note, ParaProps, Paragraph, Run, RunProps, RunSource, Section,
-    SectionKind, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
+    Block, BreakKind, CellPath, DocxDocument, HeaderFooter, Image, Justification, LineRule,
+    LineSpacing, ListKind, ListMarker, Note, ParaProps, Paragraph, Run, RunBreak, RunProps,
+    RunSource, Section, SectionKind, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
@@ -508,6 +508,7 @@ fn map_paragraph(
                 &pp.spacing_between_lines,
                 pp.keep_next.is_some(),
                 pp.keep_lines.is_some(),
+                pp.page_break_before.as_ref().map(|v| on(&v.val)),
                 &pp.tabs,
             ),
         ),
@@ -786,6 +787,7 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
         }
     }
     let mut text = String::new();
+    let mut breaks = Vec::new();
     let mut image = None;
     let mut note_ref = None;
     for c in &r.run_choice {
@@ -796,7 +798,21 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
                 }
             }
             wml::RunChoice::TabChar => text.push('\t'),
-            wml::RunChoice::Break(_) | wml::RunChoice::CarriageReturn => text.push('\n'),
+            // ADR 028/029 — a page or column break is a pagination
+            // instruction, not text: it is recorded at its char offset. A
+            // typeless or `textWrapping` break is a line break.
+            wml::RunChoice::Break(b) => match b.r#type {
+                Some(wml::BreakValues::Page) => breaks.push(RunBreak {
+                    at: text.chars().count(),
+                    kind: BreakKind::Page,
+                }),
+                Some(wml::BreakValues::Column) => breaks.push(RunBreak {
+                    at: text.chars().count(),
+                    kind: BreakKind::Column,
+                }),
+                _ => text.push('\n'),
+            },
+            wml::RunChoice::CarriageReturn => text.push('\n'),
             wml::RunChoice::NoBreakHyphen => text.push('\u{2011}'),
             wml::RunChoice::Drawing(d) => {
                 if image.is_none() {
@@ -814,6 +830,7 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
         style_id,
         props,
         text,
+        breaks,
         image,
         hyperlink: None,
         // The caller (map_paragraph) stamps the real provenance from context.
@@ -900,6 +917,7 @@ fn map_styles(styles: &wml::Styles) -> StyleCatalog {
                     &base.spacing_between_lines,
                     false,
                     false,
+                    None,
                     &None,
                 );
             }
@@ -957,6 +975,7 @@ fn map_style(s: &wml::Style) -> Option<Style> {
                 &pp.spacing_between_lines,
                 pp.keep_next.is_some(),
                 pp.keep_lines.is_some(),
+                pp.page_break_before.as_ref().map(|v| on(&v.val)),
                 &pp.tabs,
             )
         })
@@ -1025,6 +1044,7 @@ fn para_props(
     spacing: &Option<wml::SpacingBetweenLines>,
     keep_next: bool,
     keep_lines: bool,
+    page_break_before: Option<bool>,
     tabs: &Option<wml::Tabs>,
 ) -> ParaProps {
     let mut p = ParaProps::default();
@@ -1058,6 +1078,7 @@ fn para_props(
     if keep_lines {
         p.keep_lines = Some(true);
     }
+    p.page_break_before = page_break_before;
     if let Some(t) = tabs {
         for ts in &t.tab_stop {
             // A "clear" stop removes an inherited tab — no alignment, not carried.

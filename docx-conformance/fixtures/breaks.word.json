@@ -1,0 +1,142 @@
+{
+  "fixture": "docx_conformance::breaks_docx()",
+  "produced_by": "scripts/word-breaks-probe.sh (Microsoft Word 16, PDF export, macOS)",
+  "measured": "2026-10-01",
+  "method": "pdftotext -bbox: per page its size and, per column, the label (first word) of each line; first_line_top_pt (how far the first line's top sits below the 36 pt top margin) is 2.03 on EVERY non-blank page, so no page starts with a blank line",
+  "page_size_pt": [
+    360.0,
+    192.0
+  ],
+  "page_count": 14,
+  "pages": [
+    {
+      "page": 1,
+      "labels": [
+        "A01",
+        "A02",
+        "A03",
+        "A04"
+      ],
+      "note": "A05 has pageBreakBefore mid-page: it opens page 2"
+    },
+    {
+      "page": 2,
+      "labels": [
+        "A05",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14"
+      ]
+    },
+    {
+      "page": 3,
+      "labels": [
+        "A15",
+        "A16",
+        "A17"
+      ],
+      "note": "A15 has pageBreakBefore but already opens page 3: it stays (no blank page). The empty paragraph holding only a page break follows A17 HERE (its paragraph mark stays on this page)"
+    },
+    {
+      "page": 4,
+      "labels": [
+        "A18",
+        "A19"
+      ],
+      "note": "A18 follows the empty page-break paragraph: it opens the page with no blank line above it. A19 ends in a page break"
+    },
+    {
+      "page": 5,
+      "labels": [
+        "A20",
+        "A21a"
+      ],
+      "note": "A20 follows A19's trailing break: it opens the page, no blank line (A19's paragraph mark leaves no line here). A21a/A21b are ONE paragraph split by a page break"
+    },
+    {
+      "page": 6,
+      "labels": [
+        "A21b",
+        "A22",
+        "A23"
+      ],
+      "note": "the text after a mid-paragraph page break opens the next page"
+    },
+    {
+      "page": 7,
+      "columns": [
+        [
+          "B01",
+          "B02",
+          "B03"
+        ],
+        [
+          "B04",
+          "B05",
+          "B06",
+          "B07",
+          "B08a"
+        ]
+      ],
+      "note": "two-column section: the empty column-break paragraph stays in column 1 after B03; B04 opens column 2"
+    },
+    {
+      "page": 8,
+      "labels": [
+        "B08b",
+        "B09"
+      ],
+      "note": "the text after a mid-paragraph column break opens the next column, here column 1 of a new page"
+    },
+    {
+      "page": 9,
+      "labels": [
+        "C01",
+        "C02",
+        "C03"
+      ],
+      "note": "oddPage section whose next page (9) is already odd: no blank page"
+    },
+    {
+      "page": 10,
+      "blank": true,
+      "note": "Word's blank page: D is oddPage and the next page (10) is even"
+    },
+    {
+      "page": 11,
+      "labels": [
+        "D01",
+        "D02",
+        "D03"
+      ]
+    },
+    {
+      "page": 12,
+      "labels": [
+        "E01",
+        "E02",
+        "E03"
+      ],
+      "note": "evenPage section whose next page (12) is already even"
+    },
+    {
+      "page": 13,
+      "blank": true,
+      "note": "Word's blank page: F is evenPage and the next page (13) is odd"
+    },
+    {
+      "page": 14,
+      "labels": [
+        "F01",
+        "F02",
+        "F03"
+      ]
+    }
+  ]
+}

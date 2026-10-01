@@ -56,6 +56,38 @@ pub struct RunContentIn {
     pub character_style: Option<String>,
 }
 
+/// The read-back paragraphs one baseline paragraph poured as, folded back into
+/// ONE (ADR 028/029): a page/column break inside a Word paragraph pours as
+/// `1 + segments` native paragraphs. Where a break fell inside a baseline run,
+/// that run came back as two (the end of one part, the start of the next) and
+/// is joined again; empty runs of an empty part are dropped.
+fn fold_segments(
+    baseline: &docx_lower::ir::LoweredParagraph,
+    parts: &[ParagraphContentIn],
+) -> ParagraphContentIn {
+    let mut runs: Vec<RunContentIn> = parts.first().map(|p| p.runs.clone()).unwrap_or_default();
+    // Run boundaries in the baseline's contiguous char space.
+    let mut bounds = vec![0u32];
+    for r in &baseline.runs {
+        bounds.push(bounds.last().copied().unwrap_or(0) + r.text.chars().count() as u32);
+    }
+    for (k, part) in parts.iter().enumerate().skip(1) {
+        let at = baseline.segments.get(k - 1).map_or(0, |s| s.at);
+        let splits_a_run = !bounds.contains(&at);
+        let mut next = part.runs.iter().filter(|r| !r.text.is_empty()).cloned();
+        if splits_a_run {
+            if let (Some(last), Some(first)) = (runs.last_mut(), next.next()) {
+                last.text.push_str(&first.text);
+            }
+        }
+        runs.extend(next);
+    }
+    ParagraphContentIn {
+        paragraph_style: parts.first().and_then(|p| p.paragraph_style.clone()),
+        runs,
+    }
+}
+
 /// Overlay the read-back story onto the import `baseline`, producing the EDITED
 /// lowering. Structure-preserving: read-back paragraphs map 1:1 onto the
 /// baseline's PARAGRAPH blocks in order (table blocks are skipped and left as-is
@@ -68,10 +100,14 @@ pub fn overlay_story_content(baseline: &LoweredDoc, content: &StoryContentIn) ->
         let LoweredBlock::Paragraph(p) = block else {
             continue; // table — not overlaid
         };
-        let Some(cp) = content.paragraphs.get(ci) else {
+        let parts = 1 + p.segments.len();
+        if ci >= content.paragraphs.len() {
             break; // read-back ran out of paragraphs
-        };
-        ci += 1;
+        }
+        let end = (ci + parts).min(content.paragraphs.len());
+        let folded = fold_segments(p, &content.paragraphs[ci..end]);
+        let cp = &folded;
+        ci = end;
         if cp.runs.len() == p.runs.len() {
             for (run, cr) in p.runs.iter_mut().zip(&cp.runs) {
                 run.text = cr.text.clone();

@@ -194,6 +194,27 @@ pub struct LoweredParagraph {
     /// Provenance: the index of the source body block, kept for future
     /// targeted save-back (M2). Not used for rendering.
     pub source_index: u32,
+    /// ADR 028/029 — where a page or column break INSIDE the Word paragraph
+    /// splits it. The native model breaks only between paragraphs, so the pour
+    /// starts a new native paragraph at each segment's `at`, styled with the
+    /// segment's style (which carries the break-before rule). Empty for an
+    /// unsplit paragraph. The block stays ONE block (one Word `w:p`), so
+    /// save-back provenance is unchanged: the read-back folds the segments'
+    /// native paragraphs back into this one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<LoweredSegment>,
+}
+
+/// The second or later part of a Word paragraph that a page or column break
+/// splits (see [`LoweredParagraph::segments`]).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoweredSegment {
+    /// The contiguous char offset into the paragraph's run text where this
+    /// segment starts (it runs to the next segment's `at`, or the end).
+    pub at: u32,
+    /// Full `ParagraphStyle/…` token applied over this segment.
+    pub para_style_id: Option<String>,
 }
 
 /// An inline image lowered to an anchored-frame placement.

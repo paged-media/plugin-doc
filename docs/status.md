@@ -251,9 +251,13 @@ ops use.)
   `document.openNative@1` is unwired (the common case today); the `docx →
   native-bytes` producer is a future `plugin-publish` sibling.
 - **Constructs still past the tier line** — tracked changes, floating
-  (anchored-with-wrap) images,
-  page/section breaks and internal `#anchor` links (both need a renderer door) →
+  (anchored-with-wrap) images and internal `#anchor` links (a renderer door) →
   surfaced as honest ADR-007 diagnostics on open, not silently dropped.
+  (Page/column breaks, `w:pageBreakBefore` and odd/even sections now lower to
+  the engine's break-before rule `paragraphStartParagraph`, core protocol 64,
+  matched against Word's own page map `docx-conformance/fixtures/
+  breaks.word.json`; an older engine refuses the rule and loses only the
+  breaks, with a warning. `continuous` sections still start a new page.)
   (Numbering/lists, tables, inline images, hyperlinks and footnotes have SHIPPED
   — see the tier sections above.)
 - **In-editor live render / real `host.nativeDocument`** — the bundle is written to

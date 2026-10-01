@@ -196,6 +196,16 @@ fn run_bindings(p: &docx_core::Paragraph) -> Vec<RunBinding> {
         // replay that filter to keep run indices aligned.
         .filter(|r| !r.text.is_empty())
         .map(|r| match r.source {
+            // ADR 028/029 — a page/column break INSIDE the run's text: the
+            // patcher rewrites a run's text into its first `<w:t>`, which
+            // would move the `<w:br>` to the end of the run. Not patched.
+            _ if r
+                .breaks
+                .iter()
+                .any(|b| b.at > 0 && b.at < r.text.chars().count()) =>
+            {
+                RunBinding::NonPatchable
+            }
             // A direct `<w:r>` child — patchable. This INCLUDES a complex field's
             // RESULT run (it carries a hyperlink target, but the URL lives in a
             // separate `instrText` run, so rewriting this run cannot desync it).

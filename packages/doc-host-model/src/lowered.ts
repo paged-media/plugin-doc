@@ -66,6 +66,18 @@ export interface LoweredParagraph {
   /** Inline images anchored to this paragraph (placed via insertAnchoredFrame). */
   images?: LoweredImage[];
   sourceIndex: number;
+  /** ADR 028/029 — where a page/column break INSIDE the Word paragraph
+   *  splits it: the pour starts a new native paragraph at each `at`, styled
+   *  with the segment's style (it carries the break-before rule). Absent for
+   *  an unsplit paragraph. */
+  segments?: LoweredSegment[];
+}
+
+/** The second or later part of a Word paragraph split by a break. */
+export interface LoweredSegment {
+  /** Contiguous char offset into the paragraph's run text where it starts. */
+  at: number;
+  paraStyleId?: string | null;
 }
 
 /** An inline image lowered to an anchored-frame placement. */

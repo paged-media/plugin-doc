@@ -18,7 +18,7 @@
 
 //! Write a conformance fixture to a path, so the wasm-boundary smoke harness
 //! (a Node script booting the real docx-js artifact) has a real `.docx`.
-//! `cargo run -p docx-conformance --bin dump-fixture -- <path> [memo|tier1|one|pagination|…]`
+//! `cargo run -p docx-conformance --bin dump-fixture -- <path> [memo|tier1|one|pagination|line-spacing|breaks|…]`
 
 fn main() {
     let path = std::env::args()
@@ -40,6 +40,7 @@ fn main() {
         "one" => docx_conformance::one_paragraph_docx(),
         "pagination" => docx_conformance::pagination_docx(),
         "line-spacing" => docx_conformance::line_spacing_docx(),
+        "breaks" => docx_conformance::breaks_docx(),
         _ => docx_conformance::memo_docx(),
     };
     std::fs::write(&path, bytes).expect("write fixture");

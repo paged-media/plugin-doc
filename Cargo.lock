@@ -166,6 +166,7 @@ dependencies = [
  "docx-js",
  "docx-lower",
  "paged-ooxml",
+ "serde_json",
  "zip 2.4.2",
 ]
 

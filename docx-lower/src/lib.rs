@@ -36,8 +36,8 @@ use std::collections::HashMap;
 use std::collections::BTreeSet;
 
 use docx_core::{
-    Block, DocxDocument, Justification, LineSpacing, ListKind, ListMarker, ParaProps, Run,
-    RunProps, Section, Style, StyleKind, VertAlign,
+    Block, BreakKind, DocxDocument, Justification, LineRule, LineSpacing, ListKind, ListMarker,
+    ParaProps, Run, RunProps, Section, SectionKind, Style, StyleKind, VertAlign,
 };
 
 pub mod ir;
@@ -45,11 +45,53 @@ pub mod line_height;
 
 use ir::{
     Diagnostic, LoweredBlock, LoweredCell, LoweredDoc, LoweredImage, LoweredParagraph, LoweredRun,
-    LoweredSection, LoweredStory, LoweredStyle, LoweredSwatch, LoweredTabStop, LoweredTable,
-    PropValue, StyleCollection, StyleProp,
+    LoweredSection, LoweredSegment, LoweredStory, LoweredStyle, LoweredSwatch, LoweredTabStop,
+    LoweredTable, PropValue, StyleCollection, StyleProp,
 };
 
 const PARA_PREFIX: &str = "ParagraphStyle/docx-";
+
+/// The break-before rule's property path (thoughts ADR 028; settable from core
+/// protocol 64 — older engines refuse it, and `applyStyleOps` then loses only
+/// the break, with a warning). Its value is InDesign's `StartParagraph` string.
+const START_PARAGRAPH: &str = "paragraphStartParagraph";
+
+/// Word's single line spacing (`w:spacing w:line="240" w:lineRule="auto"`),
+/// what Word lays when no line spacing is set anywhere (ADR 029; measured as
+/// case L1 of `fixtures/line-spacing.word.json`).
+const SINGLE: LineSpacing = LineSpacing {
+    value: 240,
+    rule: LineRule::Auto,
+};
+
+/// The `StartParagraph` value a page or column break lowers to. A column
+/// break in a one-column section opens the next frame, which is the next
+/// page, as Word does.
+fn break_rule(kind: BreakKind) -> &'static str {
+    match kind {
+        BreakKind::Page => "NextPage",
+        BreakKind::Column => "NextColumn",
+    }
+}
+
+/// How much a `StartParagraph` rule asks for: odd/even pages imply a new page,
+/// which implies a new column. Two rules on one paragraph keep the stronger.
+fn rule_rank(rule: &str) -> u8 {
+    match rule {
+        "NextOddPage" | "NextEvenPage" => 3,
+        "NextPage" => 2,
+        "NextColumn" => 1,
+        _ => 0,
+    }
+}
+
+fn stronger(a: Option<&'static str>, b: Option<&'static str>) -> Option<&'static str> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(if rule_rank(y) > rule_rank(x) { y } else { x }),
+        (x, None) => x,
+        (None, y) => y,
+    }
+}
 const CHAR_PREFIX: &str = "CharacterStyle/docx-";
 
 /// Twips (1/1440 inch) -> points (1/72 inch). 20 twips per point.
@@ -115,16 +157,82 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
 
     // 2. The body -> a native story of blocks (paragraphs + tables) in order,
     //    synthesizing styles for direct formatting.
+    //
+    //    ADR 028/029 — Word's breaks become the engine's break-before rule
+    //    (`paragraphStartParagraph`) on the paragraph that must start over:
+    //    an `oddPage`/`evenPage` section's first paragraph, a paragraph after
+    //    a page/column break, or the part of a paragraph after a break inside
+    //    it. (`nextPage` sections need no rule: each section is its own story
+    //    on its own page, ADR 029 addendum.)
+    let section_starts: Vec<(usize, SectionKind)> = doc
+        .sections
+        .iter()
+        .map(|s| (s.first_block, s.kind))
+        .collect();
+    let starts_section = |idx: usize| section_starts.iter().find(|(first, _)| *first == idx);
     let mut blocks = Vec::new();
+    let mut carry: Option<BreakKind> = None;
     for (idx, block) in doc.body.iter().enumerate() {
+        let section_start = starts_section(idx);
+        if section_start.is_some() && idx > 0 {
+            if let Some(kind) = carry.take() {
+                ctx.diagnostics.push(Diagnostic::info(
+                    format!(
+                        "a {} break ends the section before body block {idx}; the next \
+                         section starts a new page anyway, so the break adds nothing \
+                         here (Word may add a blank page for it; not measured)",
+                        if kind == BreakKind::Page {
+                            "page"
+                        } else {
+                            "column"
+                        }
+                    ),
+                    3,
+                ));
+            }
+        }
+        // The FIRST section's kind is not applied: it has nothing before it
+        // to start after, and Word was not asked about it.
+        let entry = match section_start.filter(|_| idx > 0).map(|(_, kind)| *kind) {
+            Some(SectionKind::OddPage) => Some("NextOddPage"),
+            Some(SectionKind::EvenPage) => Some("NextEvenPage"),
+            _ => None,
+        };
         match block {
             Block::Paragraph(p) => {
-                blocks.push(LoweredBlock::Paragraph(ctx.lower_paragraph(p, idx as u32)));
+                let next_in_section = matches!(doc.body.get(idx + 1), Some(Block::Paragraph(_)))
+                    && starts_section(idx + 1).is_none();
+                let start = stronger(entry, carry.take().map(break_rule));
+                let (para, tail) =
+                    ctx.lower_body_paragraph(p, idx as u32, start, Some(next_in_section));
+                carry = tail;
+                blocks.push(LoweredBlock::Paragraph(para));
             }
             Block::Table(t) => {
+                if let Some(rule) = entry {
+                    ctx.diagnostics.push(Diagnostic::info(
+                        format!(
+                            "the section at body block {idx} starts with a table, which \
+                             cannot carry its {rule} start; it starts on the section's \
+                             own page whatever that page's parity"
+                        ),
+                        3,
+                    ));
+                }
                 blocks.push(LoweredBlock::Table(ctx.lower_table(t)));
             }
         }
+    }
+    if ctx.breaks > 0 {
+        ctx.diagnostics.push(Diagnostic::info(
+            format!(
+                "{} page/column break(s) lowered to the engine's break-before rule \
+                 (paragraphStartParagraph); an engine before protocol 64 refuses the \
+                 rule and only the breaks are lost",
+                ctx.breaks
+            ),
+            3,
+        ));
     }
 
     if ctx.hyperlinks > 0 {
@@ -300,6 +408,8 @@ struct Lowering {
     style_leading: HashMap<String, f32>,
     /// Faces a line-spacing computation needed but Word was not measured on.
     unmeasured_faces: BTreeSet<String>,
+    /// Page/column breaks (`w:br`) seen in body paragraphs.
+    breaks: u32,
 }
 
 impl Lowering {
@@ -308,16 +418,17 @@ impl Lowering {
     /// inherits Word's document defaults.
     fn install_doc_defaults(&mut self, defaults: &docx_core::Defaults) {
         let mut props = self.para_props(&defaults.para);
-        let leading = defaults.para.line_spacing.map(|ls| {
-            let single = self.single_line(defaults.run.font.as_deref(), defaults.run.size_half_pts);
-            line_height::line_pitch_pt(ls, single)
-        });
+        props.extend(self.run_props(&defaults.run));
+        if props.is_empty() && defaults.para.line_spacing.is_none() {
+            // Nothing to carry: every style and paragraph resolves its own
+            // leading (Word's single when nothing sets one).
+            return;
+        }
+        let ls = defaults.para.line_spacing.unwrap_or(SINGLE);
+        let single = self.single_line(defaults.run.font.as_deref(), defaults.run.size_half_pts);
+        let leading = Some(line_height::line_pitch_pt(ls, single));
         if let Some(pt) = leading {
             props.push(len("characterLeading", pt));
-        }
-        props.extend(self.run_props(&defaults.run));
-        if props.is_empty() {
-            return;
         }
         let id = format!("{PARA_PREFIX}Default");
         if let Some(pt) = leading {
@@ -402,6 +513,11 @@ impl Lowering {
             match s.kind {
                 StyleKind::Paragraph => {
                     let mut props = self.para_props(&s.para);
+                    if s.para.page_break_before == Some(false)
+                        && self.resolve_page_break_before(None, s.based_on.as_deref())
+                    {
+                        props.push(text(START_PARAGRAPH, "Anywhere"));
+                    }
                     // Every paragraph style carries the leading it RESOLVES
                     // to: Word's auto/atLeast depend on the style's own
                     // (possibly inherited) font and size, which a child
@@ -450,12 +566,89 @@ impl Lowering {
         }
     }
 
+    /// A table-cell paragraph (breaks in cells are not lowered: Word ignores
+    /// a page break inside a table cell's flow only partly, and the native
+    /// cell has no break-before).
     fn lower_paragraph(&mut self, p: &docx_core::Paragraph, source_index: u32) -> LoweredParagraph {
+        self.lower_body_paragraph(p, source_index, None, None).0
+    }
+
+    /// A body paragraph. `start` is a break-before rule the paragraph
+    /// receives from outside (its section's odd/even start, or a break that
+    /// ended the previous paragraph). `can_carry`: the next block is a
+    /// paragraph of the same section, so a break at this paragraph's END is
+    /// returned for that paragraph to start with (Word measured: the text
+    /// after a trailing break opens the next page with no blank line,
+    /// `fixtures/breaks.word.json` A18/A20) instead of splitting this one.
+    /// `can_carry` is `None` for a table-cell paragraph, whose breaks are not
+    /// lowered.
+    fn lower_body_paragraph(
+        &mut self,
+        p: &docx_core::Paragraph,
+        source_index: u32,
+        start: Option<&'static str>,
+        can_carry: Option<bool>,
+    ) -> (LoweredParagraph, Option<BreakKind>) {
         let explicit = p
             .style_id
             .as_ref()
             .map(|id| format!("{PARA_PREFIX}{}", sanitize(id)));
         let mut props = self.para_props(&p.props);
+        if p.props.page_break_before == Some(false)
+            && self.resolve_page_break_before(None, p.style_id.as_deref())
+        {
+            props.push(text(START_PARAGRAPH, "Anywhere"));
+        }
+
+        // Page / column breaks in the runs, by where they sit in the
+        // paragraph's text: at its START (the paragraph itself starts over),
+        // at its END (the NEXT paragraph does), or INSIDE it (a split).
+        let total: usize = p.runs.iter().map(|r| r.text.chars().count()).sum();
+        let mut head: Option<&'static str> = None;
+        let mut tail: Option<BreakKind> = None;
+        let mut inside: std::collections::BTreeMap<usize, &'static str> = Default::default();
+        if can_carry.is_some() {
+            let mut offset = 0usize;
+            for r in &p.runs {
+                let len = r.text.chars().count();
+                for b in &r.breaks {
+                    self.breaks += 1;
+                    let at = offset + b.at.min(len);
+                    if at >= total {
+                        tail = Some(match tail {
+                            Some(BreakKind::Page) => BreakKind::Page,
+                            _ => b.kind,
+                        });
+                    } else if at == 0 {
+                        head = stronger(head, Some(break_rule(b.kind)));
+                    } else {
+                        let rule = break_rule(b.kind);
+                        let e = inside.entry(at).or_insert(rule);
+                        *e = stronger(Some(*e), Some(rule)).unwrap_or(rule);
+                    }
+                }
+                offset += len;
+            }
+        }
+        if let (Some(kind), Some(false)) = (tail, can_carry) {
+            // Nothing in this section to carry the break to (a table follows,
+            // or the section ends): the paragraph mark moves instead, as an
+            // empty segment that opens the next page/column.
+            inside.insert(total, break_rule(kind));
+            tail = None;
+        }
+
+        // The rule this paragraph itself starts with. A paragraph that
+        // already breaks before a page (`pageBreakBefore`) needs nothing
+        // weaker on top.
+        let own_page =
+            self.resolve_page_break_before(p.props.page_break_before, p.style_id.as_deref());
+        if let Some(rule) = stronger(start, head) {
+            if !own_page || rule_rank(rule) > rule_rank("NextPage") {
+                props.retain(|sp| sp.path != START_PARAGRAPH);
+                props.push(text(START_PARAGRAPH, rule));
+            }
+        }
         if let Some(pt) = self.paragraph_pitch(p) {
             let inherited = self
                 .para_base(explicit.clone())
@@ -467,7 +660,7 @@ impl Lowering {
         if let Some(list) = &p.list {
             props.extend(list_props(list));
         }
-        let para_style_id = if props.is_empty() {
+        let mut para_style_id = if props.is_empty() {
             // No direct formatting or list: apply the paragraph's style, or the
             // docDefaults base when the paragraph carries no style at all.
             self.para_base(explicit)
@@ -475,6 +668,38 @@ impl Lowering {
             let base = self.para_base(explicit);
             Some(self.synthesize(StyleCollection::Paragraph, base, props))
         };
+
+        // A break inside the paragraph splits it into native paragraphs. Word
+        // keeps it ONE paragraph, so the parts after a break are not new
+        // paragraphs to Word: no space before, no first-line indent, no list
+        // marker; and the part before it gets no space after.
+        let mut segments = Vec::new();
+        if !inside.is_empty() {
+            let whole = para_style_id.clone();
+            for (&at, &rule) in &inside {
+                let mut seg = vec![
+                    text(START_PARAGRAPH, rule),
+                    len("paragraphSpaceBefore", 0.0),
+                    len("paragraphFirstLineIndent", 0.0),
+                ];
+                if p.list.is_some() {
+                    seg.push(text("paragraphListType", "NoList"));
+                }
+                segments.push(LoweredSegment {
+                    at: at as u32,
+                    para_style_id: Some(self.synthesize(
+                        StyleCollection::Paragraph,
+                        whole.clone(),
+                        seg,
+                    )),
+                });
+            }
+            para_style_id = Some(self.synthesize(
+                StyleCollection::Paragraph,
+                whole,
+                vec![len("paragraphSpaceAfter", 0.0)],
+            ));
+        }
 
         let runs = p
             .runs
@@ -491,12 +716,16 @@ impl Lowering {
             .filter_map(|r| r.image.as_ref().map(lower_image))
             .collect();
 
-        LoweredParagraph {
-            para_style_id,
-            runs,
-            images,
-            source_index,
-        }
+        (
+            LoweredParagraph {
+                para_style_id,
+                runs,
+                images,
+                source_index,
+                segments,
+            },
+            tail,
+        )
     }
 
     fn lower_run(&mut self, r: &Run) -> LoweredRun {
@@ -674,6 +903,14 @@ impl Lowering {
         if let Some(k) = p.keep_lines {
             out.push(boolean("paragraphKeepLinesTogether", k));
         }
+        // ADR 028/029 — `w:pageBreakBefore` is InDesign's StartParagraph
+        // NextPage: both leave a paragraph that already opens a page where it
+        // is (Word measured: `fixtures/breaks.word.json`, A15). An explicit
+        // `w:val="0"` only matters over an inherited "on"; the callers, which
+        // know the chain, emit `Anywhere` for that.
+        if p.page_break_before == Some(true) {
+            out.push(text(START_PARAGRAPH, "NextPage"));
+        }
         if !p.tabs.is_empty() {
             let stops = p
                 .tabs
@@ -712,7 +949,9 @@ impl Lowering {
     }
 
     /// The line spacing a paragraph in `style` resolves to: `direct`, else
-    /// the nearest style in the chain that sets it, else docDefaults.
+    /// the nearest style in the chain that sets it, else docDefaults, else
+    /// Word's single (what Word lays when nothing sets it; the engine's own
+    /// default, 120% of the point size, is not Word's).
     fn resolve_spacing(
         &self,
         direct: Option<LineSpacing>,
@@ -725,6 +964,19 @@ impl Lowering {
                     .find_map(|s| s.para.line_spacing)
             })
             .or(self.word_defaults.para.line_spacing)
+            .or(Some(SINGLE))
+    }
+
+    /// Whether a paragraph with direct `pageBreakBefore` `direct` in `style`
+    /// starts a new page: direct, else the nearest style that sets it.
+    fn resolve_page_break_before(&self, direct: Option<bool>, style: Option<&str>) -> bool {
+        direct
+            .or_else(|| {
+                self.style_chain(style)
+                    .iter()
+                    .find_map(|s| s.para.page_break_before)
+            })
+            .unwrap_or(false)
     }
 
     /// The font and size (half-points) a run resolves to: its direct props,
@@ -867,6 +1119,13 @@ fn len(path: &str, pt: f32) -> StyleProp {
     StyleProp {
         path: path.into(),
         value: PropValue::Length(pt),
+    }
+}
+
+fn text(path: &str, v: &str) -> StyleProp {
+    StyleProp {
+        path: path.into(),
+        value: PropValue::Text(v.into()),
     }
 }
 

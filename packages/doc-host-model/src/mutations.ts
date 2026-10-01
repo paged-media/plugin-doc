@@ -329,13 +329,21 @@ export function buildStory(ir: LoweredDoc, storyId: string): StoryStep[] {
   return buildStoryBlocks(ir.story.blocks, storyId);
 }
 
-/** ADR 029 — the story's blocks split per Word section, in order, using each
- *  section's `firstBlock` (blocks map 1:1 to Word body blocks). A lowering
- *  without `sections` is one section holding every block. */
+/** ADR 029 — the story's blocks split per native STORY of the standalone
+ *  skeleton, in order: one group per run of consecutive sections sharing a
+ *  `story` (a continuous section Word keeps on the same page joins the story
+ *  before it), cut at each story's first section's `firstBlock` (blocks map
+ *  1:1 to Word body blocks). Index k pours into the skeleton's k-th story.
+ *  A section without `story` is its own story; a lowering without `sections`
+ *  is one story holding every block. */
 export function sectionBlocks(ir: LoweredDoc): LoweredBlock[][] {
   const blocks = ir.story.blocks;
   const sections = ir.sections && ir.sections.length > 0 ? ir.sections : [ir.section];
-  const starts = sections.map((s) => s.firstBlock ?? 0);
+  const starts: number[] = [];
+  sections.forEach((s, k) => {
+    const joins = k > 0 && s.story !== undefined && s.story === sections[k - 1].story;
+    if (!joins) starts.push(s.firstBlock ?? 0);
+  });
   return starts.map((start, k) => blocks.slice(start, k + 1 < starts.length ? starts[k + 1] : blocks.length));
 }
 

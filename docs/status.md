@@ -257,7 +257,14 @@ ops use.)
   the engine's break-before rule `paragraphStartParagraph`, core protocol 64,
   matched against Word's own page map `docx-conformance/fixtures/
   breaks.word.json`; an older engine refuses the rule and loses only the
-  breaks, with a warning. `continuous` sections still start a new page.)
+  breaks, with a warning. `continuous` / `nextColumn` sections now join the
+  story of the page they continue, matched against Word's page map
+  `docx-conformance/fixtures/continuous.word.json` (rules in
+  `docx-lower/src/sections.rs`): same geometry joins invisibly; other
+  left/right margins join as paragraph indents; other top/bottom margins join
+  with a diagnostic (later pages keep the earlier margins); another page size
+  is Word's own new page; a COLUMN-COUNT change mid-page still opens a new
+  page, with a warning — the engine has no IDML split/span columns.)
   (Numbering/lists, tables, inline images, hyperlinks and footnotes have SHIPPED
   — see the tier sections above.)
 - **In-editor live render / real `host.nativeDocument`** — the bundle is written to

@@ -1,0 +1,598 @@
+{
+ "fixture": "docx_conformance::continuous_docx() (sections: docx_conformance::CONTINUOUS_CASES)",
+ "produced_by": "scripts/word-continuous-probe.sh (Microsoft Word 16, PDF export, macOS)",
+ "measured": "2026-10-01",
+ "method": "pdftotext -bbox: per page its size and, per line, the label (first word), x (left edge of the first word) and top (top of its bbox), in pt from the page's top-left. Base page 360 x 312 pt, 0.5 in margins, 12 pt exact lines: a line's top is margin_top + 12 n + ~2.03, a column-2 line's x is 36.02 + 126 + 36",
+ "fonts_used_by_word": [
+  "Calibri (Inter missing)",
+  "Aptos"
+ ],
+ "page_count": 10,
+ "pages": [
+  {
+   "page": 1,
+   "size_pt": [
+    360.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "A1-01",
+     "x": 36.02,
+     "top": 38.02
+    },
+    {
+     "label": "A1-02",
+     "x": 36.02,
+     "top": 50.05
+    },
+    {
+     "label": "A1-03",
+     "x": 36.02,
+     "top": 62.05
+    },
+    {
+     "label": "A1-04",
+     "x": 36.02,
+     "top": 74.07
+    },
+    {
+     "label": "A2-01",
+     "x": 36.02,
+     "top": 86.08
+    },
+    {
+     "label": "A2-02",
+     "x": 36.02,
+     "top": 98.07
+    },
+    {
+     "label": "A2-03",
+     "x": 36.02,
+     "top": 110.1
+    },
+    {
+     "label": "A2-04",
+     "x": 36.02,
+     "top": 122.1
+    },
+    {
+     "label": "A3-01",
+     "x": 36.02,
+     "top": 134.12
+    },
+    {
+     "label": "A3-02",
+     "x": 36.02,
+     "top": 146.12
+    },
+    {
+     "label": "A3-03",
+     "x": 36.02,
+     "top": 158.12
+    },
+    {
+     "label": "A3-04",
+     "x": 36.02,
+     "top": 170.15
+    },
+    {
+     "label": "A3-05",
+     "x": 36.02,
+     "top": 182.15
+    },
+    {
+     "label": "A3-06",
+     "x": 36.02,
+     "top": 194.17
+    },
+    {
+     "label": "A3-07",
+     "x": 36.02,
+     "top": 206.18
+    },
+    {
+     "label": "A3-08",
+     "x": 36.02,
+     "top": 218.18
+    },
+    {
+     "label": "A3-09",
+     "x": 36.02,
+     "top": 230.2
+    },
+    {
+     "label": "A3-10",
+     "x": 36.02,
+     "top": 242.2
+    },
+    {
+     "label": "A3-11",
+     "x": 36.02,
+     "top": 254.2
+    },
+    {
+     "label": "A3-12",
+     "x": 36.02,
+     "top": 266.23
+    }
+   ],
+   "note": "(a) A2 and A3 are continuous with the same page and columns: their lines follow A1's with no gap; 20 lines fill the page"
+  },
+  {
+   "page": 2,
+   "size_pt": [
+    360.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "A3-13",
+     "x": 36.02,
+     "top": 38.02
+    },
+    {
+     "label": "A3-14",
+     "x": 36.02,
+     "top": 50.05
+    },
+    {
+     "label": "A3-15",
+     "x": 36.02,
+     "top": 62.05
+    },
+    {
+     "label": "A3-16",
+     "x": 36.02,
+     "top": 74.07
+    }
+   ],
+   "note": "(a) A3 runs on to the next page at the top margin like any other line"
+  },
+  {
+   "page": 3,
+   "size_pt": [
+    360.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "B1-01",
+     "x": 36.02,
+     "top": 38.02
+    },
+    {
+     "label": "B1-02",
+     "x": 36.02,
+     "top": 50.05
+    },
+    {
+     "label": "B1-03",
+     "x": 36.02,
+     "top": 62.05
+    },
+    {
+     "label": "B2-01",
+     "x": 36.02,
+     "top": 74.07
+    },
+    {
+     "label": "B2-02",
+     "x": 36.02,
+     "top": 86.08
+    },
+    {
+     "label": "B2-03",
+     "x": 36.02,
+     "top": 98.07
+    },
+    {
+     "label": "B2-04",
+     "x": 36.02,
+     "top": 110.1
+    },
+    {
+     "label": "B2-05",
+     "x": 36.02,
+     "top": 122.1
+    },
+    {
+     "label": "B3-01",
+     "x": 36.02,
+     "top": 134.12
+    },
+    {
+     "label": "B3-02",
+     "x": 36.02,
+     "top": 146.12
+    },
+    {
+     "label": "B3-03",
+     "x": 36.02,
+     "top": 158.12
+    },
+    {
+     "label": "B4-01",
+     "x": 36.02,
+     "top": 170.15
+    },
+    {
+     "label": "B4-02",
+     "x": 36.02,
+     "top": 182.15
+    },
+    {
+     "label": "B4-03",
+     "x": 36.02,
+     "top": 194.17
+    },
+    {
+     "label": "B4-04",
+     "x": 36.02,
+     "top": 206.18
+    },
+    {
+     "label": "B4-05",
+     "x": 36.02,
+     "top": 218.18
+    },
+    {
+     "label": "B4-06",
+     "x": 36.02,
+     "top": 230.2
+    },
+    {
+     "label": "B2-06",
+     "x": 198.15,
+     "top": 74.07
+    },
+    {
+     "label": "B2-07",
+     "x": 198.15,
+     "top": 86.08
+    },
+    {
+     "label": "B2-08",
+     "x": 198.15,
+     "top": 98.07
+    },
+    {
+     "label": "B2-09",
+     "x": 198.15,
+     "top": 110.1
+    }
+   ],
+   "note": "(b) B2 is continuous in two columns: it starts under B1 mid-page and Word BALANCES its 9 lines 5/4 (B2-06..09 in column 2, x 198.15); B3 (one column) starts below the balanced block; B4 (two columns, followed by a nextPage section) is NOT balanced: all 6 lines stay in column 1"
+  },
+  {
+   "page": 4,
+   "size_pt": [
+    360.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "D1-01",
+     "x": 36.02,
+     "top": 38.02
+    },
+    {
+     "label": "D1-02",
+     "x": 36.02,
+     "top": 50.05
+    },
+    {
+     "label": "D1-03",
+     "x": 36.02,
+     "top": 62.05
+    },
+    {
+     "label": "D2-01",
+     "x": 198.15,
+     "top": 38.02
+    },
+    {
+     "label": "D2-02",
+     "x": 198.15,
+     "top": 50.05
+    },
+    {
+     "label": "D2-03",
+     "x": 198.15,
+     "top": 62.05
+    }
+   ],
+   "note": "(d) D2 is nextColumn: it opens column 2 of the same page"
+  },
+  {
+   "page": 5,
+   "size_pt": [
+    360.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "C1-01",
+     "x": 36.02,
+     "top": 38.02
+    },
+    {
+     "label": "C1-02",
+     "x": 36.02,
+     "top": 50.05
+    },
+    {
+     "label": "C1-03",
+     "x": 36.02,
+     "top": 62.05
+    },
+    {
+     "label": "C2-01",
+     "x": 108.07,
+     "top": 74.07
+    },
+    {
+     "label": "C2-02",
+     "x": 108.07,
+     "top": 86.08
+    },
+    {
+     "label": "C2-03",
+     "x": 108.07,
+     "top": 98.07
+    },
+    {
+     "label": "C3-01",
+     "x": 36.02,
+     "top": 110.1
+    },
+    {
+     "label": "C3-02",
+     "x": 36.02,
+     "top": 122.1
+    },
+    {
+     "label": "C3-03",
+     "x": 36.02,
+     "top": 134.12
+    }
+   ],
+   "note": "(c1) C2 is continuous with left 1.5 in / right 1 in margins: Word applies them at once, mid-page (x 108.07 = 36.02 + 72); C3 returns to 0.5 in at once (x 36.02)"
+  },
+  {
+   "page": 6,
+   "size_pt": [
+    360.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "E1-01",
+     "x": 36.02,
+     "top": 38.02
+    },
+    {
+     "label": "E1-02",
+     "x": 36.02,
+     "top": 50.05
+    },
+    {
+     "label": "E1-03",
+     "x": 36.02,
+     "top": 62.05
+    },
+    {
+     "label": "E2-01",
+     "x": 36.02,
+     "top": 74.07
+    },
+    {
+     "label": "E2-02",
+     "x": 36.02,
+     "top": 86.08
+    },
+    {
+     "label": "E2-03",
+     "x": 36.02,
+     "top": 98.07
+    },
+    {
+     "label": "E2-04",
+     "x": 36.02,
+     "top": 110.1
+    },
+    {
+     "label": "E2-05",
+     "x": 36.02,
+     "top": 122.1
+    },
+    {
+     "label": "E2-06",
+     "x": 36.02,
+     "top": 134.12
+    },
+    {
+     "label": "E2-07",
+     "x": 36.02,
+     "top": 146.12
+    },
+    {
+     "label": "E2-08",
+     "x": 36.02,
+     "top": 158.12
+    },
+    {
+     "label": "E2-09",
+     "x": 36.02,
+     "top": 170.15
+    },
+    {
+     "label": "E2-10",
+     "x": 36.02,
+     "top": 182.15
+    },
+    {
+     "label": "E2-11",
+     "x": 36.02,
+     "top": 194.17
+    },
+    {
+     "label": "E2-12",
+     "x": 36.02,
+     "top": 206.18
+    },
+    {
+     "label": "E2-13",
+     "x": 36.02,
+     "top": 218.18
+    },
+    {
+     "label": "E2-14",
+     "x": 36.02,
+     "top": 230.2
+    },
+    {
+     "label": "E2-15",
+     "x": 36.02,
+     "top": 242.2
+    },
+    {
+     "label": "E2-16",
+     "x": 36.02,
+     "top": 254.2
+    },
+    {
+     "label": "E2-17",
+     "x": 36.02,
+     "top": 266.23
+    }
+   ],
+   "note": "(c2) E2 is continuous with 1 in top/bottom margins: it continues on this page under the OLD margins (20 lines down to the old 0.5 in bottom margin)"
+  },
+  {
+   "page": 7,
+   "size_pt": [
+    360.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "E2-18",
+     "x": 36.02,
+     "top": 74.07
+    },
+    {
+     "label": "E2-19",
+     "x": 36.02,
+     "top": 86.08
+    },
+    {
+     "label": "E2-20",
+     "x": 36.02,
+     "top": 98.07
+    },
+    {
+     "label": "E2-21",
+     "x": 36.02,
+     "top": 110.1
+    },
+    {
+     "label": "E2-22",
+     "x": 36.02,
+     "top": 122.1
+    },
+    {
+     "label": "E2-23",
+     "x": 36.02,
+     "top": 134.12
+    },
+    {
+     "label": "E2-24",
+     "x": 36.02,
+     "top": 146.12
+    },
+    {
+     "label": "E2-25",
+     "x": 36.02,
+     "top": 158.12
+    }
+   ],
+   "note": "(c2) the next page uses E2's 1 in top margin (first line top 74.07 = 72 + 2.07)"
+  },
+  {
+   "page": 8,
+   "size_pt": [
+    360.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "F1-01",
+     "x": 36.02,
+     "top": 38.02
+    },
+    {
+     "label": "F1-02",
+     "x": 36.02,
+     "top": 50.05
+    },
+    {
+     "label": "F1-03",
+     "x": 36.02,
+     "top": 62.05
+    }
+   ],
+   "note": "(c3) F1, one page"
+  },
+  {
+   "page": 9,
+   "size_pt": [
+    432.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "F2-01",
+     "x": 36.02,
+     "top": 38.02
+    },
+    {
+     "label": "F2-02",
+     "x": 36.02,
+     "top": 50.05
+    },
+    {
+     "label": "F2-03",
+     "x": 36.02,
+     "top": 62.05
+    }
+   ],
+   "note": "(c3) F2 is continuous with another page size (6 in wide): Word starts a NEW page, at F2's size"
+  },
+  {
+   "page": 10,
+   "size_pt": [
+    360.0,
+    312.0
+   ],
+   "lines": [
+    {
+     "label": "G1-01",
+     "x": 36.02,
+     "top": 38.02
+    },
+    {
+     "label": "G1-02",
+     "x": 36.02,
+     "top": 50.05
+    },
+    {
+     "label": "G1-03",
+     "x": 36.02,
+     "top": 62.05
+    }
+   ],
+   "note": "G1 (nextPage), back to the base page"
+  }
+ ]
+}

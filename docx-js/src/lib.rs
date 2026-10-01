@@ -81,15 +81,14 @@ mod wasm {
                 .map_err(|e| JsValue::from_str(&e))
         }
 
-        /// The section story ids of the skeleton, in section order, as JSON.
+        /// The story ids of the skeleton, in story order, as JSON (sections
+        /// that continue a page share their story, ADR 029).
         pub fn skeleton_stories(&self) -> Result<String, JsValue> {
             let session = self
                 .session
                 .as_ref()
                 .ok_or_else(|| JsValue::from_str("no document loaded"))?;
-            let ids: Vec<String> = (0..session.model().sections.len())
-                .map(docx_skeleton::section_story_id)
-                .collect();
+            let ids = docx_skeleton::story_ids(session.model());
             serde_json::to_string(&ids).map_err(|e| JsValue::from_str(&e.to_string()))
         }
 

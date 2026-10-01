@@ -124,6 +124,11 @@ export interface LoweredSection {
   columns: number;
   /** ADR 029 — index into `story.blocks` of this section's first block. */
   firstBlock?: number;
+  /** ADR 029 — the native story (skeleton page) this section pours into.
+   *  Consecutive sections share one when Word continues the later section on
+   *  the same page (continuous / nextColumn). Absent from older lowerings:
+   *  every section is its own story. */
+  story?: number;
 }
 
 export interface Diagnostic {

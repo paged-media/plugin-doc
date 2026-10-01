@@ -599,6 +599,130 @@ pub fn breaks_docx() -> Vec<u8> {
     ])
 }
 
+/// One section of [`continuous_docx`]: its label prefix, how it starts, its
+/// paragraph count, column count, page size and margins (twips).
+#[derive(Debug, Clone, Copy)]
+pub struct ContinuousCase {
+    /// Paragraph label prefix (`"A2"` → `"A2-01 …"`).
+    pub label: &'static str,
+    /// `w:type/@w:val`.
+    pub kind: &'static str,
+    pub lines: u32,
+    pub columns: u32,
+    /// `w:pgSz` `(w, h)`.
+    pub page: (i32, i32),
+    /// `w:pgMar` `(top, right, bottom, left)`.
+    pub margins: (i32, i32, i32, i32),
+}
+
+/// The base page of [`continuous_docx`]: 5 in × 4⅓ in.
+pub const CONTINUOUS_PAGE: (i32, i32) = (7200, 6240);
+/// The base margins: 0.5 in all round → a 288 pt × 240 pt body = twenty
+/// 12 pt lines (two 126 pt columns with the 36 pt gap).
+pub const CONTINUOUS_MARGINS: (i32, i32, i32, i32) = (720, 720, 720, 720);
+
+/// The sections of [`continuous_docx`], in order.
+pub const CONTINUOUS_CASES: &[ContinuousCase] = {
+    const P: (i32, i32) = CONTINUOUS_PAGE;
+    const M: (i32, i32, i32, i32) = CONTINUOUS_MARGINS;
+    const fn c(
+        label: &'static str,
+        kind: &'static str,
+        lines: u32,
+        columns: u32,
+        page: (i32, i32),
+        margins: (i32, i32, i32, i32),
+    ) -> ContinuousCase {
+        ContinuousCase {
+            label,
+            kind,
+            lines,
+            columns,
+            page,
+            margins,
+        }
+    }
+    &[
+        // (a) same geometry, same columns: an invisible boundary. A3 runs
+        //     past the page.
+        c("A1", "nextPage", 4, 1, P, M),
+        c("A2", "continuous", 4, 1, P, M),
+        c("A3", "continuous", 16, 1, P, M),
+        // (b) one column → two → one (the newsletter), then two columns
+        //     that a nextPage section follows.
+        c("B1", "nextPage", 3, 1, P, M),
+        c("B2", "continuous", 9, 2, P, M),
+        c("B3", "continuous", 3, 1, P, M),
+        c("B4", "continuous", 6, 2, P, M),
+        // (d) a nextColumn section in two columns.
+        c("D1", "nextPage", 3, 2, P, M),
+        c("D2", "nextColumn", 3, 2, P, M),
+        // (c1) continuous with other LEFT/RIGHT margins, then back.
+        c("C1", "nextPage", 3, 1, P, M),
+        c("C2", "continuous", 3, 1, P, (720, 1440, 720, 2160)),
+        c("C3", "continuous", 3, 1, P, M),
+        // (c2) continuous with other TOP/BOTTOM margins, running past the
+        //      page.
+        c("E1", "nextPage", 3, 1, P, M),
+        c("E2", "continuous", 25, 1, P, (1440, 720, 1440, 720)),
+        // (c3) continuous with another PAGE SIZE.
+        c("F1", "nextPage", 3, 1, P, M),
+        c("F2", "continuous", 3, 1, (8640, 6240), M),
+        c("G1", "nextPage", 3, 1, P, M),
+    ]
+};
+
+/// ADR 029 — continuous-section ground truth: where Word puts a section that
+/// starts `continuous` (and one `nextColumn`), in every case that decides the
+/// lowering (`scripts/word-continuous-probe.sh`; `fixtures/continuous.word.json`
+/// records the answer). The sections are [`CONTINUOUS_CASES`]; every
+/// paragraph is one line labelled `<section>-NN` (Inter 10 pt on an exact
+/// 12 pt grid, as [`breaks_docx`]), so each line's page, column and position
+/// read straight off the PDF.
+pub fn continuous_docx() -> Vec<u8> {
+    let mut body = String::new();
+    let sect = |c: &ContinuousCase| {
+        let (w, h) = c.page;
+        let (t, r, b, l) = c.margins;
+        format!(
+            r#"<w:sectPr><w:type w:val="{kind}"/><w:pgSz w:w="{w}" w:h="{h}"/><w:pgMar w:top="{t}" w:right="{r}" w:bottom="{b}" w:left="{l}" w:header="360" w:footer="360" w:gutter="0"/><w:cols w:num="{cols}" w:space="720"/></w:sectPr>"#,
+            kind = c.kind,
+            cols = c.columns,
+        )
+    };
+    let last = CONTINUOUS_CASES.len() - 1;
+    for (k, case) in CONTINUOUS_CASES.iter().enumerate() {
+        for n in 1..=case.lines {
+            // A section's sectPr rides its LAST paragraph; the final
+            // section's is the body-level one.
+            let s = if n == case.lines && k != last {
+                sect(case)
+            } else {
+                String::new()
+            };
+            body.push_str(&breaks_para(
+                "",
+                &breaks_run(&format!("{}-{n:02} {}", case.label, case.kind)),
+                &s,
+            ));
+        }
+    }
+    let tail = sect(&CONTINUOUS_CASES[last]);
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}{tail}</w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+    ])
+}
+
 /// A document with a Normal paragraph, a centered Heading1 paragraph, and a
 /// paragraph mixing a plain run with a bold red run — enough to exercise style
 /// application, direct-format synthesis, and swatch minting. Also carries an

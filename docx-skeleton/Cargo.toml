@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 docx-core.workspace = true
+docx-lower.workspace = true
 paged-model.workspace = true
 paged-scene.workspace = true
 paged-store.workspace = true

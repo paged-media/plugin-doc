@@ -258,6 +258,11 @@ pub struct LoweredSection {
     /// (blocks map 1:1 to Word body blocks); it runs to the next section's.
     #[serde(default)]
     pub first_block: usize,
+    /// ADR 029 — the native story (skeleton page) this section pours into.
+    /// Consecutive sections share one when Word continues the later on the
+    /// same page (`continuous` / `nextColumn`, see `sections`).
+    #[serde(default)]
+    pub story: usize,
 }
 
 impl Default for LoweredSection {
@@ -272,6 +277,7 @@ impl Default for LoweredSection {
             margin_right_pt: 72.0,
             columns: 1,
             first_block: 0,
+            story: 0,
         }
     }
 }
@@ -291,6 +297,14 @@ impl Diagnostic {
     pub fn info(message: impl Into<String>, tier: u8) -> Self {
         Diagnostic {
             severity: "info".into(),
+            message: message.into(),
+            tier,
+        }
+    }
+
+    pub fn warning(message: impl Into<String>, tier: u8) -> Self {
+        Diagnostic {
+            severity: "warning".into(),
             message: message.into(),
             tier,
         }

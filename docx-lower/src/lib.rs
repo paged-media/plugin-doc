@@ -42,6 +42,9 @@ use docx_core::{
 
 pub mod ir;
 pub mod line_height;
+pub mod sections;
+
+use sections::SectionPlacement;
 
 use ir::{
     Diagnostic, LoweredBlock, LoweredCell, LoweredDoc, LoweredImage, LoweredParagraph, LoweredRun,
@@ -164,17 +167,37 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
     //    a page/column break, or the part of a paragraph after a break inside
     //    it. (`nextPage` sections need no rule: each section is its own story
     //    on its own page, ADR 029 addendum.)
-    let section_starts: Vec<(usize, SectionKind)> = doc
+    //
+    //    `continuous` / `nextColumn` sections JOIN the story before them when
+    //    the native model can say what Word does (`sections` has the rules and
+    //    Word's measurements): no break, a `NextColumn` rule, or the margin
+    //    difference as paragraph indents.
+    let placements = sections::place_sections(&doc.sections, &mut ctx.diagnostics);
+    let section_starts: Vec<(usize, SectionKind, Option<&SectionPlacement>)> = doc
         .sections
         .iter()
-        .map(|s| (s.first_block, s.kind))
+        .enumerate()
+        .map(|(k, s)| {
+            // A section joining the story before it, or `None` for a story's
+            // first section.
+            let joined = placements
+                .get(k)
+                .filter(|p| k > 0 && placements.get(k - 1).map(|q| q.story) == Some(p.story));
+            (s.first_block, s.kind, joined)
+        })
         .collect();
-    let starts_section = |idx: usize| section_starts.iter().find(|(first, _)| *first == idx);
+    let starts_section = |idx: usize| section_starts.iter().find(|(first, _, _)| *first == idx);
+    // A new STORY starts at `idx` (a section that does not join).
+    let starts_story = |idx: usize| starts_section(idx).is_some_and(|(_, _, j)| j.is_none());
     let mut blocks = Vec::new();
     let mut carry: Option<BreakKind> = None;
     for (idx, block) in doc.body.iter().enumerate() {
         let section_start = starts_section(idx);
-        if section_start.is_some() && idx > 0 {
+        if let Some((_, _, joined)) = section_start {
+            let (l, r) = joined.map_or((0.0, 0.0), |p| (p.indent_left_pt, p.indent_right_pt));
+            ctx.section_indent = (l, r);
+        }
+        if starts_story(idx) && idx > 0 {
             if let Some(kind) = carry.take() {
                 ctx.diagnostics.push(Diagnostic::info(
                     format!(
@@ -193,15 +216,19 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
         }
         // The FIRST section's kind is not applied: it has nothing before it
         // to start after, and Word was not asked about it.
-        let entry = match section_start.filter(|_| idx > 0).map(|(_, kind)| *kind) {
-            Some(SectionKind::OddPage) => Some("NextOddPage"),
-            Some(SectionKind::EvenPage) => Some("NextEvenPage"),
+        let entry = match section_start.filter(|_| idx > 0) {
+            Some((_, SectionKind::OddPage, _)) => Some("NextOddPage"),
+            Some((_, SectionKind::EvenPage, _)) => Some("NextEvenPage"),
+            Some((_, _, Some(p))) if p.next_column => Some("NextColumn"),
             _ => None,
         };
         match block {
             Block::Paragraph(p) => {
+                // A trailing break carries to the next block when that is a
+                // paragraph of the same STORY (a joined section's first
+                // paragraph included).
                 let next_in_section = matches!(doc.body.get(idx + 1), Some(Block::Paragraph(_)))
-                    && starts_section(idx + 1).is_none();
+                    && !starts_story(idx + 1);
                 let start = stronger(entry, carry.take().map(break_rule));
                 let (para, tail) =
                     ctx.lower_body_paragraph(p, idx as u32, start, Some(next_in_section));
@@ -215,6 +242,16 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
                             "the section at body block {idx} starts with a table, which \
                              cannot carry its {rule} start; it starts on the section's \
                              own page whatever that page's parity"
+                        ),
+                        3,
+                    ));
+                }
+                if ctx.section_indent != (0.0, 0.0) {
+                    ctx.diagnostics.push(Diagnostic::info(
+                        format!(
+                            "the table at body block {idx} is in a continuous section with \
+                             other left/right margins; its paragraphs keep the margins of \
+                             the page it continues"
                         ),
                         3,
                     ));
@@ -364,7 +401,11 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
     } else {
         doc.sections
             .iter()
-            .map(|s| lower_section(Some(s)))
+            .zip(&placements)
+            .map(|(s, p)| LoweredSection {
+                story: p.story,
+                ..lower_section(Some(s))
+            })
             .collect()
     };
     let styles = ctx.ordered_styles();
@@ -410,6 +451,10 @@ struct Lowering {
     unmeasured_faces: BTreeSet<String>,
     /// Page/column breaks (`w:br`) seen in body paragraphs.
     breaks: u32,
+    /// The extra (left, right) indent in pt of the section being lowered:
+    /// a continuous section with other margins, joined to the story before
+    /// it (`sections`). Body paragraphs only.
+    section_indent: (f32, f32),
 }
 
 impl Lowering {
@@ -659,6 +704,9 @@ impl Lowering {
         }
         if let Some(list) = &p.list {
             props.extend(list_props(list));
+        }
+        if can_carry.is_some() && self.section_indent != (0.0, 0.0) {
+            self.add_section_indent(p, &mut props);
         }
         let mut para_style_id = if props.is_empty() {
             // No direct formatting or list: apply the paragraph's style, or the
@@ -930,6 +978,39 @@ impl Lowering {
         out
     }
 
+    /// ADR 029 — a continuous section with other left/right margins joins
+    /// the story before it (`sections`): Word measures a paragraph's indents
+    /// from its SECTION's margins, so the margin difference adds to the
+    /// paragraph's own resolved indents (direct, list, style chain,
+    /// docDefaults; the last one pushed wins, as the host applies them).
+    fn add_section_indent(&self, p: &docx_core::Paragraph, props: &mut Vec<StyleProp>) {
+        let (dl, dr) = self.section_indent;
+        let chain = self.style_chain(p.style_id.as_deref());
+        let resolved = |path: &str, pick: fn(&ParaProps) -> Option<i32>| -> f32 {
+            props
+                .iter()
+                .rev()
+                .find(|sp| sp.path == path)
+                .and_then(|sp| match sp.value {
+                    PropValue::Length(v) => Some(v),
+                    _ => None,
+                })
+                .or_else(|| chain.iter().find_map(|s| pick(&s.para)).map(twip_to_pt))
+                .or_else(|| pick(&self.word_defaults.para).map(twip_to_pt))
+                .unwrap_or(0.0)
+        };
+        let left = resolved("paragraphLeftIndent", |pp| pp.left_indent) + dl;
+        let right = resolved("paragraphRightIndent", |pp| pp.right_indent) + dr;
+        if dl != 0.0 {
+            props.retain(|sp| sp.path != "paragraphLeftIndent");
+            props.push(len("paragraphLeftIndent", left));
+        }
+        if dr != 0.0 {
+            props.retain(|sp| sp.path != "paragraphRightIndent");
+            props.push(len("paragraphRightIndent", right));
+        }
+    }
+
     /// A paragraph style and its `basedOn` ancestors, nearest first
     /// (depth-bounded against malformed cycles).
     fn style_chain(&self, id: Option<&str>) -> Vec<&Style> {
@@ -1179,6 +1260,7 @@ fn lower_section(section: Option<&Section>) -> LoweredSection {
         margin_right_pt: twip_to_pt(s.margin_right),
         columns: s.columns.max(1),
         first_block: s.first_block,
+        story: 0,
     }
 }
 

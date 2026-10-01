@@ -229,6 +229,7 @@ dependencies = [
  "docx-conformance",
  "docx-core",
  "docx-import",
+ "docx-lower",
  "paged-model",
  "paged-scene",
  "paged-store",

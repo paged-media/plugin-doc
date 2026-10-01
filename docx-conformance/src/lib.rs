@@ -73,6 +73,57 @@ const STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   </w:style>
 </w:styles>"#;
 
+/// thoughts ADR 029 — pagination ground truth: what Word itself does with
+/// sections, margins and page breaks, to measure standalone open against
+/// (`scripts/word-pagination-probe.sh` exports it from Word as PDF).
+///
+/// Every paragraph is one line on an exact 12 pt grid (Inter 10 pt,
+/// `w:spacing w:line="240" w:lineRule="exact"`, no space before/after), so a
+/// page holds `body height / 12` lines and a misplaced break shows as a
+/// numbered paragraph on the wrong page.
+///
+/// - Section 1: US Letter, 1 in margins → 648 pt body = 54 lines. 120
+///   paragraphs (`S1 P001`…), so three pages by line count. `S1 P054`, the
+///   last line of page 1, carries `w:keepNext`: Word must move it to page 2.
+/// - Section 2 (`nextPage`): A5 landscape, 0.5 in margins → ~347 pt body =
+///   28 lines. 40 paragraphs (`S2 P001`…).
+pub fn pagination_docx() -> Vec<u8> {
+    fn para(text: &str, keep_next: bool) -> String {
+        format!(
+            r#"<w:p><w:pPr>{keep}<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="exact"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Inter" w:hAnsi="Inter" w:cs="Inter"/><w:sz w:val="20"/></w:rPr><w:t xml:space="preserve">{text}</w:t></w:r></w:p>"#,
+            keep = if keep_next { "<w:keepNext/>" } else { "" },
+        )
+    }
+    let mut body = String::new();
+    for n in 1..=120 {
+        let mut p = para(&format!("S1 P{n:03} of the first section."), n == 54);
+        if n == 120 {
+            // The section break rides the section's LAST paragraph.
+            p = p.replace(
+                "<w:pPr>",
+                r#"<w:pPr><w:sectPr><w:type w:val="nextPage"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>"#,
+            );
+        }
+        body.push_str(&p);
+    }
+    for n in 1..=40 {
+        body.push_str(&para(&format!("S2 P{n:03} of the second section."), false));
+    }
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}<w:sectPr><w:type w:val="nextPage"/><w:pgSz w:w="11906" w:h="8391" w:orient="landscape"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/></w:sectPr></w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+    ])
+}
+
 /// A document with a Normal paragraph, a centered Heading1 paragraph, and a
 /// paragraph mixing a plain run with a bold red run — enough to exercise style
 /// application, direct-format synthesis, and swatch minting. Also carries an

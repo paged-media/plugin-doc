@@ -1,0 +1,12 @@
+{
+  "fixture": "docx_conformance::pagination_docx()",
+  "produced_by": "scripts/word-pagination-probe.sh (Microsoft Word 16, PDF export)",
+  "measured": "2026-10-01",
+  "pages": [
+    { "size_pt": [612.0, 792.0],  "lines": 53, "first": "S1 P001", "last": "S1 P053" },
+    { "size_pt": [612.0, 792.0],  "lines": 54, "first": "S1 P054", "last": "S1 P107", "note": "S1 P054 carries keepNext: Word moved it here" },
+    { "size_pt": [612.0, 792.0],  "lines": 13, "first": "S1 P108", "last": "S1 P120" },
+    { "size_pt": [595.25, 419.5], "lines": 28, "first": "S2 P001", "last": "S2 P028" },
+    { "size_pt": [595.25, 419.5], "lines": 12, "first": "S2 P029", "last": "S2 P040" }
+  ]
+}

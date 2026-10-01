@@ -138,6 +138,58 @@ fn justification_idml(j: Justification) -> &'static str {
     }
 }
 
+/// Blank lines that cannot keep different styles. A Word blank line (an
+/// empty paragraph) pours as an empty native paragraph, styled by a caret
+/// `applyStyle` at its offset in the contiguous character space (core
+/// `65cf615`). It has no characters, so consecutive blank lines share one
+/// offset, as do blank lines on either side of a table (whose host paragraph
+/// has none either), and a caret styles all of them at once. The pour applies
+/// the carets last, so they are never refused, and the LAST one wins: where
+/// such a group has different styles in Word, they all take the last one's,
+/// and their line heights may differ from Word's. Reported, not hidden.
+fn blank_line_styles(
+    blocks: &[LoweredBlock],
+    starts_story: &dyn Fn(usize) -> bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let blank = |b: &LoweredBlock| matches!(b, LoweredBlock::Paragraph(p) if p.runs.is_empty() && p.segments.is_empty());
+    let mut group: Vec<(usize, Option<&str>)> = Vec::new();
+    let mut flush = |group: &mut Vec<(usize, Option<&str>)>| {
+        let last_styled = group.iter().rev().find_map(|(_, s)| *s);
+        if group.iter().any(|(_, s)| *s != group[0].1) {
+            let list: Vec<String> = group
+                .iter()
+                .map(|(i, s)| format!("{i} ({})", s.unwrap_or("no style")))
+                .collect();
+            diagnostics.push(Diagnostic::warning(
+                format!(
+                    "blank lines at body blocks {} have different paragraph styles; \
+                     the engine styles blank lines at one position together, so they \
+                     all take {} and may not have Word's line heights",
+                    list.join(", "),
+                    last_styled.unwrap_or("the default style"),
+                ),
+                1,
+            ));
+        }
+        group.clear();
+    };
+    for (idx, block) in blocks.iter().enumerate() {
+        if starts_story(idx) {
+            flush(&mut group);
+        }
+        match block {
+            LoweredBlock::Paragraph(p) if blank(block) => {
+                group.push((idx, p.para_style_id.as_deref()));
+            }
+            // A table has no characters: blank lines on both sides meet.
+            LoweredBlock::Table(_) => {}
+            LoweredBlock::Paragraph(_) => flush(&mut group),
+        }
+    }
+    flush(&mut group);
+}
+
 /// Lower a whole Word document to the native IR.
 pub fn lower(doc: &DocxDocument) -> LoweredDoc {
     let mut ctx = Lowering {
@@ -260,6 +312,7 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
             }
         }
     }
+    blank_line_styles(&blocks, &starts_story, &mut ctx.diagnostics);
     if ctx.breaks > 0 {
         ctx.diagnostics.push(Diagnostic::info(
             format!(

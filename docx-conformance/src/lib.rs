@@ -599,6 +599,104 @@ pub fn breaks_docx() -> Vec<u8> {
     ])
 }
 
+/// One page of [`line_breaks_docx`]: 5 in × 4⅓ in, 0.5 in margins → a
+/// 288 pt × 240 pt body = twenty 12 pt lines.
+const LINE_BREAKS_PAGE: &str = r#"<w:pgSz w:w="7200" w:h="6240"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/>"#;
+
+/// The cases of [`line_breaks_docx`], in document order: a label, the
+/// paragraph's exact line pitch in twips, and its run XML (`""` for a blank
+/// line). `{R}` stands for the fixture's run properties.
+pub const LINE_BREAK_CASES: &[(&str, u32, &str)] = &[
+    ("L01", 240, r#"<w:r>{R}<w:t>L01 one line</w:t></w:r>"#),
+    // A plain `<w:br/>` mid-paragraph, inside one run.
+    (
+        "L02",
+        240,
+        r#"<w:r>{R}<w:t xml:space="preserve">L02a before</w:t><w:br/><w:t xml:space="preserve">L02b after</w:t></w:r>"#,
+    ),
+    // Two in a row: an empty line between.
+    (
+        "L03",
+        240,
+        r#"<w:r>{R}<w:t xml:space="preserve">L03a before</w:t><w:br/><w:br/><w:t xml:space="preserve">L03c after two</w:t></w:r>"#,
+    ),
+    // At the paragraph's end.
+    (
+        "L04",
+        240,
+        r#"<w:r>{R}<w:t xml:space="preserve">L04a ends in br</w:t><w:br/></w:r>"#,
+    ),
+    // `textWrapping`, in a run of its own between two runs.
+    (
+        "L05",
+        240,
+        r#"<w:r>{R}<w:t xml:space="preserve">L05a wrap</w:t></w:r><w:r>{R}<w:br w:type="textWrapping"/></w:r><w:r>{R}<w:t xml:space="preserve">L05b own run</w:t></w:r>"#,
+    ),
+    // `w:cr`.
+    (
+        "L06",
+        240,
+        r#"<w:r>{R}<w:t xml:space="preserve">L06a cr</w:t><w:cr/><w:t xml:space="preserve">L06b after cr</w:t></w:r>"#,
+    ),
+    // One blank line on the 12 pt pitch.
+    ("B01", 240, ""),
+    ("L07", 240, r#"<w:r>{R}<w:t>L07 after blank</w:t></w:r>"#),
+    // Two blank lines on a 24 pt pitch: two lines each, IF they are styled.
+    ("B02", 480, ""),
+    ("B03", 480, ""),
+    (
+        "L08",
+        240,
+        r#"<w:r>{R}<w:t>L08 after tall blanks</w:t></w:r>"#,
+    ),
+    // Page 2: two blank lines with DIFFERENT pitches (24 pt, then 12 pt).
+    // The engine styles blank lines at one offset together (the last wins).
+    ("L09", 240, r#"<w:r>{R}<w:t>L09 page two</w:t></w:r>"#),
+    ("B04", 480, ""),
+    ("B05", 240, ""),
+    (
+        "L10",
+        240,
+        r#"<w:r>{R}<w:t>L10 after mixed blanks</w:t></w:r>"#,
+    ),
+];
+
+/// Plain line breaks and blank lines, as Word lays them out (core
+/// `ab383b1`: U+2028 is a line break inside a paragraph; `65cf615`: a caret
+/// styles a blank line). `scripts/word-line-breaks-probe.sh` has Word export
+/// it as PDF; `fixtures/line-breaks.word.json` records each line's page and
+/// position. Inter 10 pt (Word lays it in Calibri) on an exact pitch per
+/// paragraph ([`LINE_BREAK_CASES`]), every visible line labelled by its
+/// first word; `L09` has `w:pageBreakBefore`, so page 2 starts with it.
+pub fn line_breaks_docx() -> Vec<u8> {
+    let rpr = r#"<w:rPr><w:rFonts w:ascii="Inter" w:hAnsi="Inter" w:cs="Inter"/><w:sz w:val="20"/></w:rPr>"#;
+    let mut body = String::new();
+    for (label, line, runs) in LINE_BREAK_CASES {
+        let pbb = if *label == "L09" {
+            "<w:pageBreakBefore/>"
+        } else {
+            ""
+        };
+        body.push_str(&format!(
+            r#"<w:p><w:pPr>{pbb}<w:spacing w:before="0" w:after="0" w:line="{line}" w:lineRule="exact"/>{rpr}</w:pPr>{}</w:p>"#,
+            runs.replace("{R}", rpr)
+        ));
+    }
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}<w:sectPr>{LINE_BREAKS_PAGE}<w:cols w:space="720"/></w:sectPr></w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+    ])
+}
+
 /// One section of [`continuous_docx`]: its label prefix, how it starts, its
 /// paragraph count, column count, page size and margins (twips).
 #[derive(Debug, Clone, Copy)]

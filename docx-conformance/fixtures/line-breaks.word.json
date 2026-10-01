@@ -1,0 +1,98 @@
+{
+  "fixture": "docx_conformance::line_breaks_docx()",
+  "produced_by": "scripts/word-line-breaks-probe.sh (Microsoft Word 16, PDF export, macOS)",
+  "measured": "2026-10-01",
+  "method": "pdftotext -bbox: per page, every visible line's label (its first word) and top below the 36 pt top margin; line = (top - first top) / 12 on the 12 pt grid. Word laid Inter in Calibri; the exact pitches make that harmless.",
+  "page_size_pt": [
+    360.0,
+    312.0
+  ],
+  "page_count": 2,
+  "pages": [
+    {
+      "page": 1,
+      "lines": [
+        {
+          "label": "L01",
+          "top_pt": 2.02,
+          "line": 0
+        },
+        {
+          "label": "L02a",
+          "top_pt": 14.05,
+          "line": 1
+        },
+        {
+          "label": "L02b",
+          "top_pt": 26.05,
+          "line": 2
+        },
+        {
+          "label": "L03a",
+          "top_pt": 38.07,
+          "line": 3
+        },
+        {
+          "label": "L03c",
+          "top_pt": 62.07,
+          "line": 5,
+          "note": "two <w:br/> in a row: an empty line (4) between L03a and L03c"
+        },
+        {
+          "label": "L04a",
+          "top_pt": 74.1,
+          "line": 6
+        },
+        {
+          "label": "L05a",
+          "top_pt": 98.12,
+          "line": 8,
+          "note": "L04a ends in <w:br/>: Word gives it a second, empty line (7)"
+        },
+        {
+          "label": "L05b",
+          "top_pt": 110.12,
+          "line": 9
+        },
+        {
+          "label": "L06a",
+          "top_pt": 122.12,
+          "line": 10
+        },
+        {
+          "label": "L06b",
+          "top_pt": 134.15,
+          "line": 11
+        },
+        {
+          "label": "L07",
+          "top_pt": 158.17,
+          "line": 13,
+          "note": "B01, one blank line on the 12 pt pitch, is line 12"
+        },
+        {
+          "label": "L08",
+          "top_pt": 218.2,
+          "line": 18,
+          "note": "B02 and B03, blank lines on a 24 pt pitch, take two lines each (14-17)"
+        }
+      ]
+    },
+    {
+      "page": 2,
+      "lines": [
+        {
+          "label": "L09",
+          "top_pt": 2.02,
+          "line": 0
+        },
+        {
+          "label": "L10",
+          "top_pt": 50.08,
+          "line": 4,
+          "note": "B04 (24 pt) and B05 (12 pt), consecutive blank lines with different pitches, take 3 lines (1-3)"
+        }
+      ]
+    }
+  ]
+}

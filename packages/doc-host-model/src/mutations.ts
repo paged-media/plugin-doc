@@ -146,8 +146,21 @@ function poured(
   return { text, ranges, images, links, length: offset - base };
 }
 
+/** A zero-length paragraph-style range: a CARET, which styles the empty
+ *  paragraph(s) at its offset (core `65cf615`). A Word blank line pours as an
+ *  empty native paragraph, which occupies no characters in the contiguous
+ *  space, so a caret is the only range that can name it. */
+function isCaret(r: Range): boolean {
+  return r.scope === "paragraph" && r.start === r.end;
+}
+
 /** insertText + applyStyle + insertAnchoredFrame (inline images) for a
- *  contiguous paragraph run, offsets from `base`. */
+ *  contiguous paragraph run, offsets from `base`.
+ *
+ *  Blank lines (empty paragraphs) are styled with a caret `applyStyle`
+ *  (`start === end`). With `deferCarets`, those are left out of `mutations`
+ *  and returned in `carets` instead, for the caller to apply after the whole
+ *  story is poured (see {@link buildStoryBlocks}). */
 export function buildTextPour(
   paragraphs: LoweredParagraph[],
   storyId: string,
@@ -156,9 +169,11 @@ export function buildTextPour(
   /** Where style/anchor/link RANGES start — the contiguous character space.
    *  Defaults to `textBase` (they coincide only before the first table). */
   styleBase: number = textBase,
-): { mutations: Mutation[]; length: number; byteLength: number } {
+  opts: { deferCarets?: boolean } = {},
+): { mutations: Mutation[]; length: number; byteLength: number; carets: Mutation[] } {
   const { text, ranges, images, links, length } = poured(paragraphs, styleBase);
   const ops: Mutation[] = [];
+  const carets: Mutation[] = [];
   if (text.length > 0) {
     ops.push({
       op: "insertText",
@@ -166,7 +181,9 @@ export function buildTextPour(
     } as Mutation);
   }
   for (const r of ranges.filter((r) => r.scope === "paragraph")) {
-    ops.push(applyStyleOp(storyId, r.start, r.end, r.style, "paragraph"));
+    const op = applyStyleOp(storyId, r.start, r.end, r.style, "paragraph");
+    if (isCaret(r)) carets.push(op);
+    if (!(isCaret(r) && opts.deferCarets)) ops.push(op);
   }
   for (const r of ranges.filter((r) => r.scope === "character")) {
     ops.push(applyStyleOp(storyId, r.start, r.end, r.style, "character"));
@@ -198,8 +215,9 @@ export function buildTextPour(
   }
   // The engine's insertText space counts BYTES, so report UTF-8 length (not code
   // points) for the caller's running text offset.
+  // (U+2028, Word's line break, is 3 bytes here and 1 char in `length`.)
   const byteLength = new TextEncoder().encode(text).length;
-  return { mutations: ops, length, byteLength };
+  return { mutations: ops, length, byteLength, carets };
 }
 
 function applyStyleOp(
@@ -357,22 +375,44 @@ export function pouredParagraphCount(blocks: readonly LoweredBlock[]): number {
   );
 }
 
-/** {@link buildStory} over an explicit block list (one section's blocks). */
+/** {@link buildStory} over an explicit block list (one section's blocks).
+ *
+ *  Blank lines are styled LAST, in a final step, once every paragraph of the
+ *  story exists. A caret styles every empty paragraph at its offset, and
+ *  consecutive blank lines share one offset — so do blank lines on either
+ *  side of a table (a table's host paragraph has no characters). Poured step
+ *  by step, a blank line after a table would meet the already-styled blank
+ *  line before it, and the engine refuses a caret over empty paragraphs whose
+ *  styles differ. Deferred, every caret meets paragraphs that still agree
+ *  (all fresh), so none is refused; where a group of blank lines at one
+ *  offset has different Word styles, the last caret wins for all of them,
+ *  which `docx-lower` reports as a warning. Only the last caret per offset is
+ *  emitted. */
 export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: string): StoryStep[] {
   const steps: StoryStep[] = [];
   let pending: LoweredParagraph[] = [];
+  // Each text step's carets, filled in when the pour runs it (the style base
+  // is only known then).
+  const caretsByStep: Mutation[][] = [];
+  let hasCarets = false;
   const flush = () => {
     if (pending.length === 0) return;
     const paras = pending;
     pending = [];
     const probe = buildTextPour(paras, storyId, 0);
+    const slot = caretsByStep.length;
+    caretsByStep.push([]);
     steps.push({
       kind: "text",
       length: probe.length,
       byteLength: probe.byteLength,
-      mutations: (textBase, styleBase) =>
-        buildTextPour(paras, storyId, textBase, styleBase).mutations,
+      mutations: (textBase, styleBase) => {
+        const out = buildTextPour(paras, storyId, textBase, styleBase, { deferCarets: true });
+        caretsByStep[slot] = out.carets;
+        return out.mutations;
+      },
     });
+    if (probe.carets.length > 0) hasCarets = true;
   };
   for (const block of blocks) {
     if (block.kind === "table") {
@@ -388,6 +428,20 @@ export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: strin
     }
   }
   flush();
+  if (hasCarets) {
+    steps.push({
+      kind: "text",
+      length: 0,
+      byteLength: 0,
+      mutations: () => {
+        const last = new Map<number, Mutation>();
+        for (const op of caretsByStep.flat()) {
+          last.set((op as unknown as { args: { start: number } }).args.start, op);
+        }
+        return [...last.values()];
+      },
+    });
+  }
   return steps;
 }
 

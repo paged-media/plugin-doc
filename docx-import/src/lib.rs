@@ -29,6 +29,7 @@ use docx_core::{
     Block, BreakKind, CellPath, DocxDocument, HeaderFooter, Image, Justification, LineRule,
     LineSpacing, ListKind, ListMarker, Note, ParaProps, Paragraph, Run, RunBreak, RunProps,
     RunSource, Section, SectionKind, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
+    LINE_BREAK,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
@@ -800,7 +801,10 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
             wml::RunChoice::TabChar => text.push('\t'),
             // ADR 028/029 — a page or column break is a pagination
             // instruction, not text: it is recorded at its char offset. A
-            // typeless or `textWrapping` break is a line break.
+            // typeless or `textWrapping` break (and `w:cr`) is a line break
+            // WITHIN the paragraph: U+2028, the engine's forced line break
+            // (one char in the contiguous style space, 3 UTF-8 bytes in
+            // insertText's), never `\n`, which would split the paragraph.
             wml::RunChoice::Break(b) => match b.r#type {
                 Some(wml::BreakValues::Page) => breaks.push(RunBreak {
                     at: text.chars().count(),
@@ -810,9 +814,9 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
                     at: text.chars().count(),
                     kind: BreakKind::Column,
                 }),
-                _ => text.push('\n'),
+                _ => text.push(LINE_BREAK),
             },
-            wml::RunChoice::CarriageReturn => text.push('\n'),
+            wml::RunChoice::CarriageReturn => text.push(LINE_BREAK),
             wml::RunChoice::NoBreakHyphen => text.push('\u{2011}'),
             wml::RunChoice::Drawing(d) => {
                 if image.is_none() {

@@ -158,6 +158,11 @@ pub enum RunSource {
     Field { field_ord: u32, run_ord: u32 },
 }
 
+/// A line break inside a paragraph (U+2028 LINE SEPARATOR): what a Word
+/// text-wrapping `w:br` / `w:cr` is in [`Run::text`], and the engine's forced
+/// line break in `insertText` text (the paragraph stays one paragraph).
+pub const LINE_BREAK: char = '\u{2028}';
+
 /// A Word run (`w:r`): direct character formatting plus its text.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Run {
@@ -165,9 +170,10 @@ pub struct Run {
     pub style_id: Option<String>,
     /// Direct character formatting (`w:rPr`).
     pub props: RunProps,
-    /// The concatenated text of the run's `w:t` children (tabs and
-    /// text-wrapping breaks preserved as `\t` / `\n`). Page and column breaks
-    /// are NOT in the text: they are [`Run::breaks`].
+    /// The concatenated text of the run's `w:t` children (tabs as `\t`;
+    /// text-wrapping breaks `w:br` / `w:cr` as [`LINE_BREAK`], U+2028, a line
+    /// break inside the paragraph). Page and column breaks are NOT in the
+    /// text: they are [`Run::breaks`].
     pub text: String,
     /// `w:br w:type="page"|"column"` in this run, each at the char offset into
     /// [`Run::text`] where it sits (thoughts ADR 028/029: the content after

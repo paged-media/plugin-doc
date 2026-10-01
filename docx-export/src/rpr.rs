@@ -21,13 +21,39 @@
 //! `CT_RPr` child order. `w:`-prefixed element names resolve against the
 //! `xmlns:w` decl on the root element (copied verbatim in the surrounding bytes).
 
-use docx_core::{Justification, ParaProps, RunProps, VertAlign};
+use docx_core::{Justification, ParaProps, RunProps, VertAlign, LINE_BREAK};
 use quick_xml::escape::escape;
 
-/// A run's `<w:t>` element with the new text, always `xml:space="preserve"` so
-/// leading/trailing spaces survive.
+/// A run's text content: `<w:t>` elements, always `xml:space="preserve"` so
+/// leading/trailing spaces survive, with a `<w:br/>` for every line break
+/// ([`LINE_BREAK`], U+2028) in `text`.
 pub fn render_wt(text: &str) -> Vec<u8> {
-    format!("<w:t xml:space=\"preserve\">{}</w:t>", escape(text)).into_bytes()
+    render_wt_with_breaks(text, &[])
+}
+
+/// [`render_wt`], re-emitting the run's ORIGINAL line-break elements
+/// (`<w:br/>`, `<w:br w:type="textWrapping" …/>`, `<w:cr/>`, verbatim) for the
+/// first `originals.len()` line breaks in `text`, and a plain `<w:br/>` for
+/// any after them — so an edit that keeps a run's line breaks keeps their
+/// exact bytes (e.g. a `w:clear` attribute).
+pub fn render_wt_with_breaks(text: &str, originals: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (k, part) in text.split(LINE_BREAK).enumerate() {
+        if k > 0 {
+            match originals.get(k - 1) {
+                Some(bytes) => out.extend_from_slice(bytes),
+                None => out.extend_from_slice(b"<w:br/>"),
+            }
+        }
+        // An empty part between two breaks (or at either end) needs no
+        // `<w:t>`; a run with no text at all still gets its one (empty) `<w:t>`.
+        if !part.is_empty() || text.is_empty() {
+            out.extend_from_slice(
+                format!("<w:t xml:space=\"preserve\">{}</w:t>", escape(part)).as_bytes(),
+            );
+        }
+    }
+    out
 }
 
 /// A `<w:rPr>` element for the run's effective direct properties. `rstyle` is a
@@ -210,6 +236,27 @@ fn toggle(s: &mut String, name: &str, v: Option<bool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wt_line_breaks_become_w_br() {
+        assert_eq!(
+            String::from_utf8(render_wt("a\u{2028}b")).unwrap(),
+            "<w:t xml:space=\"preserve\">a</w:t><w:br/><w:t xml:space=\"preserve\">b</w:t>"
+        );
+        assert_eq!(
+            String::from_utf8(render_wt("a\u{2028}\u{2028}")).unwrap(),
+            "<w:t xml:space=\"preserve\">a</w:t><w:br/><w:br/>"
+        );
+        assert_eq!(String::from_utf8(render_wt("\u{2028}")).unwrap(), "<w:br/>");
+        assert_eq!(
+            String::from_utf8(render_wt_with_breaks(
+                "x\u{2028}y\u{2028}z",
+                &[b"<w:cr/>"]
+            ))
+            .unwrap(),
+            "<w:t xml:space=\"preserve\">x</w:t><w:cr/><w:t xml:space=\"preserve\">y</w:t><w:br/><w:t xml:space=\"preserve\">z</w:t>"
+        );
+    }
 
     #[test]
     fn wt_preserves_space_and_escapes() {

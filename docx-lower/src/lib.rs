@@ -33,12 +33,15 @@
 
 use std::collections::HashMap;
 
+use std::collections::BTreeSet;
+
 use docx_core::{
-    Block, DocxDocument, Justification, ListKind, ListMarker, ParaProps, Run, RunProps, Section,
-    Style, StyleKind, VertAlign,
+    Block, DocxDocument, Justification, LineSpacing, ListKind, ListMarker, ParaProps, Run,
+    RunProps, Section, Style, StyleKind, VertAlign,
 };
 
 pub mod ir;
+pub mod line_height;
 
 use ir::{
     Diagnostic, LoweredBlock, LoweredCell, LoweredDoc, LoweredImage, LoweredParagraph, LoweredRun,
@@ -92,7 +95,16 @@ fn justification_idml(j: Justification) -> &'static str {
 
 /// Lower a whole Word document to the native IR.
 pub fn lower(doc: &DocxDocument) -> LoweredDoc {
-    let mut ctx = Lowering::default();
+    let mut ctx = Lowering {
+        word_styles: doc
+            .styles
+            .styles
+            .iter()
+            .map(|s| (s.style_id.clone(), s.clone()))
+            .collect(),
+        word_defaults: doc.styles.doc_defaults.clone(),
+        ..Lowering::default()
+    };
 
     // 0. docDefaults -> a base paragraph style every un-based style + un-styled
     //    paragraph inherits from (Word's Normal defaults: font, size, spacing).
@@ -225,6 +237,19 @@ pub fn lower(doc: &DocxDocument) -> LoweredDoc {
         ctx.diagnostics.push(Diagnostic::info(msg, 3));
     }
 
+    if !ctx.unmeasured_faces.is_empty() {
+        let faces: Vec<&str> = ctx.unmeasured_faces.iter().map(String::as_str).collect();
+        ctx.diagnostics.push(Diagnostic::info(
+            format!(
+                "line spacing in face(s) Word has not been measured on ({}): their \
+                 single line is taken as Calibri's/Aptos's 1.2207 em, so line \
+                 pitch may differ slightly from Word's",
+                faces.join(", ")
+            ),
+            3,
+        ));
+    }
+
     let section = lower_section(doc.sections.first());
     let sections = if doc.sections.is_empty() {
         vec![section.clone()]
@@ -265,6 +290,16 @@ struct Lowering {
     /// Of those, how many carry an EXTERNAL target that becomes a native
     /// clickable link (internal `#anchor` targets stay styled-only for now).
     clickable_links: u32,
+    /// The Word style catalog by id, to resolve inherited line spacing and
+    /// run font/size through `basedOn` chains.
+    word_styles: HashMap<String, Style>,
+    /// Word's `docDefaults`, the root of every inheritance chain.
+    word_defaults: docx_core::Defaults,
+    /// The `characterLeading` each lowered paragraph style resolves to (its
+    /// own or inherited), so a paragraph only overrides when it differs.
+    style_leading: HashMap<String, f32>,
+    /// Faces a line-spacing computation needed but Word was not measured on.
+    unmeasured_faces: BTreeSet<String>,
 }
 
 impl Lowering {
@@ -273,11 +308,21 @@ impl Lowering {
     /// inherits Word's document defaults.
     fn install_doc_defaults(&mut self, defaults: &docx_core::Defaults) {
         let mut props = self.para_props(&defaults.para);
+        let leading = defaults.para.line_spacing.map(|ls| {
+            let single = self.single_line(defaults.run.font.as_deref(), defaults.run.size_half_pts);
+            line_height::line_pitch_pt(ls, single)
+        });
+        if let Some(pt) = leading {
+            props.push(len("characterLeading", pt));
+        }
         props.extend(self.run_props(&defaults.run));
         if props.is_empty() {
             return;
         }
         let id = format!("{PARA_PREFIX}Default");
+        if let Some(pt) = leading {
+            self.style_leading.insert(id.clone(), pt);
+        }
         self.record_style(LoweredStyle {
             id: id.clone(),
             name: "docx defaults".into(),
@@ -357,9 +402,18 @@ impl Lowering {
             match s.kind {
                 StyleKind::Paragraph => {
                     let mut props = self.para_props(&s.para);
+                    // Every paragraph style carries the leading it RESOLVES
+                    // to: Word's auto/atLeast depend on the style's own
+                    // (possibly inherited) font and size, which a child
+                    // style can change without touching the spacing.
+                    let id = format!("{PARA_PREFIX}{}", sanitize(&s.style_id));
+                    if let Some(pt) = self.style_pitch(&s.style_id) {
+                        props.push(len("characterLeading", pt));
+                        self.style_leading.insert(id.clone(), pt);
+                    }
                     props.extend(self.run_props(&s.run));
                     self.record_style(LoweredStyle {
-                        id: format!("{PARA_PREFIX}{}", sanitize(&s.style_id)),
+                        id,
                         name: s.name.clone().unwrap_or_else(|| s.style_id.clone()),
                         collection: StyleCollection::Paragraph,
                         based_on: self.para_base(
@@ -402,6 +456,14 @@ impl Lowering {
             .as_ref()
             .map(|id| format!("{PARA_PREFIX}{}", sanitize(id)));
         let mut props = self.para_props(&p.props);
+        if let Some(pt) = self.paragraph_pitch(p) {
+            let inherited = self
+                .para_base(explicit.clone())
+                .and_then(|base| self.style_leading.get(&base).copied());
+            if inherited.is_none_or(|v| (v - pt).abs() > 0.001) {
+                props.push(len("characterLeading", pt));
+            }
+        }
         if let Some(list) = &p.list {
             props.extend(list_props(list));
         }
@@ -600,20 +662,10 @@ impl Lowering {
         if let Some(v) = p.space_after {
             out.push(len("paragraphSpaceAfter", twip_to_pt(v)));
         }
-        // Word line spacing (ADR 029). `exact` IS a leading; `atLeast` is one
-        // too unless the font's own line is taller (the engine has no
-        // at-least mode, so that case lays out a little tight). `auto` single
-        // spacing is the engine's auto leading; other `auto` multiples need
-        // the run's size and are not lowered yet.
-        if let Some(ls) = p.line_spacing {
-            use docx_core::LineRule;
-            match ls.rule {
-                LineRule::Exact | LineRule::AtLeast => {
-                    out.push(len("characterLeading", twip_to_pt(ls.value)));
-                }
-                LineRule::Auto => {}
-            }
-        }
+        // Word line spacing (`w:spacing/@w:line`) is NOT lowered here: it
+        // depends on the font and size the paragraph resolves to, so the
+        // callers compute it (`style_pitch`, `paragraph_pitch`; see
+        // `line_height` for the rule Word was measured to follow).
         // Word's keepNext is a boolean; paged's keepWithNext is a line count, so
         // "on" maps to a single-line hold.
         if p.keep_next == Some(true) {
@@ -639,6 +691,108 @@ impl Lowering {
             });
         }
         out
+    }
+
+    /// A paragraph style and its `basedOn` ancestors, nearest first
+    /// (depth-bounded against malformed cycles).
+    fn style_chain(&self, id: Option<&str>) -> Vec<&Style> {
+        let mut out = Vec::new();
+        let mut next = id;
+        while let Some(id) = next {
+            let Some(s) = self.word_styles.get(id) else {
+                break;
+            };
+            if out.len() > 32 {
+                break;
+            }
+            out.push(s);
+            next = s.based_on.as_deref();
+        }
+        out
+    }
+
+    /// The line spacing a paragraph in `style` resolves to: `direct`, else
+    /// the nearest style in the chain that sets it, else docDefaults.
+    fn resolve_spacing(
+        &self,
+        direct: Option<LineSpacing>,
+        style: Option<&str>,
+    ) -> Option<LineSpacing> {
+        direct
+            .or_else(|| {
+                self.style_chain(style)
+                    .iter()
+                    .find_map(|s| s.para.line_spacing)
+            })
+            .or(self.word_defaults.para.line_spacing)
+    }
+
+    /// The font and size (half-points) a run resolves to: its direct props,
+    /// its character style chain, the paragraph style chain, docDefaults.
+    fn resolve_face(
+        &self,
+        run: Option<&Run>,
+        para_style: Option<&str>,
+    ) -> (Option<String>, Option<u32>) {
+        let mut layers: Vec<&RunProps> = Vec::new();
+        if let Some(r) = run {
+            layers.push(&r.props);
+            layers.extend(
+                self.style_chain(r.style_id.as_deref())
+                    .into_iter()
+                    .map(|s| &s.run),
+            );
+        }
+        layers.extend(self.style_chain(para_style).into_iter().map(|s| &s.run));
+        layers.push(&self.word_defaults.run);
+        let font = layers.iter().find_map(|l| l.font.clone());
+        let size = layers.iter().find_map(|l| l.size_half_pts);
+        (font, size)
+    }
+
+    /// Word's single line in points for `font` at `half_pts` (Word's default
+    /// size is 10 pt), noting faces Word has not been measured on.
+    fn single_line(&mut self, font: Option<&str>, half_pts: Option<u32>) -> f32 {
+        if let Some(f) = font {
+            if line_height::measured_single_em(f).is_none() {
+                self.unmeasured_faces.insert(f.to_string());
+            }
+        }
+        line_height::single_line_pt(font, half_pts.map_or(10.0, half_pt_to_pt))
+    }
+
+    /// The leading a paragraph style resolves to, if line spacing is set
+    /// anywhere in its chain (or in docDefaults).
+    fn style_pitch(&mut self, style_id: &str) -> Option<f32> {
+        let ls = self.resolve_spacing(None, Some(style_id))?;
+        let (font, size) = self.resolve_face(None, Some(style_id));
+        let single = self.single_line(font.as_deref(), size);
+        Some(line_height::line_pitch_pt(ls, single))
+    }
+
+    /// The leading Word lays a paragraph at: its resolved line spacing over
+    /// the single line of its TALLEST run (Word sizes each line by its
+    /// tallest run; one leading per paragraph is the native model's grain).
+    fn paragraph_pitch(&mut self, p: &docx_core::Paragraph) -> Option<f32> {
+        let style = p.style_id.as_deref();
+        let ls = self.resolve_spacing(p.props.line_spacing, style)?;
+        let faces: Vec<(Option<String>, Option<u32>)> = {
+            let mut v: Vec<_> = p
+                .runs
+                .iter()
+                .filter(|r| !r.text.is_empty())
+                .map(|r| self.resolve_face(Some(r), style))
+                .collect();
+            if v.is_empty() {
+                v.push(self.resolve_face(None, style));
+            }
+            v
+        };
+        let single = faces
+            .iter()
+            .map(|(font, size)| self.single_line(font.as_deref(), *size))
+            .fold(0.0_f32, f32::max);
+        Some(line_height::line_pitch_pt(ls, single))
     }
 
     fn run_props(&mut self, r: &RunProps) -> Vec<StyleProp> {

@@ -80,7 +80,9 @@ const STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 /// Every paragraph is one line on an exact 12 pt grid (Inter 10 pt,
 /// `w:spacing w:line="240" w:lineRule="exact"`, no space before/after), so a
 /// page holds `body height / 12` lines and a misplaced break shows as a
-/// numbered paragraph on the wrong page.
+/// numbered paragraph on the wrong page. (Word cannot load the installed
+/// Inter — a variable font — and silently lays these in Calibri; the
+/// exact grid makes that harmless here, see `line_spacing_docx`.)
 ///
 /// - Section 1: US Letter, 1 in margins → 648 pt body = 54 lines. 120
 ///   paragraphs (`S1 P001`…), so three pages by line count. `S1 P054`, the
@@ -113,6 +115,327 @@ pub fn pagination_docx() -> Vec<u8> {
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>{body}<w:sectPr><w:type w:val="nextPage"/><w:pgSz w:w="11906" w:h="8391" w:orient="landscape"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/></w:sectPr></w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+    ])
+}
+
+/// One case of [`line_spacing_docx`]: a section of one-line paragraphs in
+/// `font` at `half_pts`, all carrying `w:spacing w:line=… w:lineRule=…`.
+#[derive(Debug, Clone, Copy)]
+pub struct LineSpacingCase {
+    /// The paragraph label prefix (`"L1"` → `"L1 P001 …"`).
+    pub label: &'static str,
+    pub font: &'static str,
+    /// `w:sz` (half-points).
+    pub half_pts: u32,
+    /// `w:spacing/@w:line`.
+    pub line: i32,
+    /// `w:spacing/@w:lineRule` (`"auto"`, `"exact"`, `"atLeast"`).
+    pub rule: &'static str,
+}
+
+/// The cases of [`line_spacing_docx`], one section (and so one measured page)
+/// each. `fixtures/line-spacing.word.json` records what Word made of them.
+pub const LINE_SPACING_CASES: &[LineSpacingCase] = &[
+    LineSpacingCase {
+        label: "L1",
+        font: "Calibri",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L2",
+        font: "Calibri",
+        half_pts: 20,
+        line: 276,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L3",
+        font: "Calibri",
+        half_pts: 20,
+        line: 360,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L4",
+        font: "Calibri",
+        half_pts: 20,
+        line: 480,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L5",
+        font: "Calibri",
+        half_pts: 20,
+        line: 240,
+        rule: "exact",
+    },
+    LineSpacingCase {
+        label: "L6",
+        font: "Calibri",
+        half_pts: 20,
+        line: 240,
+        rule: "atLeast",
+    },
+    LineSpacingCase {
+        label: "L7",
+        font: "Calibri",
+        half_pts: 20,
+        line: 120,
+        rule: "atLeast",
+    },
+    // Cross-checks: the single-line height must follow the FACE (faces whose
+    // hhea, typo and win metrics disagree in different directions) and
+    // scale with the SIZE, so the rule is not fitted to one font at one size.
+    LineSpacingCase {
+        label: "L8",
+        font: "Calibri",
+        half_pts: 28,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L9",
+        font: "Aptos",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L10",
+        font: "Aptos",
+        half_pts: 20,
+        line: 240,
+        rule: "atLeast",
+    },
+    LineSpacingCase {
+        label: "L11",
+        font: "Arial",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L12",
+        font: "Arial",
+        half_pts: 20,
+        line: 360,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L13",
+        font: "Times New Roman",
+        half_pts: 24,
+        line: 240,
+        rule: "auto",
+    },
+    // atLeast ABOVE the face's single line: the value wins.
+    LineSpacingCase {
+        label: "L14",
+        font: "Arial",
+        half_pts: 20,
+        line: 240,
+        rule: "atLeast",
+    },
+    // Single (auto 240) at 10 pt for every face in docx-lower's line-height
+    // table, so each entry there is a number Word produced, not a guess.
+    LineSpacingCase {
+        label: "L15",
+        font: "Calibri Light",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L16",
+        font: "Cambria",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L17",
+        font: "Candara",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L18",
+        font: "Consolas",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L19",
+        font: "Constantia",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L20",
+        font: "Corbel",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L21",
+        font: "Georgia",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L22",
+        font: "Verdana",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L23",
+        font: "Tahoma",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L24",
+        font: "Trebuchet MS",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L25",
+        font: "Courier New",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L26",
+        font: "Garamond",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L27",
+        font: "Century Gothic",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L28",
+        font: "Book Antiqua",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L29",
+        font: "Palatino Linotype",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L30",
+        font: "Helvetica",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L31",
+        font: "Arial Narrow",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L32",
+        font: "Gill Sans MT",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L33",
+        font: "Franklin Gothic Book",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L34",
+        font: "Lucida Sans Unicode",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L35",
+        font: "Comic Sans MS",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L36",
+        font: "Inter",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+];
+
+/// ADR 029 — line-spacing ground truth: what Word does with
+/// `w:spacing/@w:line` under each `@w:lineRule` (`scripts/word-line-spacing-probe.sh`
+/// exports it from Word as PDF and measures it).
+///
+/// One US-Letter section (1 in margins → 648 pt body) per
+/// [`LINE_SPACING_CASES`] entry, each holding 80 one-line paragraphs with no
+/// space before/after — more than any case fits on a page, so page 1 of every
+/// section is full and its lines-per-page and baseline pitch reveal Word's
+/// line height for that case.
+pub fn line_spacing_docx() -> Vec<u8> {
+    const SECT: &str = r#"<w:sectPr><w:type w:val="nextPage"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>"#;
+    let mut body = String::new();
+    for (ci, c) in LINE_SPACING_CASES.iter().enumerate() {
+        let last_case = ci + 1 == LINE_SPACING_CASES.len();
+        for n in 1..=80 {
+            // The section break rides each section's LAST paragraph, except
+            // the document's last section, which is the body-level sectPr.
+            let sect = if n == 80 && !last_case { SECT } else { "" };
+            body.push_str(&format!(
+                r#"<w:p><w:pPr>{sect}<w:spacing w:before="0" w:after="0" w:line="{line}" w:lineRule="{rule}"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:cs="{font}"/><w:sz w:val="{sz}"/><w:szCs w:val="{sz}"/></w:rPr><w:t xml:space="preserve">{label} P{n:03} line {line} {rule}.</w:t></w:r></w:p>"#,
+                line = c.line,
+                rule = c.rule,
+                font = c.font,
+                sz = c.half_pts,
+                label = c.label,
+            ));
+        }
+    }
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}{SECT}</w:body>
 </w:document>"#
     );
     zip_parts(&[

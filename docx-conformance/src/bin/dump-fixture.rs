@@ -39,6 +39,7 @@ fn main() {
         "table" => docx_conformance::table_docx(),
         "one" => docx_conformance::one_paragraph_docx(),
         "pagination" => docx_conformance::pagination_docx(),
+        "line-spacing" => docx_conformance::line_spacing_docx(),
         _ => docx_conformance::memo_docx(),
     };
     std::fs::write(&path, bytes).expect("write fixture");

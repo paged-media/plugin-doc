@@ -27,8 +27,8 @@
 
 use docx_core::{
     Block, CellPath, DocxDocument, HeaderFooter, Image, Justification, ListKind, ListMarker, Note,
-    ParaProps, Paragraph, Run, RunProps, RunSource, Section, Style, StyleCatalog, StyleKind,
-    TabStop, VertAlign,
+    ParaProps, Paragraph, Run, RunProps, RunSource, Section, SectionKind, Style, StyleCatalog,
+    StyleKind, TabStop, VertAlign,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_main as aml;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
@@ -457,11 +457,26 @@ fn map_body(body: &wml::Body, ctx: &ImportCtx) -> (Vec<Block>, Vec<Section>) {
     let mut para_ord = 0u32;
     // Ordinal among the direct `<w:tbl>` children of `<w:body>` (cell provenance).
     let mut table_ord = 0u32;
+    // ADR 029 — a paragraph whose `pPr` carries a `sectPr` ENDS a section
+    // (that `sectPr` describes the section it closes); the body-level
+    // `sectPr` describes the last one.
+    let mut sections = Vec::new();
+    let mut section_start = 0usize;
     for choice in &body.body_choice {
         match choice {
             wml::BodyChoice::Paragraph(p) => {
                 blocks.push(Block::Paragraph(map_paragraph(p, ctx, para_ord, None)));
                 para_ord += 1;
+                if let Some(sp) = p
+                    .paragraph_properties
+                    .as_deref()
+                    .and_then(|pp| pp.section_properties.as_deref())
+                {
+                    let mut section = map_section(sp);
+                    section.first_block = section_start;
+                    sections.push(section);
+                    section_start = blocks.len();
+                }
             }
             wml::BodyChoice::Table(t) => {
                 blocks.push(Block::Table(map_table(t, ctx, table_ord)));
@@ -470,11 +485,11 @@ fn map_body(body: &wml::Body, ctx: &ImportCtx) -> (Vec<Block>, Vec<Section>) {
             _ => {}
         }
     }
-    let sections = body
-        .section_properties
-        .as_deref()
-        .map(|sp| vec![map_section(sp)])
-        .unwrap_or_default();
+    if let Some(sp) = body.section_properties.as_deref() {
+        let mut section = map_section(sp);
+        section.first_block = section_start;
+        sections.push(section);
+    }
     (blocks, sections)
 }
 
@@ -1052,6 +1067,16 @@ fn para_props(
 
 fn map_section(sp: &wml::SectionProperties) -> Section {
     let mut s = Section::default();
+    if let Some(t) = &sp.section_type {
+        use wml::SectionMarkValues as M;
+        s.kind = match t.val {
+            M::NextPage => SectionKind::NextPage,
+            M::Continuous => SectionKind::Continuous,
+            M::EvenPage => SectionKind::EvenPage,
+            M::OddPage => SectionKind::OddPage,
+            M::NextColumn => SectionKind::NextColumn,
+        };
+    }
     if let Some(ps) = &sp.page_size {
         if let Some(w) = ps.width.as_ref().and_then(twips_u) {
             s.page_width = w;

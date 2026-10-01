@@ -382,6 +382,31 @@ pub struct Section {
     pub margin_right: i32,
     /// `w:cols/@w:num` — column count (default 1).
     pub columns: u32,
+    /// Index into [`DocxDocument::body`] of this section's FIRST block. A
+    /// section runs to the next section's `first_block` (the last one to the
+    /// end of the body). Word marks a section's end with a `sectPr` inside its
+    /// last paragraph's `pPr`; the body-level `sectPr` is the final section.
+    #[serde(default)]
+    pub first_block: usize,
+    /// `w:type/@w:val` — how the section starts (thoughts ADR 029).
+    #[serde(default)]
+    pub kind: SectionKind,
+}
+
+/// `w:sectPr/w:type` — where a section starts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SectionKind {
+    /// On a new page (Word's default).
+    #[default]
+    NextPage,
+    /// On the same page, after the previous section's text.
+    Continuous,
+    /// On the next even page.
+    EvenPage,
+    /// On the next odd page.
+    OddPage,
+    /// In the next column.
+    NextColumn,
 }
 
 impl Default for Section {
@@ -396,6 +421,8 @@ impl Default for Section {
             margin_left: 1440,
             margin_right: 1440,
             columns: 1,
+            first_block: 0,
+            kind: SectionKind::NextPage,
         }
     }
 }

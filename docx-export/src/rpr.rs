@@ -24,34 +24,118 @@
 use docx_core::{Justification, ParaProps, RunProps, VertAlign, LINE_BREAK};
 use quick_xml::escape::escape;
 
-/// A run's text content: `<w:t>` elements, always `xml:space="preserve"` so
-/// leading/trailing spaces survive, with a `<w:br/>` for every line break
-/// ([`LINE_BREAK`], U+2028) in `text`.
-pub fn render_wt(text: &str) -> Vec<u8> {
-    render_wt_with_breaks(text, &[])
+/// A run child the import turned into ONE character of the run's text, so
+/// save-back writes that character back as the element: Word's line break
+/// (`<w:br/>` with no type or `textWrapping`, `<w:cr/>` → [`LINE_BREAK`],
+/// U+2028), its tab (`<w:tab/>` → `\t`) and its non-breaking hyphen
+/// (`<w:noBreakHyphen/>` → U+2011).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialKind {
+    LineBreak,
+    Tab,
+    NoBreakHyphen,
 }
 
-/// [`render_wt`], re-emitting the run's ORIGINAL line-break elements
-/// (`<w:br/>`, `<w:br w:type="textWrapping" …/>`, `<w:cr/>`, verbatim) for the
-/// first `originals.len()` line breaks in `text`, and a plain `<w:br/>` for
-/// any after them — so an edit that keeps a run's line breaks keeps their
-/// exact bytes (e.g. a `w:clear` attribute).
-pub fn render_wt_with_breaks(text: &str, originals: &[&[u8]]) -> Vec<u8> {
+impl SpecialKind {
+    /// The kind a character of the run's text stands for, if any.
+    pub fn of_char(c: char) -> Option<Self> {
+        match c {
+            LINE_BREAK => Some(Self::LineBreak),
+            '\t' => Some(Self::Tab),
+            '\u{2011}' => Some(Self::NoBreakHyphen),
+            _ => None,
+        }
+    }
+
+    /// The element Word writes for a NEW character of this kind.
+    fn element(self) -> &'static [u8] {
+        match self {
+            Self::LineBreak => b"<w:br/>",
+            Self::Tab => b"<w:tab/>",
+            Self::NoBreakHyphen => b"<w:noBreakHyphen/>",
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// How the source run wrote the k-th character of a [`SpecialKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialSource<'a> {
+    /// As an element (`<w:tab/>`, `<w:br w:clear="all"/>`, …): these bytes.
+    Element(&'a [u8]),
+    /// As the character itself inside a `<w:t>` (a literal tab, U+2011, …).
+    Literal,
+}
+
+/// A run's original special characters, per kind, in text order.
+#[derive(Debug, Default, Clone)]
+pub struct RunSpecials<'a> {
+    by_kind: [Vec<SpecialSource<'a>>; 3],
+}
+
+impl<'a> RunSpecials<'a> {
+    pub fn push(&mut self, kind: SpecialKind, source: SpecialSource<'a>) {
+        self.by_kind[kind.index()].push(source);
+    }
+}
+
+/// A run's text content: `<w:t>` elements, always `xml:space="preserve"` so
+/// leading/trailing spaces survive, with `<w:br/>` for every line break
+/// ([`LINE_BREAK`], U+2028), `<w:tab/>` for every tab and
+/// `<w:noBreakHyphen/>` for every U+2011 in `text` (see [`SpecialKind`]).
+pub fn render_wt(text: &str) -> Vec<u8> {
+    render_text(text, &RunSpecials::default())
+}
+
+/// [`render_wt`], writing the k-th special character of each kind the way
+/// the source run wrote ITS k-th one ([`RunSpecials`]): the original element
+/// bytes verbatim (a `w:clear`, a `w:cr`), or the literal character inside
+/// the `<w:t>` when the source had it there. Characters past the source's
+/// count get Word's element. So an edit that keeps a run's tabs and breaks
+/// keeps their exact bytes, in order.
+pub fn render_text(text: &str, originals: &RunSpecials<'_>) -> Vec<u8> {
     let mut out = Vec::new();
-    for (k, part) in text.split(LINE_BREAK).enumerate() {
-        if k > 0 {
-            match originals.get(k - 1) {
-                Some(bytes) => out.extend_from_slice(bytes),
-                None => out.extend_from_slice(b"<w:br/>"),
+    let mut seen = [0usize; 3];
+    let mut part = String::new();
+    let flush = |out: &mut Vec<u8>, part: &mut String| {
+        if !part.is_empty() {
+            out.extend_from_slice(
+                format!(
+                    "<w:t xml:space=\"preserve\">{}</w:t>",
+                    escape(part.as_str())
+                )
+                .as_bytes(),
+            );
+            part.clear();
+        }
+    };
+    for c in text.chars() {
+        let Some(kind) = SpecialKind::of_char(c) else {
+            part.push(c);
+            continue;
+        };
+        let k = &mut seen[kind.index()];
+        let source = originals.by_kind[kind.index()].get(*k).copied();
+        *k += 1;
+        match source {
+            Some(SpecialSource::Literal) => part.push(c),
+            Some(SpecialSource::Element(bytes)) => {
+                flush(&mut out, &mut part);
+                out.extend_from_slice(bytes);
+            }
+            None => {
+                flush(&mut out, &mut part);
+                out.extend_from_slice(kind.element());
             }
         }
-        // An empty part between two breaks (or at either end) needs no
-        // `<w:t>`; a run with no text at all still gets its one (empty) `<w:t>`.
-        if !part.is_empty() || text.is_empty() {
-            out.extend_from_slice(
-                format!("<w:t xml:space=\"preserve\">{}</w:t>", escape(part)).as_bytes(),
-            );
-        }
+    }
+    flush(&mut out, &mut part);
+    // A run with no text at all still gets its one (empty) `<w:t>`.
+    if out.is_empty() {
+        out.extend_from_slice(b"<w:t xml:space=\"preserve\"></w:t>");
     }
     out
 }
@@ -248,13 +332,40 @@ mod tests {
             "<w:t xml:space=\"preserve\">a</w:t><w:br/><w:br/>"
         );
         assert_eq!(String::from_utf8(render_wt("\u{2028}")).unwrap(), "<w:br/>");
+        let mut cr = RunSpecials::default();
+        cr.push(SpecialKind::LineBreak, SpecialSource::Element(b"<w:cr/>"));
         assert_eq!(
-            String::from_utf8(render_wt_with_breaks(
-                "x\u{2028}y\u{2028}z",
-                &[b"<w:cr/>"]
-            ))
-            .unwrap(),
+            String::from_utf8(render_text("x\u{2028}y\u{2028}z", &cr)).unwrap(),
             "<w:t xml:space=\"preserve\">x</w:t><w:cr/><w:t xml:space=\"preserve\">y</w:t><w:br/><w:t xml:space=\"preserve\">z</w:t>"
+        );
+    }
+
+    #[test]
+    fn wt_tabs_and_no_break_hyphens_become_elements() {
+        assert_eq!(
+            String::from_utf8(render_wt("a\tb\u{2011}c")).unwrap(),
+            "<w:t xml:space=\"preserve\">a</w:t><w:tab/><w:t xml:space=\"preserve\">b</w:t>\
+             <w:noBreakHyphen/><w:t xml:space=\"preserve\">c</w:t>"
+        );
+        assert_eq!(String::from_utf8(render_wt("\t")).unwrap(), "<w:tab/>");
+        assert_eq!(
+            String::from_utf8(render_wt("")).unwrap(),
+            "<w:t xml:space=\"preserve\"></w:t>"
+        );
+        // Per kind, in order: the first tab was literal in the source, the
+        // second an element; a third is new.
+        let mut o = RunSpecials::default();
+        o.push(SpecialKind::Tab, SpecialSource::Literal);
+        o.push(SpecialKind::Tab, SpecialSource::Element(b"<w:tab/>"));
+        o.push(
+            SpecialKind::LineBreak,
+            SpecialSource::Element(b"<w:br w:clear=\"all\"/>"),
+        );
+        assert_eq!(
+            String::from_utf8(render_text("a\tb\u{2028}c\td\te", &o)).unwrap(),
+            "<w:t xml:space=\"preserve\">a\tb</w:t><w:br w:clear=\"all\"/>\
+             <w:t xml:space=\"preserve\">c</w:t><w:tab/><w:t xml:space=\"preserve\">d</w:t>\
+             <w:tab/><w:t xml:space=\"preserve\">e</w:t>"
         );
     }
 

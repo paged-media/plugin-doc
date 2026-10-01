@@ -5,6 +5,8 @@ import {
   buildDocumentMutations,
   buildStory,
   buildStyleMutations,
+  buildStoryBlocks,
+  buildTableCellCarets,
   buildTableCells,
   buildTableInsert,
   buildTextPour,
@@ -189,6 +191,98 @@ describe("tables", () => {
     const tableStep = steps[1] as { kind: "table"; insert: unknown; cells: (id: string) => unknown };
     expect((tableStep.insert as { op: string }).op).toBe("insertTable");
     expect((tableStep.cells("Table/u1") as { op: string }).op).toBe("batch");
+  });
+});
+
+describe("blank lines in table cells", () => {
+  type Op = { op: string; args: Record<string, unknown> };
+  const run = (text: string) => [{ text, charStyleId: null }];
+  const blank = (style: string) => P(style, []);
+  type TableBlock = Extract<import("../src/lowered.js").LoweredBlock, { kind: "table" }>;
+  function cellsTable(): TableBlock {
+    return {
+      kind: "table",
+      rows: 1,
+      cols: 3,
+      columnWidthsPt: [100, 100, 100],
+      cells: [
+        // A, two blank lines (one cell offset, 1), B.
+        {
+          row: 0,
+          col: 0,
+          rowSpan: 1,
+          colSpan: 1,
+          paragraphs: [P("PS/a", run("A")), blank("PS/tall"), blank("PS/short"), P("PS/a", run("B"))],
+        },
+        // Ünï (3 code points), a blank line at 3, Dé, a trailing blank at 5.
+        {
+          row: 0,
+          col: 1,
+          rowSpan: 1,
+          colSpan: 1,
+          paragraphs: [P("PS/a", run("Ünï")), blank("PS/tall"), P("PS/a", run("Dé")), blank("PS/end")],
+        },
+        // An empty cell: no insertText, so no paragraph a caret could name.
+        { row: 0, col: 2, rowSpan: 1, colSpan: 1, paragraphs: [blank("PS/tall")] },
+      ],
+    };
+  }
+  const cell = (col: number) => ({ tableId: "Table/t1", row: 0, col });
+  const caret = (at: number, style: string, col: number) => ({
+    op: "applyStyle",
+    args: { storyId: "s", start: at, end: at, style, scope: "paragraph", cell: cell(col) },
+  });
+
+  it("are styled by a cell-addressed caret in the cell's own offsets, the last per offset", () => {
+    expect(buildTableCellCarets(cellsTable(), "s", "Table/t1")).toEqual([
+      caret(1, "PS/short", 0),
+      caret(3, "PS/tall", 1),
+      caret(5, "PS/end", 1),
+    ]);
+  });
+
+  it("are not in the cell batch, which keeps only the ranges over text", () => {
+    const batch = buildTableCells(cellsTable(), "s", "Table/t1");
+    const ops = (batch.args as { ops: Op[] }).ops;
+    expect(ops.filter((o) => o.op === "applyStyle" && o.args.start === o.args.end)).toEqual([]);
+    expect(ops.find((o) => o.op === "insertText" && (o.args.cell as { col: number }).col === 0)?.args.text).toBe(
+      "A\n\n\nB",
+    );
+    expect(ops.some((o) => o.op === "insertText" && (o.args.cell as { col: number }).col === 2)).toBe(false);
+  });
+
+  it("are applied in the story's final caret step, after the body's, once the table exists", () => {
+    const steps = buildStoryBlocks(
+      [
+        { kind: "paragraph", paraStyleId: "PS/a", runs: run("x"), sourceIndex: 0 },
+        { kind: "paragraph", paraStyleId: "PS/blank", runs: [], sourceIndex: 1 },
+        cellsTable(),
+      ],
+      "s",
+    );
+    expect(steps.map((s) => s.kind)).toEqual(["text", "table", "text"]);
+    // Pour the way pourSteps does: the text, the table (its id minted), then
+    // the caret step.
+    const text = steps[0] as Extract<(typeof steps)[number], { kind: "text" }>;
+    text.mutations(0, 0);
+    const table = steps[1] as Extract<(typeof steps)[number], { kind: "table" }>;
+    table.cells("Table/t1");
+    const last = steps[2] as Extract<(typeof steps)[number], { kind: "text" }>;
+    expect(last.length).toBe(0);
+    expect(last.mutations(2, 1)).toEqual([
+      { op: "applyStyle", args: { storyId: "s", start: 1, end: 1, style: "PS/blank", scope: "paragraph" } },
+      caret(1, "PS/short", 0),
+      caret(3, "PS/tall", 1),
+      caret(5, "PS/end", 1),
+    ]);
+  });
+
+  it("add a caret step to a story whose only blank lines are in cells", () => {
+    const steps = buildStoryBlocks([cellsTable()], "s");
+    expect(steps.map((s) => s.kind)).toEqual(["table", "text"]);
+    (steps[0] as Extract<(typeof steps)[number], { kind: "table" }>).cells("Table/t9");
+    const ops = (steps[1] as Extract<(typeof steps)[number], { kind: "text" }>).mutations(1, 0) as unknown as Op[];
+    expect(ops.map((o) => (o.args.cell as { tableId: string }).tableId)).toEqual(["Table/t9", "Table/t9", "Table/t9"]);
   });
 });
 

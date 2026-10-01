@@ -83,6 +83,14 @@ conformance fixture).
   ops for each cell run/paragraph, offsets cell-local. A host below v55 rejects
   the op and cell text keeps its default formatting (honest degrade — never wrong
   styling).
+- **Blank cell lines are styled (core `65cf615`).** An empty Word paragraph in a
+  cell is styled by a cell-addressed caret (`applyStyle`, `start == end`) in the
+  cell's own offset space, last one per cell offset (`buildTableCellCarets`),
+  applied in the story's final caret step after every cell is poured, so a
+  refusing engine costs no cell its text. A cell of ONE empty paragraph gets no
+  `insertText` and no caret (the engine has no paragraph there to name), and
+  keeps the default style. Blank lines of one cell that share an offset with
+  different Word styles are diagnosed by `docx-lower`.
 - **Honest limitation:** the exact story offset past a table (`TABLE_FOOTPRINT`)
   is still a conservative constant refined during editor integration.
 
@@ -601,3 +609,23 @@ STILL LOCAL, not committed: the editor wiring depends on two publishes — the
 canvas-wasm v55 release (DOC-03 read + cell-qualified applyStyle) and a
 `@paged-media/doc` canary. Until both land, this runs only under
 `~/paged/sync-wasm.sh` + `link:` overrides.
+
+## Save-back: tabs, non-breaking hyphens and run content the text cannot place
+
+The import turns three run children into a character of the run's text:
+`<w:tab/>` → `\t`, `<w:noBreakHyphen/>` → U+2011 and a plain `<w:br/>` /
+`<w:cr/>` → U+2028. An edited run writes each character back the way the
+source run wrote its k-th one of that kind (the element bytes verbatim, or a
+literal character inside `<w:t>` where the source had one); a new one is Word's
+element. The text goes where the run's first text-bearing child was.
+`<w:sym>`, `<w:softHyphen/>` and `<w:ptab>` have no character in the text, so
+an edit to a run holding one is refused into the skip ledger (the run keeps
+its bytes), and so is an edit to a run with any other child (a page break, a
+footnote reference, a drawing) BETWEEN its pieces of text, which would move
+behind the edited text. Word opened the edited save without repair and put
+every piece of text after a tab at its tab stop
+(`fixtures/run-specials.word.json`, `scripts/word-run-specials-probe.sh`).
+Editing several adjacent paragraphs in one save now patches each in place: the
+block diff pairs a stretch of deleted keys with the stretch of inserted ones
+that follows it, where it used to pair only the last with the first and
+delete-then-insert the rest.

@@ -29,7 +29,7 @@ use quick_xml::events::Event;
 use quick_xml::name::QName;
 use quick_xml::Reader;
 
-use crate::rpr::render_wt_with_breaks;
+use crate::rpr::{render_text, RunSpecials, SpecialKind, SpecialSource};
 
 /// A run to patch, addressed by source ordinals + the pre-rendered replacements.
 #[derive(Debug, Clone)]
@@ -51,6 +51,8 @@ pub struct ResolvedTarget {
     /// `<w:hyperlink>` / `<w:fldSimple>` child instead of the paragraph's direct
     /// `<w:r>` children.
     pub wrapper: Option<crate::bindings::Wrapper>,
+    /// How a refusal names this run (`"run edit skipped: block 3 run 1"`).
+    pub label: String,
 }
 
 impl ResolvedTarget {
@@ -64,6 +66,7 @@ impl ResolvedTarget {
             delete: false,
             insert_after: Vec::new(),
             wrapper: None,
+            label: format!("run edit skipped: paragraph {para_ord} run {run_ord}"),
         }
     }
 }
@@ -79,6 +82,8 @@ pub struct ResolvedCellTarget {
     pub run_ord: u32,
     pub new_text: Option<String>,
     pub new_rpr: Option<Vec<u8>>,
+    /// How a refusal names this run.
+    pub label: String,
 }
 
 /// A COLUMN-level structural action on one table. Applied to the `<w:tblGrid>`
@@ -176,10 +181,12 @@ pub fn patch_document_xml_rows(
     cells: &[ResolvedCellTarget],
     rows: &BTreeMap<(u32, u32), ResolvedRowTarget>,
 ) -> Vec<u8> {
-    patch_document_xml_cols(src, targets, paras, cells, rows, &BTreeMap::new())
+    patch_document_xml_cols(src, targets, paras, cells, rows, &BTreeMap::new()).0
 }
 
 /// As [`patch_document_xml_rows`], plus COLUMN actions keyed by table ordinal.
+/// Returns the patched part and the run edits it refused (each under its
+/// target's label, with the reason) — those runs are left byte-identical.
 #[allow(clippy::too_many_arguments)]
 pub fn patch_document_xml_cols(
     src: &[u8],
@@ -188,7 +195,8 @@ pub fn patch_document_xml_cols(
     cells: &[ResolvedCellTarget],
     rows: &BTreeMap<(u32, u32), ResolvedRowTarget>,
     columns: &BTreeMap<u32, ColumnAction>,
-) -> Vec<u8> {
+) -> (Vec<u8>, Vec<String>) {
+    let mut refusals: Vec<String> = Vec::new();
     let mut reader = Reader::from_reader(src);
     reader.config_mut().trim_text(false);
 
@@ -281,7 +289,15 @@ pub fn patch_document_xml_cols(
                             && t.run_ord as i64 == wrap_run_ord
                     }) {
                         let run_open_end = reader.buffer_position() as usize;
-                        splice_run(&mut reader, src, t, run_open_end, &mut out, &mut cursor);
+                        splice_run(
+                            &mut reader,
+                            src,
+                            t,
+                            run_open_end,
+                            &mut out,
+                            &mut cursor,
+                            &mut refusals,
+                        );
                         continue;
                     }
                 }
@@ -388,9 +404,18 @@ pub fn patch_document_xml_cols(
                             delete: false,
                             insert_after: Vec::new(),
                             wrapper: None,
+                            label: ct.label.clone(),
                         };
                         let run_open_end = reader.buffer_position() as usize;
-                        splice_run(&mut reader, src, &t, run_open_end, &mut out, &mut cursor);
+                        splice_run(
+                            &mut reader,
+                            src,
+                            &t,
+                            run_open_end,
+                            &mut out,
+                            &mut cursor,
+                            &mut refusals,
+                        );
                         continue;
                     }
                 }
@@ -431,7 +456,15 @@ pub fn patch_document_xml_cols(
                         }
                         // reader is positioned just after the `<w:r …>` start tag.
                         let run_open_end = reader.buffer_position() as usize;
-                        splice_run(&mut reader, src, t, run_open_end, &mut out, &mut cursor);
+                        splice_run(
+                            &mut reader,
+                            src,
+                            t,
+                            run_open_end,
+                            &mut out,
+                            &mut cursor,
+                            &mut refusals,
+                        );
                         if !t.insert_after.is_empty() {
                             let after = reader.buffer_position() as usize;
                             out.extend_from_slice(&src[cursor..after]);
@@ -521,7 +554,7 @@ pub fn patch_document_xml_cols(
     }
 
     out.extend_from_slice(&src[cursor..]);
-    out
+    (out, refusals)
 }
 
 fn find_target(targets: &[ResolvedTarget], p: i64, r: i64) -> Option<&ResolvedTarget> {
@@ -530,47 +563,167 @@ fn find_target(targets: &[ResolvedTarget], p: i64, r: i64) -> Option<&ResolvedTa
         .find(|t| t.wrapper.is_none() && t.para_ord as i64 == p && t.run_ord as i64 == r)
 }
 
-/// Whether a run child is a LINE break — `<w:br/>` with no `w:type` or
-/// `w:type="textWrapping"`, or `<w:cr/>` — which the import turned into
-/// U+2028 in the run's text (a page or column `w:br` is a pagination
-/// instruction, not text, and is never touched here).
-fn is_line_break(e: &quick_xml::events::BytesStart<'_>) -> bool {
+/// The [`SpecialKind`] of a run child the import turned into a character of
+/// the run's text: `<w:br/>` with no `w:type` or `w:type="textWrapping"` and
+/// `<w:cr/>` (U+2028), `<w:tab/>` (`\t`), `<w:noBreakHyphen/>` (U+2011). A
+/// page or column `w:br` is a pagination instruction, not text, and is never
+/// one.
+fn special_kind(e: &quick_xml::events::BytesStart<'_>) -> Option<SpecialKind> {
     match local_name(e.name().as_ref()) {
-        b"cr" => true,
+        b"cr" => Some(SpecialKind::LineBreak),
+        b"tab" => Some(SpecialKind::Tab),
+        b"noBreakHyphen" => Some(SpecialKind::NoBreakHyphen),
         b"br" => e
             .attributes()
             .flatten()
             .find(|a| local_name(a.key.as_ref()) == b"type")
-            .is_none_or(|a| a.value.as_ref() == b"textWrapping"),
-        _ => false,
+            .is_none_or(|a| a.value.as_ref() == b"textWrapping")
+            .then_some(SpecialKind::LineBreak),
+        _ => None,
     }
 }
 
-/// The source bytes of each line-break child of the run whose open tag ends
-/// at `run_open_end`, in order (see [`is_line_break`]).
-fn line_break_children(src: &[u8], run_open_end: usize) -> Vec<&[u8]> {
-    let body = &src[run_open_end..];
-    let mut reader = Reader::from_reader(body);
-    let mut found = Vec::new();
+/// Run content the import does NOT carry as text (it has no character in the
+/// engine's text), so an edited text cannot say where it goes: an edit that
+/// rewrites such a run's text is refused, never guessed.
+const UNPLACEABLE: &[&[u8]] = &[b"sym", b"softHyphen", b"ptab"];
+
+/// Every special character of a `<w:t>`'s content, in order, as literals.
+fn literal_specials(reader: &mut Reader<&[u8]>, specials: &mut RunSpecials<'_>) {
+    let push = |s: &str, specials: &mut RunSpecials<'_>| {
+        for c in s.chars() {
+            if let Some(kind) = SpecialKind::of_char(c) {
+                specials.push(kind, SpecialSource::Literal);
+            }
+        }
+    };
     loop {
-        let start = reader.buffer_position() as usize;
         match reader.read_event() {
-            Ok(Event::Eof) | Err(_) | Ok(Event::End(_)) => return found,
-            Ok(Event::Start(e)) => {
-                let name = e.name().as_ref().to_vec();
-                let line = is_line_break(&e);
-                let _ = reader.read_to_end(QName(&name));
-                if line {
-                    found.push(&body[start..reader.buffer_position() as usize]);
+            Ok(Event::Text(t)) => {
+                if let Ok(s) = t.decode() {
+                    push(&s, specials);
                 }
             }
-            Ok(Event::Empty(e)) => {
-                if is_line_break(&e) {
-                    found.push(&body[start..reader.buffer_position() as usize]);
+            Ok(Event::CData(t)) => {
+                if let Ok(s) = t.decode() {
+                    push(&s, specials);
                 }
             }
+            Ok(Event::GeneralRef(r)) => {
+                if let Ok(Some(c)) = r.resolve_char_ref() {
+                    push(c.encode_utf8(&mut [0; 4]), specials);
+                }
+            }
+            Ok(Event::End(_)) | Ok(Event::Eof) | Err(_) => return,
             Ok(_) => {}
         }
+    }
+}
+
+/// Read the children of the run whose open tag ends at `run_open_end`: how
+/// the run writes each special character of its text ([`RunSpecials`]), or
+/// why its text cannot be rewritten safely.
+///
+/// The new text is written once, where the run's first text-bearing child
+/// (`<w:t>` or a special element) was, and every later one is dropped. So a
+/// child that is neither, sitting BETWEEN two of them (a `<w:drawing>`, a
+/// page break, a `<w:footnoteReference>`), would move behind the text: that
+/// is refused. `<w:lastRenderedPageBreak/>` is only Word's layout cache, so
+/// it may move. And content the import drops ([`UNPLACEABLE`]) is refused
+/// wherever it sits.
+fn scan_run(src: &[u8], run_open_end: usize) -> Result<RunSpecials<'_>, String> {
+    let body = &src[run_open_end..];
+    let mut reader = Reader::from_reader(body);
+    reader.config_mut().trim_text(false);
+    let mut specials = RunSpecials::default();
+    let mut first_text: Option<usize> = None;
+    let mut last_text: Option<usize> = None;
+    let mut opaque: Vec<(usize, String)> = Vec::new();
+    let mut k = 0usize;
+    loop {
+        let start = reader.buffer_position() as usize;
+        let (e, empty) = match reader.read_event() {
+            Ok(Event::Start(e)) => (e.into_owned(), false),
+            Ok(Event::Empty(e)) => (e.into_owned(), true),
+            Ok(Event::End(_)) | Ok(Event::Eof) | Err(_) => break,
+            Ok(_) => continue,
+        };
+        k += 1;
+        let name = e.name().as_ref().to_vec();
+        let ln = local_name(&name).to_vec();
+        let mut text_bearing = false;
+        if ln == b"t" {
+            if !empty {
+                literal_specials(&mut reader, &mut specials);
+            }
+            text_bearing = true;
+        } else {
+            if !empty {
+                let _ = reader.read_to_end(QName(&name));
+            }
+            let bytes = &body[start..reader.buffer_position() as usize];
+            if let Some(kind) = special_kind(&e) {
+                specials.push(kind, SpecialSource::Element(bytes));
+                text_bearing = true;
+            } else if UNPLACEABLE.contains(&ln.as_slice()) {
+                return Err(format!(
+                    "it holds a <w:{}>, which is not part of the text, so the edited \
+                     text has no place for it",
+                    String::from_utf8_lossy(&ln)
+                ));
+            } else if ln != b"rPr" && ln != b"lastRenderedPageBreak" {
+                opaque.push((k, String::from_utf8_lossy(&name).into_owned()));
+            }
+        }
+        if text_bearing {
+            first_text.get_or_insert(k);
+            last_text = Some(k);
+        }
+    }
+    if let (Some(first), Some(last)) = (first_text, last_text) {
+        if let Some((_, name)) = opaque.iter().find(|(k, _)| first < *k && *k < last) {
+            return Err(format!(
+                "its <{name}> sits inside the run's text, and the edited text has no \
+                 place for it"
+            ));
+        }
+    }
+    Ok(specials)
+}
+
+/// Copy the rest of the run verbatim: consume its children up to `</w:r>`
+/// without moving `cursor`.
+fn skip_run(reader: &mut Reader<&[u8]>) {
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => {
+                let name = e.name().as_ref().to_vec();
+                let _ = reader.read_to_end(QName(&name));
+            }
+            Ok(Event::End(_)) | Ok(Event::Eof) | Err(_) => return,
+            Ok(_) => {}
+        }
+    }
+}
+
+/// A run has its `<w:rPr>` as its FIRST child (schema). When the run has
+/// none and one is owed, it goes in before the first child that is not one,
+/// whatever that child is (a `<w:lastRenderedPageBreak/>`, a `<w:tab/>`).
+fn place_rpr_first(
+    ln: &[u8],
+    src: &[u8],
+    child_start: usize,
+    out: &mut Vec<u8>,
+    cursor: &mut usize,
+    rpr_pending: &mut Option<&[u8]>,
+) {
+    if ln == b"rPr" {
+        return;
+    }
+    if let Some(rpr) = rpr_pending.take() {
+        out.extend_from_slice(&src[*cursor..child_start]);
+        out.extend_from_slice(rpr);
+        *cursor = child_start;
     }
 }
 
@@ -578,10 +731,13 @@ fn line_break_children(src: &[u8], run_open_end: usize) -> Vec<&[u8]> {
 /// `<w:t>` and copying the rest verbatim. On return the reader is positioned just
 /// after `</w:r>`, and `cursor` is advanced past every spliced hole.
 ///
-/// A new text replaces ALL of the run's `<w:t>` AND its line-break children
-/// (the text carries those as U+2028): it is written once, where the first
-/// `<w:t>` was (or before `</w:r>` when the run had none), with the run's
-/// original line-break elements re-emitted in order for its line breaks.
+/// A new text replaces ALL of the run's `<w:t>` AND its special children
+/// (line breaks, tabs, non-breaking hyphens — the text carries those as
+/// characters): it is written once, where the first of them was (or before
+/// `</w:r>` when the run had none), with the run's original elements
+/// re-emitted in order for its special characters ([`render_text`]). A run
+/// whose text cannot be rewritten that way ([`scan_run`]) is left untouched
+/// and the refusal is recorded in `refusals` under the target's label.
 fn splice_run(
     reader: &mut Reader<&[u8]>,
     src: &[u8],
@@ -589,19 +745,26 @@ fn splice_run(
     run_open_end: usize,
     out: &mut Vec<u8>,
     cursor: &mut usize,
+    refusals: &mut Vec<String>,
 ) {
     // `Some` while an rPr replacement/insertion is still owed. It is placed at
-    // the existing `<w:rPr>` if present, else just before the first `<w:t>`
-    // (or the first dropped line break), else right after the `<w:r>` open tag
-    // (schema: rPr is the run's first child).
+    // the existing `<w:rPr>` if present, else just before the text, else
+    // right after the `<w:r>` open tag (schema: rPr is the run's first child).
     let mut rpr_pending: Option<&[u8]> = t.new_rpr.as_deref();
     let mut text_done = false;
-    let originals: Vec<&[u8]> = if t.new_text.is_some() {
-        line_break_children(src, run_open_end)
+    let originals = if t.new_text.is_some() {
+        match scan_run(src, run_open_end) {
+            Ok(o) => o,
+            Err(reason) => {
+                refusals.push(format!("{}: {reason}", t.label));
+                skip_run(reader);
+                return;
+            }
+        }
     } else {
-        Vec::new()
+        RunSpecials::default()
     };
-    let rendered = || render_wt_with_breaks(t.new_text.as_deref().unwrap_or(""), &originals);
+    let rendered = || render_text(t.new_text.as_deref().unwrap_or(""), &originals);
 
     loop {
         let child_start = reader.buffer_position() as usize;
@@ -610,6 +773,7 @@ fn splice_run(
             Ok(Event::Start(e)) => {
                 let name = e.name().as_ref().to_vec();
                 let ln = local_name(&name).to_vec();
+                place_rpr_first(&ln, src, child_start, out, cursor, &mut rpr_pending);
                 if ln == b"rPr" && t.new_rpr.is_some() {
                     let _ = reader.read_to_end(QName(&name));
                     let end = reader.buffer_position() as usize;
@@ -619,23 +783,20 @@ fn splice_run(
                     rpr_pending = None;
                     continue;
                 }
-                let line = t.new_text.is_some() && is_line_break(&e);
-                if (ln == b"t" && t.new_text.is_some()) || line {
+                if t.new_text.is_some() && (ln == b"t" || special_kind(&e).is_some()) {
                     let _ = reader.read_to_end(QName(&name));
                     let end = reader.buffer_position() as usize;
+                    out.extend_from_slice(&src[*cursor..child_start]);
                     // A pending rPr must land before the text (schema order).
                     if let Some(rpr) = rpr_pending.take() {
-                        out.extend_from_slice(&src[*cursor..child_start]);
                         out.extend_from_slice(rpr);
-                        *cursor = child_start;
                     }
-                    out.extend_from_slice(&src[*cursor..child_start]);
-                    if ln == b"t" && !text_done {
+                    if !text_done {
                         out.extend_from_slice(&rendered());
                         text_done = true;
                     }
-                    // First `<w:t>` carries the whole new text; any later `<w:t>`
-                    // and every line break in the same run is dropped (collapsed).
+                    // The first text-bearing child carries the whole new text;
+                    // every later one in the same run is dropped (collapsed).
                     *cursor = end;
                     continue;
                 }
@@ -645,19 +806,18 @@ fn splice_run(
             Ok(Event::Empty(e)) => {
                 let ln = local_name(e.name().as_ref()).to_vec();
                 let end = reader.buffer_position() as usize;
+                place_rpr_first(&ln, src, child_start, out, cursor, &mut rpr_pending);
                 if ln == b"rPr" && t.new_rpr.is_some() {
                     out.extend_from_slice(&src[*cursor..child_start]);
                     out.extend_from_slice(t.new_rpr.as_deref().unwrap());
                     *cursor = end;
                     rpr_pending = None;
-                } else if t.new_text.is_some() && (ln == b"t" || is_line_break(&e)) {
-                    // A line break the new text re-emits (or an empty
-                    // `<w:t/>`): dropped here, written with the text.
+                } else if t.new_text.is_some() && (ln == b"t" || special_kind(&e).is_some()) {
                     out.extend_from_slice(&src[*cursor..child_start]);
                     if let Some(rpr) = rpr_pending.take() {
                         out.extend_from_slice(rpr);
                     }
-                    if ln == b"t" && !text_done {
+                    if !text_done {
                         out.extend_from_slice(&rendered());
                         text_done = true;
                     }
@@ -672,8 +832,8 @@ fn splice_run(
                         out.extend_from_slice(rpr);
                         *cursor = run_open_end;
                     }
-                    // No `<w:t>` to write the new text at (a run of only line
-                    // breaks or tabs): it goes last.
+                    // No text-bearing child to write the new text at: it goes
+                    // last.
                     if t.new_text.is_some() && !text_done {
                         out.extend_from_slice(&src[*cursor..child_start]);
                         out.extend_from_slice(&rendered());
@@ -790,6 +950,66 @@ mod tests {
         );
         assert!(
             out.contains(r#"<w:r><w:br/><w:t xml:space="preserve">z</w:t><w:br w:type="textWrapping"/></w:r>"#),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn tabs_patch_back_as_w_tab_in_place() {
+        // A tab is `\t` in the text and `<w:tab/>` in the run: the edit keeps
+        // the element where it was and writes NO tab character into `<w:t>`.
+        let src = br#"<w:document xmlns:w="urn:w"><w:body><w:p><w:r><w:t>a</w:t><w:tab/><w:t>b</w:t></w:r></w:p></w:body></w:document>"#;
+        let out = patch_one(src, "a\tB");
+        assert!(
+            out.contains(r#"<w:r><w:t xml:space="preserve">a</w:t><w:tab/><w:t xml:space="preserve">B</w:t></w:r>"#),
+            "{out}"
+        );
+        // A tab removed by the edit is gone; one added is `<w:tab/>`.
+        assert!(patch_one(src, "ab").contains(r#"<w:r><w:t xml:space="preserve">ab</w:t></w:r>"#));
+        assert!(patch_one(src, "a\tb\tc").contains(
+            r#"<w:t xml:space="preserve">b</w:t><w:tab/><w:t xml:space="preserve">c</w:t></w:r>"#
+        ));
+    }
+
+    #[test]
+    fn content_inside_the_text_refuses_the_edit_and_keeps_the_run() {
+        // A footnote reference between two pieces of text would move behind
+        // the edited text; a `w:sym` has no character to place at all.
+        for run in [
+            r#"<w:r><w:t>a</w:t><w:footnoteReference w:id="1"/><w:t>b</w:t></w:r>"#,
+            r#"<w:r><w:sym w:font="Symbol" w:char="F0B7"/><w:t>b</w:t></w:r>"#,
+            r#"<w:r><w:t>a</w:t><w:br w:type="page"/><w:t>b</w:t></w:r>"#,
+        ] {
+            let src = format!(
+                r#"<w:document xmlns:w="urn:w"><w:body><w:p>{run}</w:p></w:body></w:document>"#
+            );
+            let mut t = ResolvedTarget::edit(0, 0);
+            t.new_text = Some("xy".into());
+            t.new_rpr = Some(b"<w:rPr><w:b/></w:rPr>".to_vec());
+            let (out, refused) = patch_document_xml_cols(
+                src.as_bytes(),
+                &[t],
+                &BTreeMap::new(),
+                &[],
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            );
+            assert_eq!(out, src.as_bytes(), "{run}: the run keeps its bytes");
+            assert_eq!(refused.len(), 1, "{run}");
+            assert!(
+                refused[0].starts_with("run edit skipped: paragraph 0 run 0: "),
+                "{refused:?}"
+            );
+        }
+        // Word's layout cache may move; content outside the text stays put.
+        let src = br#"<w:document xmlns:w="urn:w"><w:body><w:p><w:r><w:lastRenderedPageBreak/><w:t>a</w:t><w:lastRenderedPageBreak/><w:t>b</w:t><w:footnoteReference w:id="1"/></w:r></w:p></w:body></w:document>"#;
+        let mut t = ResolvedTarget::edit(0, 0);
+        t.new_text = Some("xy".into());
+        t.new_rpr = Some(b"<w:rPr><w:b/></w:rPr>".to_vec());
+        let out = String::from_utf8(patch_document_xml(src, &[t])).unwrap();
+        // The rPr goes FIRST (schema), ahead of the layout cache.
+        assert!(
+            out.contains(r#"<w:r><w:rPr><w:b/></w:rPr><w:lastRenderedPageBreak/><w:t xml:space="preserve">xy</w:t><w:lastRenderedPageBreak/><w:footnoteReference w:id="1"/></w:r>"#),
             "{out}"
         );
     }

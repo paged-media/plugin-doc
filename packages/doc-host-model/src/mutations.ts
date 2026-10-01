@@ -324,6 +324,35 @@ export function buildTableCells(table: LoweredTable, storyId: string, tableId: s
   return { op: "batch", args: { ops } } as Mutation;
 }
 
+/** The carets that style a table's BLANK cell lines (empty Word paragraphs
+ *  inside a cell), in the cell's OWN contiguous offset space (`insertText`
+ *  with a `cell` address restarts at 0, and so do the cell's style ranges).
+ *  A blank line occupies no characters, so it sits at the offset its next
+ *  paragraph starts at, and consecutive ones share it: only the LAST caret
+ *  per cell offset is emitted (the body's rule). Only cells the pour gives
+ *  text to are addressed — a cell of one empty paragraph gets no
+ *  `insertText`, so the engine has no paragraph there for a caret to name.
+ *  Applied after every cell is poured (see {@link buildStoryBlocks}), so an
+ *  engine that refuses a caret costs no cell its text. */
+export function buildTableCellCarets(table: LoweredTable, storyId: string, tableId: string): Mutation[] {
+  const ops: Mutation[] = [];
+  for (const cell of table.cells) {
+    if (cellText(cell).length === 0) continue;
+    const addr = { tableId, row: cell.row, col: cell.col };
+    const last = new Map<number, string>();
+    let offset = 0;
+    for (const para of cell.paragraphs) {
+      const paraStart = offset;
+      for (const run of para.runs) offset += codePointLen(run.text);
+      if (para.paraStyleId && offset === paraStart) last.set(paraStart, para.paraStyleId);
+    }
+    for (const [at, style] of last) {
+      ops.push(applyStyleInCell(storyId, at, at, style, "paragraph", addr));
+    }
+  }
+  return ops;
+}
+
 // ---------------------------------------------------------------------------
 // The story plan (block-aware; tables need mid-execution tableId resolution)
 
@@ -387,13 +416,16 @@ export function pouredParagraphCount(blocks: readonly LoweredBlock[]): number {
  *  (all fresh), so none is refused; where a group of blank lines at one
  *  offset has different Word styles, the last caret wins for all of them,
  *  which `docx-lower` reports as a warning. Only the last caret per offset is
- *  emitted. */
+ *  emitted. Blank lines inside table cells are styled in the same step, by
+ *  cell-addressed carets ({@link buildTableCellCarets}). */
 export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: string): StoryStep[] {
   const steps: StoryStep[] = [];
   let pending: LoweredParagraph[] = [];
   // Each text step's carets, filled in when the pour runs it (the style base
   // is only known then).
   const caretsByStep: Mutation[][] = [];
+  // Each table's cell carets, filled in once its id is minted.
+  const cellCarets: Mutation[][] = [];
   let hasCarets = false;
   const flush = () => {
     if (pending.length === 0) return;
@@ -418,10 +450,16 @@ export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: strin
     if (block.kind === "table") {
       flush();
       const table: LoweredTable = block;
+      const slot = cellCarets.length;
+      cellCarets.push([]);
+      if (buildTableCellCarets(table, storyId, "").length > 0) hasCarets = true;
       steps.push({
         kind: "table",
         insert: buildTableInsert(table, storyId),
-        cells: (tableId) => buildTableCells(table, storyId, tableId),
+        cells: (tableId) => {
+          cellCarets[slot] = buildTableCellCarets(table, storyId, tableId);
+          return buildTableCells(table, storyId, tableId);
+        },
       });
     } else {
       pending.push(block);
@@ -434,11 +472,14 @@ export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: strin
       length: 0,
       byteLength: 0,
       mutations: () => {
+        // The body's carets, last one per story offset, then each poured
+        // table's (already one per cell offset; a table whose insert was
+        // refused has none).
         const last = new Map<number, Mutation>();
         for (const op of caretsByStep.flat()) {
           last.set((op as unknown as { args: { start: number } }).args.start, op);
         }
-        return [...last.values()];
+        return [...last.values(), ...cellCarets.flat()];
       },
     });
   }

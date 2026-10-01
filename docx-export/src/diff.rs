@@ -391,13 +391,42 @@ fn lcs_align(a: &[String], b: &[String]) -> Vec<Align> {
         j += 1;
     }
 
-    // Coalesce Del(bi) immediately followed by Ins(ei) into Match(bi, ei).
+    // Coalesce a stretch of Dels immediately followed by a stretch of Ins
+    // into Matches, pairwise in order: editing k ADJACENT paragraphs changes k
+    // keys at once, and pairing only the last Del with the first Ins would
+    // match the wrong nodes and delete-then-insert the rest (losing their
+    // `<w:pPr>` and every unmodelled child). With unequal counts the extra
+    // Dels lead (k > k'), the extra Ins trail (k < k') — for one Del or one
+    // Ins that is the single-pair rule this pass started as.
     let mut out: Vec<Align> = Vec::with_capacity(raw.len());
     let mut k = 0usize;
     while k < raw.len() {
-        if let (Align::Del(bi), Some(Align::Ins(ei))) = (&raw[k], raw.get(k + 1)) {
-            out.push(Align::Match(*bi, *ei));
-            k += 2;
+        let dels: Vec<usize> = raw[k..]
+            .iter()
+            .map_while(|s| match s {
+                Align::Del(x) => Some(*x),
+                _ => None,
+            })
+            .collect();
+        let ins: Vec<usize> = raw[k + dels.len()..]
+            .iter()
+            .map_while(|s| match s {
+                Align::Ins(x) => Some(*x),
+                _ => None,
+            })
+            .collect();
+        if !dels.is_empty() && !ins.is_empty() {
+            let pairs = dels.len().min(ins.len());
+            let lead = dels.len() - pairs;
+            out.extend(dels[..lead].iter().map(|&d| Align::Del(d)));
+            out.extend(
+                dels[lead..]
+                    .iter()
+                    .zip(&ins[..pairs])
+                    .map(|(&d, &e)| Align::Match(d, e)),
+            );
+            out.extend(ins[pairs..].iter().map(|&e| Align::Ins(e)));
+            k += dels.len() + ins.len();
             continue;
         }
         out.push(match raw[k] {
@@ -564,4 +593,43 @@ fn swatch_hex(id: &str, doc: &LoweredDoc) -> Option<String> {
         "{:02X}{:02X}{:02X}",
         sw.value[0] as u8, sw.value[1] as u8, sw.value[2] as u8
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn align(a: &[&str], b: &[&str]) -> Vec<String> {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        lcs_align(&s(a), &s(b))
+            .into_iter()
+            .map(|step| match step {
+                Align::Match(x, y) => format!("={x}{y}"),
+                Align::Del(x) => format!("-{x}"),
+                Align::Ins(y) => format!("+{y}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn adjacent_edits_pair_in_order() {
+        // Three adjacent paragraphs edited at once: three in-place edits,
+        // not one mismatched pair and four structural ops.
+        assert_eq!(
+            align(&["a", "b", "c", "d"], &["a", "B", "C", "D"]),
+            ["=00", "=11", "=22", "=33"]
+        );
+        // Two deleted where one was edited: the extra Del leads.
+        assert_eq!(
+            align(&["a", "b", "c", "d"], &["a", "X", "d"]),
+            ["=00", "-1", "=21", "=32"]
+        );
+        // One edited and one inserted: the extra Ins trails.
+        assert_eq!(
+            align(&["a", "b", "d"], &["a", "X", "Y", "d"]),
+            ["=00", "=11", "+2", "=23"]
+        );
+        // A plain deletion stays a deletion.
+        assert_eq!(align(&["a", "b", "c"], &["a", "c"]), ["=00", "-1", "=21"]);
+    }
 }

@@ -33,6 +33,8 @@
 //! - save-back writes U+2028 back as `<w:br/>` where it was, and a zero-edit
 //!   save stays byte-identical.
 
+#![allow(non_snake_case)] // `…__feat__<id>` test names link the cockpit feature
+
 use std::collections::HashMap;
 
 use docx_conformance::{line_breaks_docx, LINE_BREAK_CASES};
@@ -333,4 +335,46 @@ fn edited_line_breaks_save_back_as_w_br_in_place() {
     assert_eq!(t("L02"), "L02a before\u{2028}L02b EDITED");
     assert_eq!(t("L01"), "L01 one\u{2028}line");
     assert_eq!(t("L04"), "L04a ends in br\u{2028}");
+}
+
+#[test]
+fn blank_lines_in_a_cell_are_styled_and_differences_diagnosed__feat__plugin_doc_read_path() {
+    let ir = docx_lower::lower(&import_docx(&docx_conformance::cell_blank_lines_docx()).unwrap());
+    let LoweredBlock::Table(t) = &ir.story.blocks[0] else {
+        panic!("a table first");
+    };
+    // Every blank cell line carries its paragraph style, with its pitch.
+    let pitches: Vec<Vec<f32>> = t
+        .cells
+        .iter()
+        .map(|c| {
+            c.paragraphs
+                .iter()
+                .map(|p| leading(&ir, p.para_style_id.as_deref()))
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        pitches,
+        vec![
+            vec![12.0, 24.0, 12.0, 12.0],
+            vec![12.0, 24.0, 12.0, 24.0],
+            vec![12.0]
+        ]
+    );
+    // Cell (0, 0)'s two blank lines share one offset and differ: diagnosed.
+    // Cell (0, 1)'s blank lines sit at different offsets: not.
+    let warnings: Vec<&str> = ir
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.starts_with("blank lines in the table"))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("cell row 0 column 0, paragraphs 1 ("),
+        "{}",
+        warnings[0]
+    );
+    assert!(warnings[0].contains(", 2 ("), "{}", warnings[0]);
 }

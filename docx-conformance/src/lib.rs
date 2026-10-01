@@ -697,6 +697,90 @@ pub fn line_breaks_docx() -> Vec<u8> {
     ])
 }
 
+/// The cases of [`run_specials_docx`], in document order: a label and the
+/// paragraph's run XML. `{R}` stands for the fixture's run properties. Every
+/// paragraph has left tab stops at 1 in and 2 in (72 pt / 144 pt from the
+/// left margin), so a tab is visible as where the text after it starts.
+///
+/// The run children the import turns into a character of the text
+/// (`<w:tab/>` → `\t`, `<w:noBreakHyphen/>` → U+2011, a plain `<w:br/>` →
+/// U+2028), and the ones it does not carry at all (`<w:sym>`,
+/// `<w:softHyphen/>`, `<w:ptab>`), which an edited save must refuse.
+pub const RUN_SPECIAL_CASES: &[(&str, &str)] = &[
+    // A tab between two words of one run.
+    (
+        "T01",
+        r#"<w:r>{R}<w:t>T01</w:t><w:tab/><w:t>value</w:t></w:r>"#,
+    ),
+    // Two tabs in a row.
+    (
+        "T02",
+        r#"<w:r>{R}<w:t>T02a</w:t><w:tab/><w:tab/><w:t>T02b</w:t></w:r>"#,
+    ),
+    // A tab before the run's first text.
+    (
+        "T03",
+        r#"<w:r>{R}<w:tab/><w:t xml:space="preserve">T03 leading</w:t></w:r>"#,
+    ),
+    // A non-breaking hyphen.
+    (
+        "N01",
+        r#"<w:r>{R}<w:t>N01 well</w:t><w:noBreakHyphen/><w:t>known</w:t></w:r>"#,
+    ),
+    // All three kinds in one run, the break with an attribute to keep.
+    (
+        "M01",
+        r#"<w:r>{R}<w:t>M01a</w:t><w:tab/><w:t>b</w:t><w:br w:clear="all"/><w:t>M01c</w:t><w:noBreakHyphen/><w:t>d</w:t></w:r>"#,
+    ),
+    // A literal tab character inside the `<w:t>` (not Word's own form).
+    (
+        "X01",
+        "<w:r>{R}<w:t xml:space=\"preserve\">X01\tliteral</w:t></w:r>",
+    ),
+    // Run content the import does not carry as text.
+    (
+        "S01",
+        r#"<w:r>{R}<w:t>S01 before</w:t><w:sym w:font="Symbol" w:char="F0B7"/><w:t>after</w:t></w:r>"#,
+    ),
+    (
+        "H01",
+        r#"<w:r>{R}<w:t>H01 hyphen</w:t><w:softHyphen/><w:t>ation</w:t></w:r>"#,
+    ),
+    (
+        "P01",
+        r#"<w:r>{R}<w:t>P01 left</w:t><w:ptab w:relativeTo="margin" w:alignment="right" w:leader="none"/><w:t>right</w:t></w:r>"#,
+    ),
+];
+
+/// Tabs, non-breaking hyphens and the run content around them
+/// ([`RUN_SPECIAL_CASES`]): one paragraph per case on the
+/// [`line_breaks_docx`] page, Arial 10 pt on a 12 pt pitch, with left tab
+/// stops at 72 pt and 144 pt. The save-back tests edit it; Word opens the
+/// edited result (`scripts/word-run-specials-probe.sh`).
+pub fn run_specials_docx() -> Vec<u8> {
+    let rpr = r#"<w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="20"/></w:rPr>"#;
+    let mut body = String::new();
+    for (_, runs) in RUN_SPECIAL_CASES {
+        body.push_str(&format!(
+            r#"<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="1440"/><w:tab w:val="left" w:pos="2880"/></w:tabs><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="exact"/>{rpr}</w:pPr>{}</w:p>"#,
+            runs.replace("{R}", rpr)
+        ));
+    }
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}<w:sectPr>{LINE_BREAKS_PAGE}<w:cols w:space="720"/></w:sectPr></w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+    ])
+}
+
 /// One section of [`continuous_docx`]: its label prefix, how it starts, its
 /// paragraph count, column count, page size and margins (twips).
 #[derive(Debug, Clone, Copy)]
@@ -1174,6 +1258,48 @@ pub fn simple_table_docx() -> Vec<u8> {
         ("[Content_Types].xml", content_types.as_bytes()),
         ("_rels/.rels", ROOT_RELS.as_bytes()),
         ("word/document.xml", document.as_bytes()),
+    ])
+}
+
+/// Blank lines inside table cells (core `65cf615`: a caret, `cell`
+/// addressed, styles them). One row, three cells: `A`, a 24 pt blank line,
+/// a 12 pt blank line, `B` (two blank lines at ONE cell offset with
+/// different pitches — diagnosed); `C`, a 24 pt blank line, `D`, and a
+/// trailing 24 pt blank line; and an empty cell.
+pub fn cell_blank_lines_docx() -> Vec<u8> {
+    let p = |line: u32, text: &str| {
+        let runs = if text.is_empty() {
+            String::new()
+        } else {
+            format!("<w:r><w:t>{text}</w:t></w:r>")
+        };
+        format!(
+            r#"<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="{line}" w:lineRule="exact"/></w:pPr>{runs}</w:p>"#
+        )
+    };
+    let cell = |paras: &[(u32, &str)]| {
+        let body: String = paras.iter().map(|(l, t)| p(*l, t)).collect();
+        format!("<w:tc>{body}</w:tc>")
+    };
+    let row = [
+        cell(&[(240, "A"), (480, ""), (240, ""), (240, "B")]),
+        cell(&[(240, "C"), (480, ""), (240, "D"), (480, "")]),
+        cell(&[(240, "")]),
+    ]
+    .concat();
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:tbl><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid><w:tr>{row}</w:tr></w:tbl>{}<w:sectPr>{LINE_BREAKS_PAGE}</w:sectPr></w:body>
+</w:document>"#,
+        p(240, "after")
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
     ])
 }
 

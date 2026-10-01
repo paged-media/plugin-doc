@@ -188,6 +188,48 @@ fn blank_line_styles(
         }
     }
     flush(&mut group);
+
+    // Inside a table cell the same holds in the cell's own offset space:
+    // consecutive blank lines of one cell share a caret.
+    for (idx, block) in blocks.iter().enumerate() {
+        let LoweredBlock::Table(t) = block else {
+            continue;
+        };
+        for cell in &t.cells {
+            let mut group: Vec<(usize, Option<&str>)> = Vec::new();
+            let mut flush = |group: &mut Vec<(usize, Option<&str>)>| {
+                if group.iter().any(|(_, s)| *s != group[0].1) {
+                    let last_styled = group.iter().rev().find_map(|(_, s)| *s);
+                    let list: Vec<String> = group
+                        .iter()
+                        .map(|(i, s)| format!("{i} ({})", s.unwrap_or("no style")))
+                        .collect();
+                    diagnostics.push(Diagnostic::warning(
+                        format!(
+                            "blank lines in the table at body block {idx}, cell row {} column \
+                             {}, paragraphs {} have different paragraph styles; the engine \
+                             styles blank lines at one position together, so they all take \
+                             {} and may not have Word's line heights",
+                            cell.row,
+                            cell.col,
+                            list.join(", "),
+                            last_styled.unwrap_or("the default style"),
+                        ),
+                        1,
+                    ));
+                }
+                group.clear();
+            };
+            for (k, p) in cell.paragraphs.iter().enumerate() {
+                if p.runs.is_empty() {
+                    group.push((k, p.para_style_id.as_deref()));
+                } else {
+                    flush(&mut group);
+                }
+            }
+            flush(&mut group);
+        }
+    }
 }
 
 /// Lower a whole Word document to the native IR.

@@ -87,6 +87,7 @@ pub fn apply_edits(
             new_rpr,
             delete: false,
             insert_after: Vec::new(),
+            label: format!("run edit skipped: block {} run {}", e.block, e.run),
         });
     }
 
@@ -287,6 +288,10 @@ pub fn apply_edits(
             run_ord,
             new_text: c.new_text.clone(),
             new_rpr,
+            label: format!(
+                "cell edit skipped: block {} cell {} para {} run {}",
+                c.block, c.cell, c.para, c.run
+            ),
         });
     }
 
@@ -299,10 +304,14 @@ pub fn apply_edits(
         return Ok(skips);
     }
 
-    let patched = {
+    let (patched, refused) = {
         let src = pkg.require(main_part)?;
         patch_document_xml_cols(src, &targets, &paras, &cell_targets, &rows, &columns)
     };
-    pkg.set_part(main_part, patched);
+    skips.extend(refused);
+    // Every edit refused: the part is untouched, so keep it lazy-verbatim.
+    if patched.as_slice() != pkg.require(main_part)? {
+        pkg.set_part(main_part, patched);
+    }
     Ok(skips)
 }

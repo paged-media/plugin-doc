@@ -135,7 +135,17 @@ export interface LoweredStory {
 
 export type LoweredBlock =
   | ({ kind: "paragraph" } & LoweredParagraph)
-  | { kind: "table"; rows: number; cols: number; columnWidthsPt: number[]; cells: LoweredCell[] };
+  | {
+      kind: "table";
+      rows: number;
+      cols: number;
+      columnWidthsPt: number[];
+      cells: LoweredCell[];
+      /** Non-empty: the table has a row taller than its page, which Word
+       *  splits across pages and a native row never does. It pours as these
+       *  paragraphs (its cells' text in reading order) instead of a table. */
+      flow?: LoweredParagraph[];
+    };
 
 /** A native table to build via insertTable + per-cell insertText + setCellSpan. */
 export interface LoweredTable {
@@ -145,6 +155,12 @@ export interface LoweredTable {
   cells: LoweredCell[];
   /** Leading rows Word repeats on every page (`w:tblHeader`). */
   headerRows?: number;
+  /** Each row's least height in points (`w:trHeight`), 0 where a row
+   *  declares none; absent when no row does. */
+  rowHeightsPt?: number[];
+  /** See `LoweredBlock`'s table: the paragraphs it pours as when it cannot
+   *  be a native table. */
+  flow?: LoweredParagraph[];
 }
 
 /** One table cell, addressed by its resolved grid position. */

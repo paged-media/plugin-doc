@@ -158,6 +158,18 @@ pub struct LoweredTable {
     /// table's header rows.
     #[serde(default)]
     pub header_rows: u32,
+    /// Each row's least height in points (`w:trHeight`), 0 for a row that
+    /// declares none; empty when no row does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub row_heights_pt: Vec<f32>,
+    /// When non-empty, the table is NOT built as a native table: it has a
+    /// row taller than its page, which Word splits across pages and a
+    /// native row never does (the whole row would be overset, its text
+    /// gone). Its cells' paragraphs, in reading order, pour as body text
+    /// instead; `rows` / `cols` / `cells` are then empty. Save-back leaves
+    /// the Word table as it was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flow: Vec<LoweredParagraph>,
 }
 
 /// One table cell, addressed by its resolved grid position.

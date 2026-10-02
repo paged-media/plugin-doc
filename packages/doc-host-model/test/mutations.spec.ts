@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { LoweredDoc } from "../src/lowered.js";
+import type { LoweredBlock, LoweredDoc } from "../src/lowered.js";
 import {
   buildDocumentMutations,
   buildStory,
@@ -10,6 +10,7 @@ import {
   buildTableCells,
   buildTableInsert,
   buildTextPour,
+  pouredParagraphCount,
 } from "../src/mutations.js";
 
 // Mirrors what docx-lower emits for a heading + a "plain / bold-red / plain"
@@ -150,6 +151,15 @@ describe("tables", () => {
       op: "insertTable",
       args: { storyId: "Story/u1", rows: 2, cols: 2, headerRows: 0, footerRows: 0, columnWidths: [100, 150], rowHeights: [] },
     });
+  });
+
+  it("insertTable carries Word's least row heights", () => {
+    const table = {
+      ...((tableIr().story.blocks[1] as unknown) as import("../src/lowered.js").LoweredTable),
+      rowHeightsPt: [21.4, 0],
+    };
+    const op = buildTableInsert(table, "Story/u1") as unknown as { args: { rowHeights: number[] } };
+    expect(op.args.rowHeights).toEqual([21.4, 0]);
   });
 
   it("cells pour by TextCellAddr and merged cells get setCellSpan", () => {
@@ -486,5 +496,39 @@ describe("buildTableCells — Word's cell geometry", () => {
       { elementId, path: "cellInsetRight", value: { type: "length", value: 3 } },
       { elementId, path: "cellVerticalJustification", value: { type: "text", value: "CenterAlign" } },
     ]);
+  });
+});
+
+describe("a table that flows as text", () => {
+  // docx-lower gives a table `flow` when one of its rows is taller than the
+  // page: Word splits the row across pages, a native row never splits.
+  const flowed: LoweredBlock = {
+    kind: "table",
+    rows: 0,
+    cols: 0,
+    columnWidthsPt: [],
+    cells: [],
+    flow: [
+      { paraStyleId: "PS/cell", runs: [{ text: "one", charStyleId: null }], sourceIndex: 1 },
+      { paraStyleId: "PS/cell", runs: [{ text: "two", charStyleId: null }], sourceIndex: 1 },
+    ],
+  };
+  const blocks: LoweredBlock[] = [
+    { kind: "paragraph", paraStyleId: "PS/a", runs: [{ text: "a", charStyleId: null }], sourceIndex: 0 },
+    flowed,
+    { kind: "paragraph", paraStyleId: "PS/b", runs: [{ text: "b", charStyleId: null }], sourceIndex: 2 },
+  ];
+
+  it("pours its paragraphs with the text around it, and inserts no table", () => {
+    const steps = buildStoryBlocks(blocks, "s");
+    expect(steps.map((s) => s.kind)).toEqual(["text"]);
+    const text = steps[0] as Extract<(typeof steps)[number], { kind: "text" }>;
+    const ops = text.mutations(0, 0) as unknown as Array<{ op: string; args: Record<string, unknown> }>;
+    expect(ops[0]).toEqual({ op: "insertText", args: { storyId: "s", offset: 0, text: "a\none\ntwo\nb", cell: null } });
+    expect(ops.some((o) => o.op === "insertTable")).toBe(false);
+  });
+
+  it("counts as its paragraphs for save-back", () => {
+    expect(pouredParagraphCount(blocks)).toBe(4);
   });
 });

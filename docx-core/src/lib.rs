@@ -165,6 +165,15 @@ pub struct ListMarker {
     pub first_line_indent: Option<i32>,
     #[serde(default)]
     pub hanging_indent: Option<i32>,
+    /// The face the level sets its marker in (`w:lvl/w:rPr/w:rFonts`), e.g.
+    /// `Symbol` for a bullet. The marker is a character of the paragraph's
+    /// first line, so its font counts for that line's height.
+    #[serde(default)]
+    pub marker_font: Option<String>,
+    /// The marker's size in half-points (`w:lvl/w:rPr/w:sz`); the
+    /// paragraph's own when absent.
+    #[serde(default)]
+    pub marker_half_pts: Option<u32>,
 }
 
 /// Whether a list paragraph is bulleted or numbered.
@@ -555,6 +564,12 @@ pub struct Image {
     /// one (`wp:inline`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub float: Option<Float>,
+    /// `Some` for a floating picture that takes a BAND of its own (text
+    /// above and below it, none beside it), set inline: how far below its
+    /// paragraph's top the band starts, in EMU. A legacy VML picture with
+    /// `w10:wrap type="topAndBottom"` says it as CSS `margin-top`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band_offset_emu: Option<i64>,
 }
 
 /// A floating drawing's placement (`wp:anchor`, thoughts ADR 035). Lengths in
@@ -809,6 +824,10 @@ pub struct TableRow {
     /// table continues on.
     #[serde(default)]
     pub is_header: bool,
+    /// `w:trPr/w:trHeight/@w:val` in twips: the least the row is tall
+    /// (`w:hRule` `atLeast`, Word's default, or `exact`).
+    #[serde(default)]
+    pub height: Option<i32>,
 }
 
 /// A table cell (`w:tc`) — block content (paragraphs) plus merge spans.

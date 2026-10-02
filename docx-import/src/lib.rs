@@ -586,8 +586,14 @@ struct NumberingTable {
     abstract_levels: std::collections::HashMap<i32, std::collections::HashMap<u8, Level>>,
 }
 
-/// One numbering level: its format, `w:lvlText` and indents.
-type Level = (wml::NumberFormatValues, Option<String>, LevelIndent);
+/// One numbering level: its format, `w:lvlText`, indents, and its marker's
+/// face and size (half-points).
+type Level = (
+    wml::NumberFormatValues,
+    Option<String>,
+    LevelIndent,
+    (Option<String>, Option<u32>),
+);
 
 /// A numbering level's own `w:pPr/w:ind` (twips): left, first line, hanging.
 type LevelIndent = (Option<i32>, Option<i32>, Option<i32>);
@@ -616,7 +622,16 @@ impl NumberingTable {
                             ind.hanging.as_ref().and_then(stwips),
                         )
                     });
-                levels.insert(ilvl, (fmt, text, indent));
+                let face =
+                    lvl.numbering_symbol_run_properties
+                        .as_deref()
+                        .map_or((None, None), |rp| {
+                            (
+                                rp.run_fonts.first().and_then(|f| f.ascii.clone()),
+                                rp.font_size.as_ref().and_then(|s| hps(&s.val)),
+                            )
+                        });
+                levels.insert(ilvl, (fmt, text, indent, face));
             }
             t.abstract_levels.insert(a.abstract_number_id, levels);
         }
@@ -629,7 +644,7 @@ impl NumberingTable {
 
     fn resolve(&self, num_id: i32, level: u8) -> Option<ListMarker> {
         let abstract_id = self.num_to_abstract.get(&num_id)?;
-        let (fmt, text, (left, first, hanging)) =
+        let (fmt, text, (left, first, hanging), (marker_font, marker_half_pts)) =
             self.abstract_levels.get(abstract_id)?.get(&level)?;
         let marker = |kind, bullet_char, number_format| ListMarker {
             kind,
@@ -639,6 +654,8 @@ impl NumberingTable {
             left_indent: *left,
             first_line_indent: *first,
             hanging_indent: *hanging,
+            marker_font: marker_font.clone(),
+            marker_half_pts: *marker_half_pts,
         };
         Some(match fmt {
             wml::NumberFormatValues::Bullet => marker(
@@ -926,7 +943,19 @@ fn map_table(t: &wml::Table, ctx: &ImportCtx, table_ord: u32) -> docx_core::Tabl
                         if h.val.is_none() || on(&h.val))
                 })
             });
-            rows.push(docx_core::TableRow { cells, is_header });
+            let height = tr.table_row_properties.as_deref().and_then(|p| {
+                p.table_row_properties_choice1.iter().find_map(|c| match c {
+                    wml::TableRowPropertiesChoice::TableRowHeight(h) => {
+                        h.val.as_ref().and_then(twips_u)
+                    }
+                    _ => None,
+                })
+            });
+            rows.push(docx_core::TableRow {
+                cells,
+                is_header,
+                height,
+            });
             row_ord += 1;
         }
     }
@@ -1239,6 +1268,7 @@ fn map_drawing(d: &wml::Drawing, ctx: &ImportCtx) -> Option<Image> {
         width_emu,
         height_emu,
         float,
+        band_offset_emu: None,
     })
 }
 
@@ -1393,12 +1423,15 @@ fn map_pict(p: &wml::Picture, ctx: &ImportCtx) -> Option<Image> {
         let (bytes, mime) = ctx.images.resolve(rel_id)?;
         // Inline in the flow, as Word lays both kinds (a floating one's band
         // is its own line's worth of room).
+        let band_offset_emu = (css("position") == Some("absolute"))
+            .then(|| css("margin-top").and_then(css_length_emu).unwrap_or(0));
         Some(Image {
             bytes,
             mime,
             width_emu,
             height_emu,
             float: None,
+            band_offset_emu,
         })
     })
 }

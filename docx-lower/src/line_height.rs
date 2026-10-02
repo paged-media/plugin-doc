@@ -82,10 +82,12 @@ const MEASURED: &[(&str, u16)] = &[
     ("Helvetica", 2355),
     ("Lucida Sans Unicode", 3147),
     ("Palatino Linotype", 2763),
+    ("Symbol", 2510),
     ("Tahoma", 2472),
     ("Times New Roman", 2355),
     ("Trebuchet MS", 2378),
     ("Verdana", 2489),
+    ("Wingdings", 2273),
 ];
 
 /// Word's single line height for `font` in ems, or `None` when Word has not

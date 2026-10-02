@@ -503,6 +503,7 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
                 .find(|s| s.first_block <= idx)
                 .unwrap_or(&default);
             story_width = twip_to_pt(s.page_width - s.margin_left - s.margin_right);
+            ctx.text_height = Some(twip_to_pt(s.page_height - s.margin_top - s.margin_bottom));
         }
         let section_start = starts_section(idx);
         if let Some((_, _, joined)) = section_start {
@@ -598,7 +599,14 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
                         3,
                     ));
                 }
-                blocks.push(LoweredBlock::Table(ctx.lower_table(t)));
+                let table = match ctx.flow_table(t) {
+                    Some(flow) => LoweredTable {
+                        flow,
+                        ..LoweredTable::default()
+                    },
+                    None => ctx.lower_table(t),
+                };
+                blocks.push(LoweredBlock::Table(table));
             }
         }
     }
@@ -963,6 +971,12 @@ struct Lowering {
     default_para_style: Option<String>,
     /// Tab stops past the right margin moved to it (`clamp_tabs`).
     clamped_tabs: usize,
+    /// The height of the body on the page being lowered (page height less
+    /// the top and bottom margins): what a table row has to fit in.
+    text_height: Option<f32>,
+    /// Tables lowered as flowing text, a row being taller than the page
+    /// ([`Lowering::flow_table`]).
+    flowed_tables: usize,
     /// What Word's paragraph-spacing rule changes on the body paragraph
     /// about to be lowered ([`Lowering::word_spacing`]): its space before,
     /// and whether its space after is dropped. Taken by the lowering.
@@ -1338,6 +1352,40 @@ impl Lowering {
                 props.push(len("characterLeading", pt));
             }
         }
+        // A list marker is a character of the paragraph's FIRST line, set in
+        // the level's own face: a Symbol bullet makes that line 12.25 pt at
+        // 10 pt where Times New Roman's is 11.5 (`fixtures/line-spacing.
+        // word.json` L37; measured on a real document as 0.73 pt per
+        // bulleted item). The engine's marker never raises its line
+        // (InDesign's rule), so the difference goes into the space before.
+        if let (Some(list), false, Some(_)) = (&p.list, exact, can_carry) {
+            if let Some(font) = list.marker_font.clone() {
+                let style = self.style_of(p).map(str::to_owned);
+                let first = p.runs.iter().find(|r| !r.text.is_empty());
+                let (_, text_size) = self.resolve_face(first, style.as_deref());
+                let size = list.marker_half_pts.or(text_size);
+                let spacing = self.resolve_spacing(p.props.line_spacing, style.as_deref());
+                if let (Some(ls), Some(own)) = (spacing, self.paragraph_pitch(p)) {
+                    let single = self.single_line(Some(&font), size);
+                    let extra = line_height::line_pitch_pt(ls, single) - own;
+                    if extra > 0.01 {
+                        let before = props
+                            .iter()
+                            .find(|sp| sp.path == "paragraphSpaceBefore")
+                            .and_then(|sp| match sp.value {
+                                PropValue::Length(pt) => Some(pt),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| {
+                                self.resolved_para(p, |pp| pp.space_before)
+                                    .map_or(0.0, twip_to_pt)
+                            });
+                        props.retain(|sp| sp.path != "paragraphSpaceBefore");
+                        props.push(len("paragraphSpaceBefore", before + extra));
+                    }
+                }
+            }
+        }
         if let Some(list) = &p.list {
             // Word's order: numbering, then the paragraph style, then direct
             // formatting. The level's indents only reach the paragraph where
@@ -1409,11 +1457,30 @@ impl Lowering {
             ));
         }
 
-        let runs = p
+        // A picture paragraph is auto-leaded as a whole (above): its runs
+        // carry no leading of their own. Nor do a cell's (the engine sets a
+        // cell paragraph by its first run's leading).
+        let run_leadings = if grows_for_picture || can_carry.is_none() {
+            Vec::new()
+        } else {
+            self.run_pitches(p)
+        };
+        let mut runs: Vec<LoweredRun> = p
             .runs
             .iter()
             .filter(|r| !r.text.is_empty())
-            .map(|r| self.lower_run(r))
+            .enumerate()
+            .map(|(i, r)| {
+                let mut run = self.lower_run(r);
+                if let Some(pt) = run_leadings.get(i).copied().flatten() {
+                    run.char_style_id = Some(self.synthesize(
+                        StyleCollection::Character,
+                        run.char_style_id.take(),
+                        vec![len("characterLeading", pt)],
+                    ));
+                }
+                run
+            })
             .collect();
 
         // Images ride on their own (empty-text) runs; collect them as
@@ -1424,9 +1491,38 @@ impl Lowering {
         let total = p.runs.iter().map(|r| r.text.chars().count() as u32).sum();
         let mut images: Vec<LoweredImage> = Vec::new();
         let mut before = 0u32;
+        // A floating picture with a band of its own, anchored in a
+        // paragraph WITH text, its band starting below the first line: Word
+        // sets the text above it and resumes below (measured on a real
+        // document: 458 pt from the paragraph to the one after its picture,
+        // the picture being 416 pt). It goes on a line of its own after the
+        // paragraph's text, behind a forced line break.
+        let first_line = self.paragraph_pitch(p).unwrap_or(12.0);
+        let below_text = |img: &docx_core::Image| {
+            total > 0
+                && can_carry.is_some()
+                && img
+                    .band_offset_emu
+                    .is_some_and(|o| emu_to_pt(o) >= 0.5 * first_line)
+        };
+        let mut pushed_below = false;
         for r in &p.runs {
             for img in &r.images {
                 let mut li = lower_image(img);
+                if below_text(img) {
+                    // The break joins the last run: read back, the
+                    // paragraph has the runs it was poured with, so an
+                    // unedited save changes nothing.
+                    if let (false, Some(last)) = (pushed_below, runs.last_mut()) {
+                        last.text.push('\u{2028}');
+                        pushed_below = true;
+                    }
+                    // After the break: the paragraph's end, which the
+                    // paragraph address (core wire v65) can name.
+                    li.at = total + 1;
+                    images.push(li);
+                    continue;
+                }
                 li.at = anchor_at(before, total);
                 if !self.in_cell {
                     if total == 0 {
@@ -1523,6 +1619,97 @@ impl Lowering {
         }
     }
 
+    /// The least a row of `t` can be tall, in points: per cell, every
+    /// paragraph's lines at its pitch, a paragraph taking at least as many
+    /// lines as its characters need at a NARROW average character (0.38 em:
+    /// real text runs wider, so this never overstates), plus its pictures.
+    fn row_height_floor(&mut self, t: &docx_core::Table, row: &docx_core::TableRow) -> f32 {
+        const NARROW_EM: f32 = 0.38;
+        let widths: Vec<f32> = t.column_widths.iter().map(|w| twip_to_pt(*w)).collect();
+        let mut tallest = 0.0f32;
+        let mut col = 0usize;
+        for cell in &row.cells {
+            let span = cell.grid_span.max(1) as usize;
+            let width: f32 = if widths.is_empty() {
+                self.text_width.unwrap_or(468.0) / row.cells.len().max(1) as f32
+            } else {
+                widths.iter().skip(col).take(span).sum()
+            };
+            col += span;
+            let mut height = 0.0f32;
+            for p in &cell.paragraphs {
+                let style = self.style_of(p).map(str::to_owned);
+                let pitch = self.paragraph_pitch(p).unwrap_or(12.0);
+                let mut em_width = 0.0f32;
+                for r in &p.runs {
+                    let (_, size) = self.resolve_face(Some(r), style.as_deref());
+                    let size_pt = size.map_or(10.0, half_pt_to_pt);
+                    em_width += r.text.chars().count() as f32 * size_pt * NARROW_EM;
+                    height += r
+                        .images
+                        .iter()
+                        .map(|i| emu_to_pt(i.height_emu))
+                        .sum::<f32>();
+                }
+                let lines = (em_width / width.max(1.0)).ceil().max(1.0);
+                height += lines * pitch;
+            }
+            tallest = tallest.max(height);
+        }
+        tallest
+    }
+
+    /// The paragraphs a table pours as when it cannot be a native table: one
+    /// of its rows is certainly taller than the page ([`row_height_floor`]).
+    /// Word splits such a row across pages; a native row never splits
+    /// (InDesign's rule), so the whole row would be overset and its text
+    /// gone. Typical of a web page saved as Word, whose article sits in one
+    /// cell of a layout table. The cells' paragraphs follow in reading
+    /// order (row by row, cell by cell), without the table's borders.
+    /// `None` for a table every row of which may fit.
+    fn flow_table(&mut self, t: &docx_core::Table) -> Option<Vec<LoweredParagraph>> {
+        if self.in_cell {
+            return None;
+        }
+        let page = self.text_height.filter(|h| *h > 0.0)?;
+        let floors: Vec<f32> = t.rows.iter().map(|r| self.row_height_floor(t, r)).collect();
+        let tallest = floors.iter().copied().fold(0.0_f32, f32::max);
+        if tallest <= page {
+            return None;
+        }
+        let mut out = Vec::new();
+        for row in &t.rows {
+            for cell in &row.cells {
+                if cell.v_merge == docx_core::VMerge::Continue {
+                    continue;
+                }
+                for (i, p) in cell.paragraphs.iter().enumerate() {
+                    let before = i.checked_sub(1).and_then(|k| cell.paragraphs.get(k));
+                    let after = cell.paragraphs.get(i + 1);
+                    self.spacing_override = self.word_spacing(before, p, after);
+                    let (para, _) =
+                        self.lower_body_paragraph(p, self.current_block as u32, None, Some(false));
+                    out.push(para);
+                }
+            }
+        }
+        self.flowed_tables += 1;
+        self.diagnostics.push(Diagnostic::warning(
+            format!(
+                "the table at body block {} has a row at least {:.0} pt tall on a page whose \
+                 body is {:.0} pt: Word splits the row across pages, a native table row never \
+                 splits and would be overset. Its {} paragraph(s) flow as text, in reading \
+                 order, without the table's borders; edits to them are not saved back",
+                self.current_block,
+                tallest,
+                page,
+                out.len()
+            ),
+            2,
+        ));
+        Some(out)
+    }
+
     /// Lower a table: resolve the grid (gridSpan widens a cell across columns,
     /// vMerge merges cells down rows) into positioned cells with spans. A
     /// vMerge-continue cell is absorbed into its restart cell above (not emitted).
@@ -1598,12 +1785,21 @@ impl Lowering {
             cols,
             column_widths_pt,
             cells,
+            row_heights_pt: if t.rows.iter().any(|r| r.height.is_some()) {
+                t.rows
+                    .iter()
+                    .map(|r| r.height.map_or(0.0, twip_to_pt))
+                    .collect()
+            } else {
+                Vec::new()
+            },
             // A table that is all header rows has no body to repeat them over.
             header_rows: if (header_rows as usize) < t.rows.len() {
                 header_rows
             } else {
                 0
             },
+            flow: Vec::new(),
         }
     }
 
@@ -2092,11 +2288,65 @@ impl Lowering {
             }
             v
         };
-        let single = faces
+        // Word sizes each LINE by the fonts on it (measured on a real
+        // document: a paragraph's last line set in 10 pt steps 11.5 where
+        // its 12 pt lines step 13.8). The engine does the same with the
+        // leadings its characters carry (InDesign's rule, core's
+        // `mixed-leading`). So when the runs disagree the paragraph takes
+        // its FIRST run's pitch and each run that differs carries its own
+        // ([`Lowering::run_pitches`]); when they agree, that one pitch.
+        let pitches: Vec<f32> = faces
             .iter()
-            .map(|(font, size)| self.single_line(font.as_deref(), *size))
-            .fold(0.0_f32, f32::max);
-        Some(line_height::line_pitch_pt(ls, single))
+            .map(|(font, size)| {
+                let single = self.single_line(font.as_deref(), *size);
+                line_height::line_pitch_pt(ls, single)
+            })
+            .collect();
+        pitches.first().copied()
+    }
+
+    /// For each run with text, in order: the leading it must carry on its
+    /// own because Word's pitch for its face differs from the paragraph's
+    /// ([`Lowering::paragraph_pitch`], its first run's). All `None` when
+    /// the runs agree, and always under EXACT line spacing.
+    fn run_pitches(&mut self, p: &docx_core::Paragraph) -> Vec<Option<f32>> {
+        let style_id = self.style_of(p).map(str::to_owned);
+        let style = style_id.as_deref();
+        let Some(ls) = self.resolve_spacing(p.props.line_spacing, style) else {
+            return Vec::new();
+        };
+        let runs: Vec<&Run> = p.runs.iter().filter(|r| !r.text.is_empty()).collect();
+        let mut pitches: Vec<f32> = runs
+            .iter()
+            .map(|r| {
+                let (font, size) = self.resolve_face(Some(r), style);
+                let single = self.single_line(font.as_deref(), size);
+                line_height::line_pitch_pt(ls, single)
+            })
+            .collect();
+        // A run of nothing but spaces does not make its line taller in
+        // Word (measured: a 10 pt citation closing a 12 pt paragraph,
+        // followed by a 12 pt space, sits on a 10 pt line). It takes the
+        // pitch of the text before it, or after it when it leads.
+        let blank = |r: &Run| r.text.chars().all(char::is_whitespace);
+        for i in 0..runs.len() {
+            if blank(runs[i]) {
+                let near = (0..i)
+                    .rev()
+                    .find(|&k| !blank(runs[k]))
+                    .or_else(|| (i + 1..runs.len()).find(|&k| !blank(runs[k])));
+                if let Some(k) = near {
+                    pitches[i] = pitches[k];
+                }
+            }
+        }
+        let Some(&own) = pitches.first() else {
+            return Vec::new();
+        };
+        pitches
+            .into_iter()
+            .map(|pt| ((pt - own).abs() > 0.001).then_some(pt))
+            .collect()
     }
 
     fn run_props(&mut self, r: &RunProps) -> Vec<StyleProp> {
@@ -2422,6 +2672,159 @@ mod tests {
         }
     }
 
+    /// A Symbol bullet makes Word's first line 12.25 pt at 10 pt where Times
+    /// New Roman's is 11.5 (`fixtures/line-spacing.word.json` L37 and L13).
+    /// The engine's marker never raises its line, so the bulleted paragraph
+    /// carries the difference as space before; a plain one carries none.
+    #[test]
+    fn a_bullet_in_another_face_makes_its_first_line_taller__feat__plugin_doc_word_pagination() {
+        let mut doc = DocxDocument::default();
+        let text = || {
+            run(
+                "item",
+                RunProps {
+                    font: Some("Times New Roman".into()),
+                    size_half_pts: Some(20),
+                    ..Default::default()
+                },
+            )
+        };
+        let bullet = ListMarker {
+            kind: ListKind::Bullet,
+            level: 0,
+            bullet_char: Some("\u{2022}".into()),
+            number_format: None,
+            left_indent: None,
+            first_line_indent: None,
+            hanging_indent: None,
+            marker_font: Some("Symbol".into()),
+            marker_half_pts: None,
+        };
+        for list in [Some(bullet), None] {
+            doc.body.push(Block::Paragraph(Paragraph {
+                style_id: None,
+                props: ParaProps::default(),
+                runs: vec![text()],
+                list,
+                source_para_ord: 0,
+                source_cell: None,
+            }));
+        }
+        let lowered = lower(&doc);
+        let before = |i: usize| {
+            let mut next = lowered.story.paragraphs()[i].para_style_id.clone();
+            for _ in 0..32 {
+                let Some(style) = lowered.styles.iter().find(|s| Some(&s.id) == next.as_ref())
+                else {
+                    break;
+                };
+                if let Some(PropValue::Length(pt)) = style
+                    .props
+                    .iter()
+                    .find(|p| p.path == "paragraphSpaceBefore")
+                    .map(|p| &p.value)
+                {
+                    return *pt;
+                }
+                next = style.based_on.clone();
+            }
+            0.0
+        };
+        let want = (2510.0 - 2355.0) / 2048.0 * 10.0;
+        assert!(
+            (before(0) - want).abs() < 0.01,
+            "the bulleted paragraph: {} pt before, want {want}",
+            before(0)
+        );
+        assert_eq!(before(1), 0.0, "the plain paragraph");
+    }
+
+    /// A floating picture with a band of its own, anchored in a paragraph
+    /// with text: when its band starts below the first line it goes after
+    /// the text, on a line of its own; when it starts at the paragraph's
+    /// top it stays in front, as before.
+    #[test]
+    fn a_banded_picture_below_the_first_line_follows_the_text__feat__plugin_doc_word_pagination() {
+        let picture = |offset_pt: i64| Run {
+            images: vec![Image {
+                bytes: vec![0u8; 4],
+                mime: "image/png".into(),
+                width_emu: 12700 * 300,
+                height_emu: 12700 * 200,
+                float: None,
+                band_offset_emu: Some(12700 * offset_pt),
+            }],
+            ..Default::default()
+        };
+        let mut doc = DocxDocument::default();
+        for offset in [29, 0] {
+            doc.body.push(Block::Paragraph(Paragraph {
+                style_id: None,
+                props: ParaProps::default(),
+                runs: vec![picture(offset), run("Look:", RunProps::default())],
+                list: None,
+                source_para_ord: 0,
+                source_cell: None,
+            }));
+        }
+        let lowered = lower(&doc);
+        let paras = lowered.story.paragraphs();
+        let text = |i: usize| {
+            paras[i]
+                .runs
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<String>()
+        };
+        assert_eq!(text(0), "Look:\u{2028}", "a forced break, then the picture");
+        assert_eq!(paras[0].images[0].at, 6, "at the paragraph's end");
+        assert_eq!(text(1), "Look:");
+        assert_eq!(paras[1].images[0].at, 0, "a band at the top stays in front");
+    }
+
+    /// `w:trHeight` is the least a row is tall: the native table's row
+    /// height (a floor under a growing row). Measured on a real document:
+    /// a 21-row table of 21.4 pt rows came out 190 pt short without it.
+    #[test]
+    fn a_row_is_never_shorter_than_its_declared_height__feat__plugin_doc_word_pagination() {
+        let row = |height: Option<i32>| TableRow {
+            height,
+            is_header: false,
+            cells: vec![TableCell {
+                paragraphs: vec![Paragraph {
+                    style_id: None,
+                    props: ParaProps::default(),
+                    runs: vec![run("x", RunProps::default())],
+                    list: None,
+                    source_para_ord: 0,
+                    source_cell: None,
+                }],
+                grid_span: 1,
+                v_merge: VMerge::None,
+                margins: docx_core::CellMargins::default(),
+                v_align: None,
+            }],
+        };
+        let table = |rows: Vec<TableRow>| {
+            let mut doc = DocxDocument::default();
+            doc.body.push(Block::Table(Table {
+                column_widths: vec![2000],
+                rows,
+                cell_margins: docx_core::CellMargins::default(),
+            }));
+            let l = lower(&doc);
+            match &l.story.blocks[0] {
+                LoweredBlock::Table(t) => t.row_heights_pt.clone(),
+                LoweredBlock::Paragraph(_) => panic!("a table"),
+            }
+        };
+        assert_eq!(table(vec![row(Some(428)), row(None)]), vec![21.4, 0.0]);
+        assert!(
+            table(vec![row(None), row(None)]).is_empty(),
+            "no row declares a height"
+        );
+    }
+
     #[test]
     fn lowers_styles_paragraphs_and_synthesizes_direct_bold() {
         let mut doc = DocxDocument::default();
@@ -2606,6 +3009,7 @@ mod tests {
         doc.body.push(Block::Table(Table {
             column_widths: vec![2000, 2000],
             rows: vec![TableRow {
+                height: None,
                 is_header: false,
                 cells: vec![
                     cell(docx_core::CellMargins::default(), None),
@@ -2709,6 +3113,7 @@ mod tests {
         doc.body.push(Block::Table(Table {
             column_widths: vec![2000],
             rows: vec![TableRow {
+                height: None,
                 is_header: false,
                 cells: vec![TableCell {
                     paragraphs: vec![Paragraph {
@@ -2767,6 +3172,7 @@ mod tests {
                 width_emu: 12700 * 72,
                 height_emu: 12700 * 36,
                 float: None,
+                band_offset_emu: None,
             }],
             ..run("", RunProps::default())
         }

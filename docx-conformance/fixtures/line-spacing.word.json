@@ -3,7 +3,7 @@
   "produced_by": "scripts/word-line-spacing-probe.sh (Microsoft Word 16, PDF export, macOS)",
   "measured": "2026-10-01",
   "method": "page 1 of each section: lines Word placed on a 648 pt US-Letter body, and the mean baseline pitch over them (pdftotext -bbox)",
-  "note": "Inter (L36) is not loadable by Word here: it substituted Calibri (the PDF embeds no Inter), so L36 measures Word's fallback, not Inter",
+  "note": "Inter (L36) is not loadable by Word here: it substituted Calibri (the PDF embeds no Inter), so L36 measures Word's fallback, not Inter; L37 and L38 (2026-10-02) are read by hand off the same PDF: Word sets their text in the symbol faces' own glyphs, which the probe's label match cannot read",
   "cases": [
     { "case": "L1", "font": "Calibri", "size_pt": 10.0, "line": 240, "rule": "auto", "lines": 53, "pitch_pt": 12.21 },
     { "case": "L2", "font": "Calibri", "size_pt": 10.0, "line": 276, "rule": "auto", "lines": 46, "pitch_pt": 14.043 },
@@ -40,6 +40,8 @@
     { "case": "L33", "font": "Franklin Gothic Book", "size_pt": 10.0, "line": 240, "rule": "auto", "lines": 57, "pitch_pt": 11.343 },
     { "case": "L34", "font": "Lucida Sans Unicode", "size_pt": 10.0, "line": 240, "rule": "auto", "lines": 42, "pitch_pt": 15.371 },
     { "case": "L35", "font": "Comic Sans MS", "size_pt": 10.0, "line": 240, "rule": "auto", "lines": 46, "pitch_pt": 13.938 },
-    { "case": "L36", "font": "Inter", "size_pt": 10.0, "line": 240, "rule": "auto", "lines": 53, "pitch_pt": 12.21 }
+    { "case": "L36", "font": "Inter", "size_pt": 10.0, "line": 240, "rule": "auto", "lines": 53, "pitch_pt": 12.21 },
+    { "case": "L37", "font": "Symbol", "size_pt": 10.0, "line": 240, "rule": "auto", "lines": 52, "pitch_pt": 12.254 },
+    { "case": "L38", "font": "Wingdings", "size_pt": 10.0, "line": 240, "rule": "auto", "lines": 58, "pitch_pt": 11.1 }
   ]
 }

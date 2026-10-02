@@ -312,7 +312,8 @@ export function buildTableInsert(table: LoweredTable, storyId: string): Mutation
       headerRows: table.headerRows ?? 0,
       footerRows: 0,
       columnWidths: table.columnWidthsPt,
-      rowHeights: [],
+      // A row is never shorter than Word's `w:trHeight`.
+      rowHeights: table.rowHeightsPt ?? [],
     },
   } as Mutation;
 }
@@ -493,8 +494,9 @@ export function sectionBlocks(ir: LoweredDoc): LoweredBlock[][] {
  *  plus one per break that splits a paragraph (ADR 028/029). Save-back trims
  *  the section joins against this count. */
 export function pouredParagraphCount(blocks: readonly LoweredBlock[]): number {
+  const one = (p: LoweredParagraph) => 1 + (p.segments?.length ?? 0);
   return blocks.reduce(
-    (n, b) => (b.kind === "paragraph" ? n + 1 + (b.segments?.length ?? 0) : n),
+    (n, b) => n + (b.kind === "paragraph" ? one(b) : (b.flow ?? []).reduce((k, p) => k + one(p), 0)),
     0,
   );
 }
@@ -550,6 +552,12 @@ export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: strin
     if (probe.carets.length > 0) hasCarets = true;
   };
   for (const block of blocks) {
+    if (block.kind === "table" && block.flow && block.flow.length > 0) {
+      // A table with a row taller than its page (docx-lower): its text
+      // flows as paragraphs, joining the text around it.
+      pending.push(...block.flow);
+      continue;
+    }
     if (block.kind === "table") {
       flush();
       nextParagraph += 1;

@@ -402,6 +402,22 @@ pub const LINE_SPACING_CASES: &[LineSpacingCase] = &[
         line: 240,
         rule: "auto",
     },
+    // The faces Word sets list bullets in: a bullet makes its line as tall
+    // as ITS font's line.
+    LineSpacingCase {
+        label: "L37",
+        font: "Symbol",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
+    LineSpacingCase {
+        label: "L38",
+        font: "Wingdings",
+        half_pts: 20,
+        line: 240,
+        rule: "auto",
+    },
 ];
 
 /// ADR 029 — line-spacing ground truth: what Word does with
@@ -436,6 +452,88 @@ pub fn line_spacing_docx() -> Vec<u8> {
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>{body}{SECT}</w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+    ])
+}
+
+/// ADR 029 — a table row taller than the page. `before`, then a 1 x 1
+/// table whose cell holds `TALL_ROW_PARAGRAPHS` one-line paragraphs (about
+/// 2,400 pt of Times New Roman 12 on a 648 pt body), then `after`; and a
+/// small 1 x 1 table, which stays a table. Word splits the tall row across
+/// pages; a native table row never splits.
+pub fn tall_row_docx() -> Vec<u8> {
+    const RPR: &str = r#"<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr>"#;
+    let para = |text: &str| {
+        format!(
+            r#"<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r>{RPR}<w:t xml:space="preserve">{text}</w:t></w:r></w:p>"#
+        )
+    };
+    let table = |cell: &str| {
+        format!(
+            r#"<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="9360"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="9360" w:type="dxa"/></w:tcPr>{cell}</w:tc></w:tr></w:tbl>"#
+        )
+    };
+    let tall: String = (1..=TALL_ROW_PARAGRAPHS)
+        .map(|n| para(&format!("Row text {n:03}")))
+        .collect();
+    let body = format!(
+        "{}{}{}{}{}",
+        para("before"),
+        table(&tall),
+        para("after"),
+        table(&para("small table")),
+        para("end"),
+    );
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body>
+</w:document>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+    ])
+}
+
+/// The paragraphs in [`tall_row_docx`]'s tall cell.
+pub const TALL_ROW_PARAGRAPHS: usize = 180;
+
+/// ADR 029 — a paragraph whose runs differ in size: Times New Roman 12 pt
+/// text, then a run at 10 pt, then 12 pt again; and a paragraph all at
+/// 12 pt. Word sizes each line by the fonts on it, so the first paragraph's
+/// runs must carry their own leadings.
+pub fn mixed_sizes_docx() -> Vec<u8> {
+    let run = |half_pts: u32, text: &str| {
+        format!(
+            r#"<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:sz w:val="{half_pts}"/><w:szCs w:val="{half_pts}"/></w:rPr><w:t xml:space="preserve">{text}</w:t></w:r>"#
+        )
+    };
+    let ppr =
+        r#"<w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>"#;
+    let body = format!(
+        "<w:p>{ppr}{}{}{}{}</w:p><w:p>{ppr}{}{}</w:p>",
+        run(24, "Twelve point text, "),
+        run(20, "[a citation in ten point]"),
+        run(24, " "),
+        run(24, "and twelve again."),
+        run(24, "All of this paragraph "),
+        run(24, "is twelve point."),
+    );
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body>
 </w:document>"#
     );
     zip_parts(&[

@@ -97,8 +97,15 @@ pub fn overlay_story_content(baseline: &LoweredDoc, content: &StoryContentIn) ->
     let mut edited = baseline.clone();
     let mut ci = 0usize;
     for block in edited.story.blocks.iter_mut() {
-        let LoweredBlock::Paragraph(p) = block else {
-            continue; // table — not overlaid
+        let p = match block {
+            LoweredBlock::Paragraph(p) => p,
+            LoweredBlock::Table(t) => {
+                // A native table is not in the read-back paragraphs. One
+                // that FLOWED as text is: skip its paragraphs (the Word
+                // table is left as it was).
+                ci += t.flow.iter().map(|p| 1 + p.segments.len()).sum::<usize>();
+                continue;
+            }
         };
         let parts = 1 + p.segments.len();
         if ci >= content.paragraphs.len() {

@@ -1552,11 +1552,19 @@ impl Lowering {
             }
         }
 
+        // Word repeats only a LEADING run of header rows.
+        let header_rows = t.rows.iter().take_while(|r| r.is_header).count() as u32;
         LoweredTable {
             rows: t.rows.len() as u32,
             cols,
             column_widths_pt,
             cells,
+            // A table that is all header rows has no body to repeat them over.
+            header_rows: if (header_rows as usize) < t.rows.len() {
+                header_rows
+            } else {
+                0
+            },
         }
     }
 
@@ -2498,6 +2506,7 @@ mod tests {
         doc.body.push(Block::Table(Table {
             column_widths: vec![2000, 2000],
             rows: vec![TableRow {
+                is_header: false,
                 cells: vec![
                     cell(docx_core::CellMargins::default(), None),
                     cell(
@@ -2600,6 +2609,7 @@ mod tests {
         doc.body.push(Block::Table(Table {
             column_widths: vec![2000],
             rows: vec![TableRow {
+                is_header: false,
                 cells: vec![TableCell {
                     paragraphs: vec![Paragraph {
                         runs: vec![ptab_run("a\tb", 1)],

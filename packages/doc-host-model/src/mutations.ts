@@ -264,7 +264,7 @@ export function buildTableInsert(table: LoweredTable, storyId: string): Mutation
       storyId,
       rows: table.rows,
       cols: table.cols,
-      headerRows: 0,
+      headerRows: table.headerRows ?? 0,
       footerRows: 0,
       columnWidths: table.columnWidthsPt,
       rowHeights: [],

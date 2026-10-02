@@ -459,3 +459,16 @@ What the side-by-side pages show (each verified on a rendered page, not inferred
 
 `cargo run -p docx-conformance --example dump-lowered -- <file.docx>` prints a document's
 lowering as JSON (styles with their chains, blocks, sections) for this kind of check.
+
+### After round 3: table geometry (2026-10-02)
+
+Two lowering fixes from the side-by-side pages, measured on the same engine:
+
+| bug59058 | Pages (Word 52) | Median page-start drift |
+|---|---|---|
+| round 3 | 33 | 163 paragraphs |
+| + cell margins, line box and vertical alignment as insets (`35d8fbc`) | 39 | 110 |
+| + repeating header rows (`w:tblHeader`) | 40 | 106 |
+
+Page 1 of its first table now ends on the same row as Word's. The other two documents do
+not move (their gaps are headers/footers, footnotes, pictures and heading numbers).

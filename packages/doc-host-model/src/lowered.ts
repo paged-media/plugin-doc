@@ -143,6 +143,8 @@ export interface LoweredTable {
   cols: number;
   columnWidthsPt: number[];
   cells: LoweredCell[];
+  /** Leading rows Word repeats on every page (`w:tblHeader`). */
+  headerRows?: number;
 }
 
 /** One table cell, addressed by its resolved grid position. */

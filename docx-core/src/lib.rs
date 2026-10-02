@@ -801,6 +801,10 @@ pub enum CellVAlign {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TableRow {
     pub cells: Vec<TableCell>,
+    /// `w:trPr/w:tblHeader` — the row repeats at the top of every page the
+    /// table continues on.
+    #[serde(default)]
+    pub is_header: bool,
 }
 
 /// A table cell (`w:tc`) — block content (paragraphs) plus merge spans.

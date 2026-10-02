@@ -154,6 +154,10 @@ pub struct LoweredTable {
     /// Column widths in points (may be empty ⇒ let the engine auto-size).
     pub column_widths_pt: Vec<f32>,
     pub cells: Vec<LoweredCell>,
+    /// Leading rows Word repeats on every page (`w:tblHeader`): the native
+    /// table's header rows.
+    #[serde(default)]
+    pub header_rows: u32,
 }
 
 /// One table cell, addressed by its resolved grid position.

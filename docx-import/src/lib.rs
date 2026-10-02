@@ -919,7 +919,13 @@ fn map_table(t: &wml::Table, ctx: &ImportCtx, table_ord: u32) -> docx_core::Tabl
                     cell_ord += 1;
                 }
             }
-            rows.push(docx_core::TableRow { cells });
+            let is_header = tr.table_row_properties.as_deref().is_some_and(|p| {
+                p.table_row_properties_choice1.iter().any(|c| {
+                    matches!(c, wml::TableRowPropertiesChoice::TableHeader(h)
+                        if h.val.is_none() || on(&h.val))
+                })
+            });
+            rows.push(docx_core::TableRow { cells, is_header });
             row_ord += 1;
         }
     }

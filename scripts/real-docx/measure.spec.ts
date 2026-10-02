@@ -222,6 +222,11 @@ for (const DOC of DOCS) {
             pages: pg,
             top: rects.length ? rects[0].topPt : null,
             lines: new Set(rects.map((x) => `${x.pageId}@${Math.round(x.topPt)}`)).size,
+            // One rect per line: [page, top, left, width, height] in pt.
+            rects: rects.map((x) => {
+              const q = x as unknown as { widthPt: number; heightPt: number };
+              return [pageIds.indexOf(x.pageId), x.topPt, x.leftPt, q.widthPt, q.heightPt].map((v) => Math.round(v * 100) / 100);
+            }),
           } as never);
           if (b.end + 1 <= off) break;
           off = b.end + 1;

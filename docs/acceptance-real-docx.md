@@ -472,3 +472,57 @@ Two lowering fixes from the side-by-side pages, measured on the same engine:
 
 Page 1 of its first table now ends on the same row as Word's. The other two documents do
 not move (their gaps are headers/footers, footnotes, pictures and heading numbers).
+
+## Rounds 9–13 — 2026-10-02: the measurement itself, then vertical room
+
+Engine at core `protocol-65` rebased on main `42d9109`. Same three documents, `word` mode
+with `REAL_TIMES_DIR`.
+
+**The instrument was wrong, and that was an engine bug.** `measure.spec.ts` now records one
+rect per line (`rects`), and comparing them to Word's lines showed every paragraph's
+selection starting on the PREVIOUS paragraph's last line. A paragraph's story offset skipped
+blank paragraphs, counted list markers and dropped trailing spaces (RFI C-56; core
+`14948b8`, `3506c7b`, `42d9109`). The same defect misplaced the caret and the selection in
+the editor, and it had been shifting this comparison's page starts by a paragraph.
+
+With correct offsets, two tools read the difference directly (`scripts/real-docx/`):
+`line_geometry.py` (lines per paragraph, with each line's extent on both sides) and
+`paragraph_advance.py` (the distance from one paragraph's top to the next, Word against
+ours, summed by style pair).
+
+| Document | Paragraphs with Word's line count | Lines ending within 0.5 pt |
+|---|---|---|
+| parentinvguid | 611 of 624 | the rest are Word's footnote lines and page-spanning paragraphs |
+| Bug50936_3 | 798 of 813 | Word prints `Error! Bookmark not defined.` in six list items |
+| bug59058 | 137 of 173 | not analysed yet (tables) |
+
+So line breaking is right; what moves the page starts is vertical. Found and fixed:
+
+1. **A paragraph of spaces took no room** (core `42d9109`, InDesign asked first).
+2. **Word leaves the LARGER of space after and space before**, the engine their sum
+   (`fixtures/paragraph-spacing.word.json`: 6 + 6 gives 6, 12 + 6 gives 12, 10 + 24 gives
+   24; `w:contextualSpacing` measured too). The lowering now takes the previous paragraph's
+   space after off each paragraph's space before. parentinvguid's table of contents was
+   6 pt too tall per entry.
+3. **A picture grows its line in Word; under a fixed leading the engine's does not**
+   (InDesign's rule, core `17d3d3d`). A body paragraph with a picture now takes auto leading
+   (`characterLeading` 0). Bug50936_3's eight pictures took no room at all.
+4. **Blank lines and a picture alone on its line name their paragraph** (core wire v65,
+   RFI C-53): each of a run of blank lines keeps its own height, and the picture stands in
+   its own paragraph instead of the next one.
+
+| Document | Word pages | Ours (round 8 → 13) | Exact page starts | Paragraph advance, ours / Word |
+|---|---|---|---|---|
+| parentinvguid | 61 | 59 → 59 | 6.6% → 13.1% | 1.0000 |
+| bug59058 | 52 | 40 → 40 | 0% → 0% | not measured |
+| Bug50936_3 | 50 | 45 → 49 | 8% → 8% (2% in between, with honest offsets) | 0.978 |
+
+**Still not met.** What `paragraph_advance.py` shows next, by size:
+- Bug50936_3: a floating picture anchored in a paragraph with text is set before the text
+  (Word: below it); three pictures are 60–90 pt shorter than Word's; Word's
+  `Error! Bookmark not defined.` lines; the table of contents steps 13.8 pt where Word's
+  steps 12.66; small steady differences around headings (about 1 pt).
+- parentinvguid: bulleted items are 0.7 pt shorter than Word's (the bullet's own font makes
+  Word's first line taller); a heading after body text sits 2.3 pt lower than Word's; the
+  cover page; footnotes (ADR 034).
+- bug59058: tables.

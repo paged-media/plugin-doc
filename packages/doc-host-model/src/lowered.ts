@@ -82,6 +82,10 @@ export interface LoweredSegment {
 
 /** An image lowered to an anchored-frame placement. */
 export interface LoweredImage {
+  /** Contiguous char offset into the paragraph's run text where the picture
+   *  is addressed (where it sits in Word's paragraph; `docx-lower` decides
+   *  it). Absent from an older IR: the paragraph's start. */
+  at?: number;
   widthPt: number;
   heightPt: number;
   /** A self-contained `data:<mime>;base64,…` URI. */

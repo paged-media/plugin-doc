@@ -29,9 +29,10 @@
 //
 // REAL_FONTS=word registers Word's own faces (from Word.app) before the
 // open. REAL_RELOAD=1 then saves the poured document and loads it again:
-// the engine builds its font table once, at load, from the fonts the
-// stories reference THEN, and the skeleton's stories are empty, so without
-// the reload every poured family falls back to the default face.
+// an engine before core 133f19b built its font table once, at load, from
+// the fonts the stories referenced THEN, and the skeleton's stories are
+// empty, so without the reload every poured family fell back to the
+// default face. From 133f19b on, `word` alone should measure the same.
 import { test, expect } from "@playwright/test";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { basename } from "node:path";
@@ -129,7 +130,10 @@ for (const DOC of DOCS) {
     );
     await (await chooser).setFiles(DOC);
     await opened;
-    if (FONT_MODE.startsWith("word")) {
+    // The reload workaround also registered the faces again after the pour;
+    // `word` alone relies on the engine taking families the pour introduces
+    // after the load (core 133f19b).
+    if (FONT_MODE === "word-reload") {
       await page.waitForTimeout(3000);
       await page.unroute("**/__word-fonts/*").catch(() => {});
       await registerWordFonts();

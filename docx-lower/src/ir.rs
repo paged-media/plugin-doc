@@ -192,7 +192,8 @@ pub struct LoweredParagraph {
     pub para_style_id: Option<String>,
     pub runs: Vec<LoweredRun>,
     /// Inline images anchored to this paragraph (rendered via
-    /// `insertAnchoredFrame` at the paragraph's story offset).
+    /// `insertAnchoredFrame` at the paragraph's story offset plus each
+    /// image's [`LoweredImage::at`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<LoweredImage>,
     /// Provenance: the index of the source body block, kept for future
@@ -225,13 +226,23 @@ pub struct LoweredSegment {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoweredImage {
+    /// The contiguous char offset into the paragraph's run text where the
+    /// picture is addressed: where it sits in Word's paragraph (the chars of
+    /// the runs before it), so the engine lays it out as a character of that
+    /// line. The engine's contiguous address space cannot name a paragraph's
+    /// END (that offset is the next paragraph's start), so a picture after
+    /// the paragraph's last character is addressed one character earlier,
+    /// and one alone in an empty paragraph falls to the next paragraph's
+    /// start; the lowering reports both.
+    #[serde(default)]
+    pub at: u32,
     pub width_pt: f32,
     pub height_pt: f32,
     /// A self-contained `data:<mime>;base64,…` URI the anchored frame links to.
     pub uri: String,
     /// For a FLOATING Word drawing (`wp:anchor`), where Word positions it and
     /// how text wraps around it (thoughts ADR 035). It is still placed
-    /// INLINE at its paragraph's start, with a diagnostic, until the engine
+    /// INLINE (at [`Self::at`]), with a diagnostic, until the engine
     /// can create a positioned, wrapped anchored object (RFI C-47/C-48);
     /// this carries what that later lowering needs. Absent for an inline
     /// picture.

@@ -61,6 +61,12 @@ const PARA_PREFIX: &str = "ParagraphStyle/docx-";
 /// the break, with a warning). Its value is InDesign's `StartParagraph` string.
 const START_PARAGRAPH: &str = "paragraphStartParagraph";
 
+/// The paragraph composer's property path (settable from core protocol 65)
+/// and IDML's name for the Adobe Single-line Composer, the native analogue
+/// of Word's first-fit line breaking.
+pub const PARAGRAPH_COMPOSER: &str = "paragraphComposer";
+pub const SINGLE_LINE_COMPOSER: &str = "HL Single";
+
 /// IDML's span/split columns (`SpanColumnType` and companions; settable from
 /// core protocol 64, ADR 028 addendum). A mid-page column change lowers to
 /// them (`sections`); an older engine refuses them, and the bundle reopens
@@ -131,10 +137,23 @@ fn lower_image(img: &docx_core::Image) -> LoweredImage {
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&img.bytes);
     LoweredImage {
+        at: 0,
         width_pt: emu_to_pt(img.width_emu),
         height_pt: emu_to_pt(img.height_emu),
         uri: format!("data:{};base64,{}", img.mime, b64),
         float: img.float.as_ref().map(lower_float),
+    }
+}
+
+/// Where a picture with `before` chars of its paragraph's `total` in front
+/// of it is addressed (see [`LoweredImage::at`]): at that offset, except
+/// after the last character, which the engine's contiguous offsets cannot
+/// name (it is the next paragraph's start), so one character earlier.
+fn anchor_at(before: u32, total: u32) -> u32 {
+    if total > 0 && before >= total {
+        total - 1
+    } else {
+        before.min(total)
     }
 }
 
@@ -587,6 +606,19 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
         ));
     }
 
+    if ctx.pictures_at_end + ctx.pictures_alone > 0 {
+        ctx.diagnostics.push(Diagnostic::info(
+            format!(
+                "{} picture(s) after their paragraph's last character are placed before \
+                 it, and {} picture(s) alone in an empty paragraph are placed at the start \
+                 of the next paragraph: the engine addresses an inline picture by a \
+                 character offset that cannot name a paragraph's end",
+                ctx.pictures_at_end, ctx.pictures_alone
+            ),
+            1,
+        ));
+    }
+
     if ctx.clamped_tabs > 0 {
         ctx.diagnostics.push(Diagnostic::info(
             format!(
@@ -922,6 +954,12 @@ struct Lowering {
     default_para_style: Option<String>,
     /// Tab stops past the right margin moved to it (`clamp_tabs`).
     clamped_tabs: usize,
+    /// Body pictures after their paragraph's last character, addressed one
+    /// character earlier ([`anchor_at`]).
+    pictures_at_end: usize,
+    /// Body pictures alone in an empty paragraph: the engine anchors them
+    /// at the next paragraph's start ([`LoweredImage::at`]).
+    pictures_alone: usize,
     /// The narrowest single-column text width in pt, where a STYLE's right,
     /// centre and decimal tab stops are clamped.
     min_text_width: Option<f32>,
@@ -990,6 +1028,14 @@ impl Lowering {
             props.push(len("characterFontSize", 10.0));
         }
         props.push(boolean("paragraphHyphenation", self.auto_hyphenation));
+        // Word breaks a paragraph's lines first-fit, one line at a time; the
+        // engine's default (InDesign's Paragraph Composer) weighs the whole
+        // paragraph and often breaks a word earlier. The Adobe Single-line
+        // Composer is the native first-fit. Every paragraph style lowered
+        // from Word roots here, so all of them inherit it (an engine before
+        // protocol 65 refuses the path; the style batch then applies op by
+        // op and says so).
+        props.push(text(PARAGRAPH_COMPOSER, SINGLE_LINE_COMPOSER));
         let ls = defaults.para.line_spacing.unwrap_or(SINGLE);
         let single = self.single_line(defaults.run.font.as_deref(), defaults.run.size_half_pts);
         let leading = Some(line_height::line_pitch_pt(ls, single));
@@ -1326,12 +1372,26 @@ impl Lowering {
         // Images ride on their own (empty-text) runs; collect them as
         // anchored-frame placements for this paragraph. A floating one is
         // placed inline too, and says so (ADR 035 work item 0).
-        let images: Vec<LoweredImage> = p
-            .runs
-            .iter()
-            .flat_map(|r| r.images.iter())
-            .map(lower_image)
-            .collect();
+        // Each sits where it does in Word's paragraph: after the text of
+        // the runs before its own (a picture's run carries no text).
+        let total = p.runs.iter().map(|r| r.text.chars().count() as u32).sum();
+        let mut images: Vec<LoweredImage> = Vec::new();
+        let mut before = 0u32;
+        for r in &p.runs {
+            for img in &r.images {
+                let mut li = lower_image(img);
+                li.at = anchor_at(before, total);
+                if !self.in_cell {
+                    if total == 0 {
+                        self.pictures_alone += 1;
+                    } else if before >= total {
+                        self.pictures_at_end += 1;
+                    }
+                }
+                images.push(li);
+            }
+            before += r.text.chars().count() as u32;
+        }
         let others: u32 = p.runs.iter().map(|r| r.other_drawings).sum();
         if self.in_cell {
             self.cell_pictures += images.len();
@@ -2448,5 +2508,163 @@ mod tests {
         assert!(l.diagnostics.iter().any(
             |d| d.severity == "warning" && d.message.contains("body block 0 (Wingdings F0FF)")
         ));
+    }
+
+    fn picture_run() -> Run {
+        Run {
+            images: vec![Image {
+                bytes: vec![0x89, b'P', b'N', b'G'],
+                mime: "image/png".into(),
+                width_emu: 12700 * 72,
+                height_emu: 12700 * 36,
+                float: None,
+            }],
+            ..run("", RunProps::default())
+        }
+    }
+
+    fn picture_doc(paragraphs: Vec<Vec<Run>>) -> DocxDocument {
+        let mut doc = DocxDocument::default();
+        for runs in paragraphs {
+            doc.body.push(Block::Paragraph(Paragraph {
+                runs,
+                ..Default::default()
+            }));
+        }
+        doc
+    }
+
+    /// An inline picture is a character of its line (core 17d3d3d places an
+    /// anchored frame AT its offset): it is addressed where it sits in
+    /// Word's paragraph, after the chars of the runs before it, not at the
+    /// paragraph's start.
+    #[test]
+    fn an_inline_picture_is_addressed_where_it_sits_in_its_paragraph__feat__plugin_doc_read_path() {
+        let d = RunProps::default();
+        let doc = picture_doc(vec![
+            // "añb" (3 chars, 4 bytes), picture, "cd", picture, "e".
+            vec![
+                run("añb", d.clone()),
+                picture_run(),
+                run("cd", d.clone()),
+                picture_run(),
+                run("e", d.clone()),
+            ],
+            // A picture first in its paragraph.
+            vec![picture_run(), run("after", d.clone())],
+        ]);
+        let l = lower(&doc);
+        let p = l.story.paragraphs();
+        let at: Vec<u32> = p[0].images.iter().map(|i| i.at).collect();
+        assert_eq!(at, vec![3, 5], "chars, not bytes");
+        assert_eq!(p[1].images[0].at, 0);
+        assert_eq!(
+            (p[0].images[0].width_pt, p[0].images[0].height_pt),
+            (72.0, 36.0)
+        );
+        assert!(!l
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("picture(s) after")));
+    }
+
+    /// The engine's contiguous offsets cannot name a paragraph's end (that
+    /// offset is the next paragraph's start): a picture after the last
+    /// character is addressed one character earlier, and one alone in an
+    /// empty paragraph cannot be addressed at all; both are reported.
+    #[test]
+    fn a_picture_at_a_paragraphs_end_or_alone_is_addressed_inside_and_reported__feat__plugin_doc_read_path(
+    ) {
+        let d = RunProps::default();
+        let doc = picture_doc(vec![
+            vec![run("Figure:", d.clone()), picture_run()],
+            vec![picture_run()],
+            vec![run("next", d.clone())],
+        ]);
+        let l = lower(&doc);
+        let p = l.story.paragraphs();
+        assert_eq!(p[0].images[0].at, 6, "before the last of 7 chars");
+        assert_eq!(p[1].images[0].at, 0);
+        assert!(
+            l.diagnostics.iter().any(|d| d.severity == "info"
+                && d.message
+                    .contains("1 picture(s) after their paragraph's last character")
+                && d.message
+                    .contains("1 picture(s) alone in an empty paragraph")),
+            "{:?}",
+            l.diagnostics
+        );
+    }
+
+    /// Word breaks lines first-fit; the native analogue is the Adobe
+    /// Single-line Composer. Every paragraph style lowered from Word roots
+    /// in the docDefaults base style, which selects it, so every Word
+    /// paragraph (body, headings, list items, synthesized direct formatting)
+    /// inherits it.
+    #[test]
+    fn every_word_paragraph_style_inherits_the_single_line_composer__feat__plugin_doc_read_path() {
+        let mut doc = DocxDocument::default();
+        doc.styles.styles.push(Style {
+            style_id: "Normal".into(),
+            name: Some("Normal".into()),
+            kind: StyleKind::Paragraph,
+            is_default: true,
+            ..Default::default()
+        });
+        doc.styles.styles.push(Style {
+            style_id: "Heading1".into(),
+            kind: StyleKind::Paragraph,
+            based_on: Some("Normal".into()),
+            ..Default::default()
+        });
+        doc.body.push(Block::Paragraph(Paragraph {
+            style_id: Some("Heading1".into()),
+            props: ParaProps {
+                justification: Some(Justification::Center),
+                ..Default::default()
+            },
+            runs: vec![run("Title", RunProps::default())],
+            ..Default::default()
+        }));
+        doc.body.push(Block::Paragraph(Paragraph {
+            runs: vec![run("Body", RunProps::default())],
+            ..Default::default()
+        }));
+        let l = lower(&doc);
+        let by_id: HashMap<&str, &LoweredStyle> =
+            l.styles.iter().map(|s| (s.id.as_str(), s)).collect();
+        let composer = |s: &LoweredStyle| {
+            s.props
+                .iter()
+                .find(|p| p.path == PARAGRAPH_COMPOSER)
+                .map(|p| p.value.clone())
+        };
+        let root = by_id[format!("{PARA_PREFIX}Default").as_str()];
+        assert_eq!(
+            composer(root),
+            Some(PropValue::Text(SINGLE_LINE_COMPOSER.into()))
+        );
+        // Every paragraph style chains to it, and none overrides it.
+        for s in l
+            .styles
+            .iter()
+            .filter(|s| s.collection == StyleCollection::Paragraph)
+        {
+            let mut cur = s;
+            for _ in 0..32 {
+                if s.id != root.id {
+                    assert!(composer(cur).is_none() || cur.id == root.id, "{}", cur.id);
+                }
+                match cur.based_on.as_deref() {
+                    Some(b) => cur = by_id[b],
+                    None => break,
+                }
+            }
+            assert_eq!(cur.id, root.id, "{} roots in docx-Default", s.id);
+        }
+        // Both paragraphs are styled from that chain.
+        for p in l.story.paragraphs() {
+            assert!(p.para_style_id.is_some());
+        }
     }
 }

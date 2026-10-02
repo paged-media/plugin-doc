@@ -64,7 +64,7 @@ interface Range {
   scope: "paragraph" | "character";
 }
 
-/** An inline image + the story offset of its anchoring paragraph. */
+/** An inline image + its story offset (contiguous char space). */
 interface ImageAt {
   offset: number;
   widthPt: number;
@@ -133,10 +133,15 @@ function poured(
         ranges.push({ start, end, style: seg.paraStyleId, scope: "paragraph" });
       }
     });
-    // Images anchor at the paragraph level (paged anchors a frame to a
-    // paragraph), so any offset within the paragraph resolves to it.
+    // An inline picture is a character of its line (core 17d3d3d places the
+    // frame AT its offset): where the lowering says it sits in the paragraph.
     for (const img of para.images ?? []) {
-      images.push({ offset: paraStart, widthPt: img.widthPt, heightPt: img.heightPt, uri: img.uri });
+      images.push({
+        offset: paraStart + (img.at ?? 0),
+        widthPt: img.widthPt,
+        heightPt: img.heightPt,
+        uri: img.uri,
+      });
     }
     // Separator text for insertText, but NOT an offset advance (contiguous).
     if (pIdx < paragraphs.length - 1) {

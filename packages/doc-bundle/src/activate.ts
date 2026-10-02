@@ -63,7 +63,16 @@ export function activate(host: BundleHost): BundleHandle {
   const docStore = createDocStore();
 
   // Load bytes -> engine -> lowering -> embedded placement.
-  async function ingest(name: string, bytes: Uint8Array): Promise<void> {
+  // `open` is File ▸ Open / drop (the importer): the Word document BECOMES
+  // the document. `place` is Insert Word document… (the command and the
+  // panel button): it lands IN the current document, which must survive —
+  // routing a place through the standalone open replaced the whole open
+  // document with the Word file (the annual's manuscript chapter).
+  async function ingest(
+    name: string,
+    bytes: Uint8Array,
+    mode: "open" | "place",
+  ): Promise<void> {
     const engine = await DocEngine.boot();
     try {
       engine.loadDocx(bytes);
@@ -72,7 +81,10 @@ export function activate(host: BundleHost): BundleHandle {
       // ADR 029 — a Word document opens as the WHOLE document: a page per
       // section that grows like Word's. Hosts without the native-open door
       // get the embedded placement instead.
-      const opened = await openStandalone(host, engine, ir, bytes, name);
+      const opened =
+        mode === "open"
+          ? await openStandalone(host, engine, ir, bytes, name)
+          : null;
       if (opened) {
         // The open may have lowered again for an engine without span/split
         // columns (another story per column change): count what it poured.
@@ -104,9 +116,11 @@ export function activate(host: BundleHost): BundleHandle {
           frameId: placed?.frameId ?? null,
           storyId: placed?.storyId ?? null,
         });
-        host.log.info(
-          "paged.doc: host has no openNative door — placed as embedded content",
-        );
+        if (mode === "open") {
+          host.log.info(
+            "paged.doc: host has no openNative door — placed as embedded content",
+          );
+        }
       }
       host.shell.openPanel(PANEL_ID);
     } finally {
@@ -182,7 +196,7 @@ export function activate(host: BundleHost): BundleHandle {
     }
     const picked = await host.shell.pickFile({ accept: [".docx", ".dotx"] });
     const file = picked[0];
-    if (file) await ingest(file.name, file.bytes);
+    if (file) await ingest(file.name, file.bytes, "place");
   }
 
   disposers.push(
@@ -214,7 +228,7 @@ export function activate(host: BundleHost): BundleHandle {
         title: "Word document (.docx)",
         extensions: [".docx", ".dotx"],
         mimeTypes: [DOCX_MIME],
-        import: ({ name, bytes }) => ingest(name, bytes),
+        import: ({ name, bytes }) => ingest(name, bytes, "open"),
       }).dispose,
     );
   }

@@ -382,3 +382,33 @@ different styles at one offset (diagnosed; a wire change).
 | 48 | Windex est une marque déposée à l'INPI par Multi… | (no page) | n/a |
 | 49 | Voici la structure du réseau informatique de Mul… | (no page) | n/a |
 | 50 | Voici la structure du réseau informatique de Mul… | (no page) | n/a |
+
+## Round 2 — 2026-10-02, engine at core `protocol-65` (`9180b85`)
+
+Re-measured after the engine fixes the first round asked for: fonts registered after
+load (`133f19b`), inline pictures as characters of their line (`17d3d3d`), the
+single-line composer (`fc2df8a`, set through `paragraphComposer`), widow control on
+growing chains (`dd3bfe7`), table row heights (`2e3c998`, `bd2563a`). Same three
+documents, same Word PDFs, `scripts/real-docx-acceptance.sh` (now three modes).
+
+| Document | Word | Ours (none / word / word-reload) | Exact page start | Within ±1 paragraph | Median drift (paragraphs) |
+|---|---|---|---|---|---|
+| parentinvguid | 61 | 64 / 59 / 59 | 8.2% / 6.6% / 6.6% | 6 / 10 / 10 pages | 12.5 / 6 / 6 |
+| bug59058 | 52 | 35 / 36 / 36 | 0% | 0 | 131 |
+| Bug50936_3 | 50 | 45 / 45 / 45 | 8% | 5 pages | 43 / 45.5 / 45.5 |
+
+**Still not met.** What the round shows:
+- `word` and `word-reload` are identical: late fonts work, the reload workaround is gone.
+- parentinvguid's page count closed in (75/64 → 64/59 against Word's 61) and its first
+  nine pages start within 0–2 paragraphs of Word's (0, 0, 0, −1, −1, −1, 0, +1, −2); the
+  slips then accumulate. Exact page-start match punishes any one-line difference on every
+  later page, so the number does not move until line breaking and line heights are exact.
+- bug59058 is unchanged at 36 of 52 pages: its tables are still far shorter than Word's,
+  and the comparison cannot align its page starts at all.
+- Bug50936_3 drifts from page 3 (the TOC) and from page 8 on.
+
+Next, in order of pages affected: bug59058's table heights (cell margins, row heights,
+pictures in cells — which the pour never places); the TOC pages (tab leaders and right
+tabs against Word's line positions); then per-line agreement with Word on body text
+(font metrics of the faces Word actually used, justification, hyphenation off), footnotes
+(ADR 034) and floating drawings (ADR 035).

@@ -7,9 +7,11 @@
 #
 # <editor-checkout> is an editor worktree whose `@paged-media/doc` resolves to
 # THIS plugin-doc (its `link:` override) with a built bin/ (build-wasm.sh).
-# Needs Microsoft Word (macOS) and poppler. Two measurements per document:
-# `none` (as a user opens it: the editor's default face) and `word-reload`
-# (Word's own faces registered, then a save + reload, see measure.spec.ts).
+# Needs Microsoft Word (macOS) and poppler. Up to three measurements per
+# document (MODES, default all three): `none` (as a user opens it: the
+# editor's default face), `word` (Word's own faces registered before the
+# open) and `word-reload` (the same, then a save + reload: the workaround an
+# engine before core 133f19b needed, see measure.spec.ts).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EDITOR="$(cd "$1" && pwd)"; shift
@@ -29,8 +31,10 @@ SPEC="$EDITOR/apps/canvas/tests/e2e/real-docx-measure.spec.ts"
 cp "$ROOT/scripts/real-docx/measure.spec.ts" "$SPEC"
 trap 'rm -f "$SPEC"' EXIT
 LIST="$(IFS=,; echo "${DOCS[*]}")"
-for mode in none word-reload; do
+MODES="${MODES:-none word word-reload}"
+for mode in $MODES; do
   fonts=none; reload=0
+  [ "$mode" = word ] && fonts=word
   [ "$mode" = word-reload ] && fonts=word && reload=1
   (cd "$EDITOR/apps/canvas" && REAL_DOCX="$LIST" REAL_OUT="$OUT/ours" REAL_FONTS=$fonts \
     REAL_RELOAD=$reload IDML_CANVAS_TEST_PORT="${PORT:-5291}" \
@@ -38,7 +42,7 @@ for mode in none word-reload; do
 done
 for d in "${DOCS[@]}"; do
   n="$(basename "$d" .docx)"
-  for mode in none word-reload; do
+  for mode in $MODES; do
     echo "== $n ($mode)"
     python3 "$ROOT/scripts/real-docx/compare.py" "$OUT/word/$n.map.json" \
       "$OUT/ours/$n.ours.$mode.json" "$OUT/$n.cmp.$mode.json"

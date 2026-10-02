@@ -320,6 +320,36 @@ describe("inline images", () => {
   });
 });
 
+describe("inline images in their line", () => {
+  it("places each picture at its own offset inside the paragraph", () => {
+    const { mutations } = buildTextPour(
+      [
+        P(null, [{ text: "Above", charStyleId: null }]),
+        {
+          paraStyleId: null,
+          runs: [
+            { text: "añb", charStyleId: null },
+            { text: "cd", charStyleId: null },
+          ],
+          images: [
+            { at: 3, widthPt: 10, heightPt: 10, uri: "data:image/png;base64,A" },
+            { at: 4, widthPt: 20, heightPt: 20, uri: "data:image/png;base64,B" },
+          ],
+          sourceIndex: 1,
+        },
+      ],
+      "Story/u1",
+      0,
+      /* styleBase */ 7,
+    );
+    const offsets = mutations
+      .filter((m) => (m as { op: string }).op === "insertAnchoredFrame")
+      .map((m) => (m as unknown as { args: { offset: number } }).args.offset);
+    // styleBase 7 + "Above" (5) = paragraph start 12; then its own `at`.
+    expect(offsets).toEqual([15, 16]);
+  });
+});
+
 describe("offset spaces", () => {
   it("separates the insertText base from the style-range base", () => {
     // After a table the two diverge: a table contributes 1 to insertText's

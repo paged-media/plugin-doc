@@ -412,3 +412,50 @@ pictures in cells — which the pour never places); the TOC pages (tab leaders a
 tabs against Word's line positions); then per-line agreement with Word on body text
 (font metrics of the faces Word actually used, justification, hyphenation off), footnotes
 (ADR 034) and floating drawings (ADR 035).
+
+## Round 3 — 2026-10-02: line by line, and side by side
+
+Engine at core `protocol-65` rebased on main `1663863`. Same three documents, `word`
+mode, plus `REAL_TIMES_DIR` (the macOS "Times" faces extracted from `Times.ttc`, which
+bug59058 asks for 1,211 times and round 2 never registered). The page-start numbers did
+not move (6.6% / 0% / 8%), so this round measured LINES per paragraph against Word's PDF
+(`linecmp.py` in the session scratch; worth promoting to `scripts/real-docx/`) and
+compared pages side by side.
+
+| Document | Word lines | Ours (round 2 → 3) | Paragraphs with equal line count |
+|---|---|---|---|
+| parentinvguid | 2257 | 2333 → 2335 | 230 of 624 |
+| bug59058 | 1082 | 1192 → 1092 | 40 of 173 |
+| Bug50936_3 | 1541 | 2002 → 2002 | 261 of 813 |
+
+What the side-by-side pages show (each verified on a rendered page, not inferred):
+1. **A missing font is the largest single error.** bug59058's body is set in "Times";
+   unregistered it fell to Inter and every paragraph gained ~22% lines. With the face
+   registered its line total is within 1% of Word's. The editor needs the document's
+   faces, or a metric-compatible substitution table; the lowering reports unmeasured
+   fonts but nothing tells the user a face is missing.
+2. **Kerning and ligatures**: Word sets text without either; the engine's defaults are
+   InDesign's. Now lowered on the base style (`characterKerningMethod = None`,
+   `characterLigatures = false`; needs core `1663863`). Small effect, as measured.
+3. **Break after a hard hyphen**: Word breaks `two-` / `way`; the engine never breaks at
+   an existing hyphen. Engine change (the composer already segments words at soft
+   hyphens); needs InDesign's rule first.
+4. **Headers and footers take body room.** Bug50936_3's header is taller than its top
+   margin and pushes the body down; its footer band does the same. Nothing is placed
+   (ADR 033), so each of our pages holds more than Word's.
+5. **Footnotes take body room** (parentinvguid page 9: Word's body ends at A-4 above a
+   footnote, ours runs on to A-5). ADR 034.
+6. **Table rows are too short.** InDesign's cell ends at its last baseline; Word gives
+   every line its full line box plus paragraph spacing and cell margins, and can centre
+   vertically. Cell margins (`w:tblCellMar` / `w:tcMar`) are not imported at all and no
+   cell inset is set. Lowering fix: cell insets from the margins, the first paragraph's
+   space before, and the last line's descent + the last paragraph's space after.
+7. **A picture alone in a paragraph lands on a neighbouring line** and covers its text
+   (parentinvguid's cover seal). An empty paragraph cannot be addressed by offset, so the
+   anchor falls to the next paragraph. Floating pictures are set inline (ADR 035).
+8. **Runs of blank lines keep the default line height**: the engine refuses a caret that
+   stands for several empty paragraphs with different styles (13 in a row in bug59058).
+9. **Heading numbers**: Word's multi-level `3.5.1`; ours restarts at `1.`.
+
+`cargo run -p docx-conformance --example dump-lowered -- <file.docx>` prints a document's
+lowering as JSON (styles with their chains, blocks, sections) for this kind of check.

@@ -1036,6 +1036,14 @@ impl Lowering {
         // protocol 65 refuses the path; the style batch then applies op by
         // op and says so).
         props.push(text(PARAGRAPH_COMPOSER, SINGLE_LINE_COMPOSER));
+        // Word sets text without pair kerning and without ligatures unless
+        // a document asks (`w:kern`, `w14:ligatures`, neither imported yet);
+        // the engine's defaults are InDesign's, both on. Compared with Word
+        // line by line on a real document, kerned text let a word stay on a
+        // line Word breaks before. (Needs core's paragraph-style kerning; an
+        // older engine refuses the two paths and the batch falls back.)
+        props.push(text("characterKerningMethod", "None"));
+        props.push(boolean("characterLigatures", false));
         let ls = defaults.para.line_spacing.unwrap_or(SINGLE);
         let single = self.single_line(defaults.run.font.as_deref(), defaults.run.size_half_pts);
         let leading = Some(line_height::line_pitch_pt(ls, single));

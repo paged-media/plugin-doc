@@ -72,6 +72,18 @@ const WORD_FACES: Array<[string, string | null, string]> = [
   ["Courier New", "Bold", `${SUPP}/Courier New Bold.ttf`],
   ["Arial Unicode MS", null, `${SUPP}/Arial Unicode.ttf`],
 ];
+// macOS "Times" ships only as a collection (Times.ttc); REAL_TIMES_DIR names
+// a directory holding its four faces extracted as Times-<Style>.ttf (fontTools
+// TTCollection), for documents that ask for "Times" itself.
+if (process.env.REAL_TIMES_DIR) {
+  const T = process.env.REAL_TIMES_DIR;
+  WORD_FACES.push(
+    ["Times", null, `${T}/Times-Regular.ttf`],
+    ["Times", "Bold", `${T}/Times-Bold.ttf`],
+    ["Times", "Italic", `${T}/Times-Italic.ttf`],
+    ["Times", "Bold Italic", `${T}/Times-BoldItalic.ttf`],
+  );
+}
 
 type Registries = {
   commands: { invoke: (id: string) => Promise<unknown> };

@@ -279,7 +279,7 @@ describe("blank lines in table cells", () => {
     const last = steps[2] as Extract<(typeof steps)[number], { kind: "text" }>;
     expect(last.length).toBe(0);
     expect(last.mutations(2, 1)).toEqual([
-      { op: "applyStyle", args: { storyId: "s", start: 1, end: 1, style: "PS/blank", scope: "paragraph" } },
+      { op: "applyStyle", args: { storyId: "s", start: 1, end: 1, style: "PS/blank", scope: "paragraph", paragraph: 1 } },
       caret(1, "PS/short", 0),
       caret(3, "PS/tall", 1),
       caret(5, "PS/end", 1),
@@ -316,6 +316,38 @@ describe("inline images", () => {
     expect(mutations).toContainEqual({
       op: "insertAnchoredFrame",
       args: { storyId: "Story/u1", offset: 5, width: 72, height: 54, imageUri: "data:image/png;base64,AAAA" },
+    });
+  });
+
+  it("names the paragraph of a picture standing alone on its line", () => {
+    // A picture alone in an empty paragraph: at contiguous offset 5 it has
+    // no characters of its own, so the offset is also where "Below" starts
+    // (RFI C-53). In a story pour the op names its paragraph (wire v65).
+    const steps = buildStoryBlocks(
+      [
+        { kind: "paragraph", paraStyleId: null, runs: [{ text: "Above", charStyleId: null }], sourceIndex: 0 },
+        {
+          kind: "paragraph",
+          paraStyleId: null,
+          runs: [],
+          images: [{ widthPt: 72, heightPt: 54, uri: "data:image/png;base64,AAAA" }],
+          sourceIndex: 1,
+        },
+        { kind: "paragraph", paraStyleId: null, runs: [{ text: "Below", charStyleId: null }], sourceIndex: 2 },
+      ],
+      "Story/u1",
+    );
+    const text = steps[0] as Extract<(typeof steps)[number], { kind: "text" }>;
+    expect(text.mutations(0, 0)).toContainEqual({
+      op: "insertAnchoredFrame",
+      args: {
+        storyId: "Story/u1",
+        offset: 5,
+        width: 72,
+        height: 54,
+        imageUri: "data:image/png;base64,AAAA",
+        paragraph: 1,
+      },
     });
   });
 });

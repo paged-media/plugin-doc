@@ -62,11 +62,17 @@ interface Range {
   end: number;
   style: string;
   scope: "paragraph" | "character";
+  /** The native paragraph a CARET range names (core wire v65, RFI C-53):
+   *  its 0-based index in the story. Only set on carets, and only when the
+   *  pour knows where in the story it starts. */
+  paragraph?: number;
 }
 
 /** An inline image + its story offset (contiguous char space). */
 interface ImageAt {
   offset: number;
+  /** The native paragraph holding it (wire v65), when known. */
+  paragraph?: number;
   widthPt: number;
   heightPt: number;
   uri: string;
@@ -90,14 +96,22 @@ interface LinkAt {
 function poured(
   paragraphs: LoweredParagraph[],
   base: number,
-): { text: string; ranges: Range[]; images: ImageAt[]; links: LinkAt[]; length: number } {
+  /** Index of the native paragraph the text starts in; `undefined` when the
+   *  pour does not know (no paragraph addresses are emitted then). */
+  paraBase?: number,
+): { text: string; ranges: Range[]; images: ImageAt[]; links: LinkAt[]; length: number; breaks: number } {
   const ranges: Range[] = [];
   const images: ImageAt[] = [];
   const links: LinkAt[] = [];
   let text = "";
   let offset = base;
+  // Separators emitted so far: each starts a new native paragraph.
+  let breaks = 0;
+  const addressed = (r: Range, index: number): Range =>
+    paraBase !== undefined && r.start === r.end ? { ...r, paragraph: paraBase + index } : r;
   paragraphs.forEach((para, pIdx) => {
     const paraStart = offset;
+    const firstIndex = breaks;
     // ADR 028/029 — a break inside the Word paragraph: a separator at each
     // segment start (a new native paragraph), which, like every paragraph
     // separator, does not advance the contiguous offsets.
@@ -107,7 +121,10 @@ function poured(
       const runStart = offset;
       const chars = Array.from(run.text);
       chars.forEach((ch, i) => {
-        if (cuts.includes(local + i) && local + i > 0) text += "\n";
+        if (cuts.includes(local + i) && local + i > 0) {
+          text += "\n";
+          breaks += 1;
+        }
         text += ch;
       });
       local += chars.length;
@@ -120,24 +137,41 @@ function poured(
       }
     }
     // Breaks at the paragraph's very end (an empty trailing part).
-    for (const at of cuts) if (at >= local) text += "\n";
+    for (const at of cuts) {
+      if (at >= local) {
+        text += "\n";
+        breaks += 1;
+      }
+    }
     const segs = para.segments ?? [];
+    // A cut starts a new native paragraph unless it sits at the very start
+    // of a paragraph that has text (see the two separator rules above).
+    const splits = (at: number) => (at > 0 && at < local) || at >= local;
+    // The native paragraph (relative to this pour) segment `k` is.
+    const segIndex = (k: number) => firstIndex + segs.slice(0, k + 1).filter((s) => splits(s.at)).length;
     const firstEnd = segs.length > 0 ? paraStart + segs[0].at : offset;
     if (para.paraStyleId) {
-      ranges.push({ start: paraStart, end: firstEnd, style: para.paraStyleId, scope: "paragraph" });
+      ranges.push(
+        addressed({ start: paraStart, end: firstEnd, style: para.paraStyleId, scope: "paragraph" }, firstIndex),
+      );
     }
     segs.forEach((seg, k) => {
       const start = paraStart + seg.at;
       const end = k + 1 < segs.length ? paraStart + segs[k + 1].at : offset;
       if (seg.paraStyleId) {
-        ranges.push({ start, end, style: seg.paraStyleId, scope: "paragraph" });
+        ranges.push(addressed({ start, end, style: seg.paraStyleId, scope: "paragraph" }, segIndex(k)));
       }
     });
     // An inline picture is a character of its line (core 17d3d3d places the
     // frame AT its offset): where the lowering says it sits in the paragraph.
     for (const img of para.images ?? []) {
+      const at = img.at ?? 0;
+      // The segment the picture stands in: the last one starting at or
+      // before it.
+      const inSeg = segs.filter((s) => splits(s.at) && s.at <= at).length;
       images.push({
-        offset: paraStart + (img.at ?? 0),
+        offset: paraStart + at,
+        ...(paraBase !== undefined ? { paragraph: paraBase + firstIndex + inSeg } : {}),
         widthPt: img.widthPt,
         heightPt: img.heightPt,
         uri: img.uri,
@@ -146,9 +180,10 @@ function poured(
     // Separator text for insertText, but NOT an offset advance (contiguous).
     if (pIdx < paragraphs.length - 1) {
       text += "\n";
+      breaks += 1;
     }
   });
-  return { text, ranges, images, links, length: offset - base };
+  return { text, ranges, images, links, length: offset - base, breaks };
 }
 
 /** A zero-length paragraph-style range: a CARET, which styles the empty
@@ -174,9 +209,15 @@ export function buildTextPour(
   /** Where style/anchor/link RANGES start — the contiguous character space.
    *  Defaults to `textBase` (they coincide only before the first table). */
   styleBase: number = textBase,
-  opts: { deferCarets?: boolean } = {},
-): { mutations: Mutation[]; length: number; byteLength: number; carets: Mutation[] } {
-  const { text, ranges, images, links, length } = poured(paragraphs, styleBase);
+  opts: {
+    deferCarets?: boolean;
+    /** Index of the native paragraph the text starts in. With it, blank
+     *  lines and pictures name their paragraph (core wire v65, RFI C-53);
+     *  an engine without that address ignores the field. */
+    paraBase?: number;
+  } = {},
+): { mutations: Mutation[]; length: number; byteLength: number; carets: Mutation[]; breaks: number } {
+  const { text, ranges, images, links, length, breaks } = poured(paragraphs, styleBase, opts.paraBase);
   const ops: Mutation[] = [];
   const carets: Mutation[] = [];
   if (text.length > 0) {
@@ -186,7 +227,7 @@ export function buildTextPour(
     } as Mutation);
   }
   for (const r of ranges.filter((r) => r.scope === "paragraph")) {
-    const op = applyStyleOp(storyId, r.start, r.end, r.style, "paragraph");
+    const op = applyStyleOp(storyId, r.start, r.end, r.style, "paragraph", r.paragraph);
     if (isCaret(r)) carets.push(op);
     if (!(isCaret(r) && opts.deferCarets)) ops.push(op);
   }
@@ -205,6 +246,7 @@ export function buildTextPour(
         width: img.widthPt,
         height: img.heightPt,
         imageUri: img.uri,
+        ...(img.paragraph !== undefined ? { paragraph: img.paragraph } : {}),
       },
     } as unknown as Mutation);
   }
@@ -222,7 +264,7 @@ export function buildTextPour(
   // points) for the caller's running text offset.
   // (U+2028, Word's line break, is 3 bytes here and 1 char in `length`.)
   const byteLength = new TextEncoder().encode(text).length;
-  return { mutations: ops, length, byteLength, carets };
+  return { mutations: ops, length, byteLength, carets, breaks };
 }
 
 function applyStyleOp(
@@ -231,8 +273,11 @@ function applyStyleOp(
   end: number,
   style: string,
   scope: "paragraph" | "character",
+  /** v65 paragraph address (see `Range.paragraph`). */
+  paragraph?: number,
 ): Mutation {
-  return { op: "applyStyle", args: { storyId, start, end, style, scope } } as Mutation;
+  const args = { storyId, start, end, style, scope, ...(paragraph !== undefined ? { paragraph } : {}) };
+  return { op: "applyStyle", args } as Mutation;
 }
 
 /** A CELL-qualified `applyStyle` (core protocol v55). The `cell` arg postdates
@@ -457,17 +502,19 @@ export function pouredParagraphCount(blocks: readonly LoweredBlock[]): number {
 /** {@link buildStory} over an explicit block list (one section's blocks).
  *
  *  Blank lines are styled LAST, in a final step, once every paragraph of the
- *  story exists. A caret styles every empty paragraph at its offset, and
- *  consecutive blank lines share one offset — so do blank lines on either
- *  side of a table (a table's host paragraph has no characters). Poured step
- *  by step, a blank line after a table would meet the already-styled blank
- *  line before it, and the engine refuses a caret over empty paragraphs whose
- *  styles differ. Deferred, every caret meets paragraphs that still agree
- *  (all fresh), so none is refused; where a group of blank lines at one
- *  offset has different Word styles, the last caret wins for all of them,
- *  which `docx-lower` reports as a warning. Only the last caret per offset is
- *  emitted. Blank lines inside table cells are styled in the same step, by
- *  cell-addressed carets ({@link buildTableCellCarets}). */
+ *  story exists, one caret per blank line. A blank line has no characters,
+ *  so consecutive ones share one offset (so do blank lines on either side of
+ *  a table: its host paragraph has no characters either); each caret
+ *  therefore also names its paragraph by index (core wire v65, RFI C-53).
+ *
+ *  An engine without that address styles EVERY empty paragraph at the
+ *  caret's offset and refuses a caret over empty paragraphs whose styles
+ *  differ. Deferred to the end, every caret there meets paragraphs that
+ *  agree (all fresh, or all styled by the caret before it), so none is
+ *  refused and the last caret of a group wins for all of them, which
+ *  `docx-lower` reports as a warning. Blank lines inside table cells are
+ *  styled in the same step, by cell-addressed carets
+ *  ({@link buildTableCellCarets}). */
 export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: string): StoryStep[] {
   const steps: StoryStep[] = [];
   let pending: LoweredParagraph[] = [];
@@ -477,6 +524,7 @@ export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: strin
   // Each table's cell carets, filled in once its id is minted.
   const cellCarets: Mutation[][] = [];
   let hasCarets = false;
+  let nextParagraph = 0;
   const flush = () => {
     if (pending.length === 0) return;
     const paras = pending;
@@ -484,12 +532,17 @@ export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: strin
     const probe = buildTextPour(paras, storyId, 0);
     const slot = caretsByStep.length;
     caretsByStep.push([]);
+    // The story is fresh: its text starts in paragraph 0, each separator
+    // starts another, and a table takes one (the text after it continues
+    // in the table's own host paragraph).
+    const paraBase = nextParagraph;
+    nextParagraph += probe.breaks;
     steps.push({
       kind: "text",
       length: probe.length,
       byteLength: probe.byteLength,
       mutations: (textBase, styleBase) => {
-        const out = buildTextPour(paras, storyId, textBase, styleBase, { deferCarets: true });
+        const out = buildTextPour(paras, storyId, textBase, styleBase, { deferCarets: true, paraBase });
         caretsByStep[slot] = out.carets;
         return out.mutations;
       },
@@ -499,6 +552,7 @@ export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: strin
   for (const block of blocks) {
     if (block.kind === "table") {
       flush();
+      nextParagraph += 1;
       const table: LoweredTable = block;
       const slot = cellCarets.length;
       cellCarets.push([]);
@@ -522,14 +576,12 @@ export function buildStoryBlocks(blocks: readonly LoweredBlock[], storyId: strin
       length: 0,
       byteLength: 0,
       mutations: () => {
-        // The body's carets, last one per story offset, then each poured
-        // table's (already one per cell offset; a table whose insert was
-        // refused has none).
-        const last = new Map<number, Mutation>();
-        for (const op of caretsByStep.flat()) {
-          last.set((op as unknown as { args: { start: number } }).args.start, op);
-        }
-        return [...last.values(), ...cellCarets.flat()];
+        // The body's carets in order, then each poured table's (one per
+        // cell offset; a table whose insert was refused has none). Each
+        // names its own paragraph (wire v65). An engine without that
+        // address styles every blank line at the caret's offset instead,
+        // so there the last caret of a group wins for all of them.
+        return [...caretsByStep.flat(), ...cellCarets.flat()];
       },
     });
   }

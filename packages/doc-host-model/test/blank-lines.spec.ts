@@ -44,8 +44,14 @@ const paraStyles = (ops: Op[]) =>
     .filter((o) => o.op === "applyStyle" && o.args.scope === "paragraph")
     .map((o) => [o.args.start, o.args.end, o.args.style]);
 
+/** Carets with the native paragraph each names (core wire v65). */
+const carets = (ops: Op[]) =>
+  ops
+    .filter((o) => o.op === "applyStyle" && o.args.scope === "paragraph")
+    .map((o) => [o.args.start, o.args.style, o.args.paragraph]);
+
 describe("blank lines", () => {
-  it("are styled by a caret, after the text, once per offset", () => {
+  it("are styled by a caret each, after the text, naming their paragraph", () => {
     const steps = run([
       para("ParagraphStyle/a", "ab"),
       para("ParagraphStyle/blank", ""),
@@ -59,8 +65,14 @@ describe("blank lines", () => {
       [0, 2, "ParagraphStyle/a"],
       [2, 4, "ParagraphStyle/b"],
     ]);
-    // ... and the final step one caret for both blank lines at offset 2.
-    expect(paraStyles(steps[1])).toEqual([[2, 2, "ParagraphStyle/blank"]]);
+    // ... and the final step one caret per blank line. Both stand at
+    // offset 2 (an empty paragraph has no characters); each names its own
+    // paragraph, and no non-empty range carries an address.
+    expect(carets(steps[1])).toEqual([
+      [2, "ParagraphStyle/blank", 1],
+      [2, "ParagraphStyle/blank", 2],
+    ]);
+    expect(steps[0].every((o) => o.args.paragraph === undefined)).toBe(true);
     // No character-scope op ever has an empty range.
     for (const o of steps.flat()) {
       if (o.op === "applyStyle" && o.args.scope === "character") {
@@ -69,7 +81,7 @@ describe("blank lines", () => {
     }
   });
 
-  it("on either side of a table share an offset, and the last caret is the one sent", () => {
+  it("on either side of a table share an offset and name different paragraphs", () => {
     const steps = run([
       para("ParagraphStyle/a", "ab"),
       para("ParagraphStyle/x", ""),
@@ -78,7 +90,14 @@ describe("blank lines", () => {
       para("ParagraphStyle/b", "cd"),
     ]);
     expect(steps.map((s) => s[0].op)).toEqual(["insertText", "insertTable", "insertText", "applyStyle"]);
-    expect(paraStyles(steps[3])).toEqual([[2, 2, "ParagraphStyle/y"]]);
+    // "ab" is paragraph 0, x's blank line 1; the table takes paragraph 2,
+    // and the text after a table continues in the table's own paragraph,
+    // so y's blank line IS paragraph 2. In order: an engine without the
+    // address styles every blank line at the offset, and y then wins.
+    expect(carets(steps[3])).toEqual([
+      [2, "ParagraphStyle/x", 1],
+      [2, "ParagraphStyle/y", 2],
+    ]);
   });
 
   it("a story with no blank line has no caret step", () => {

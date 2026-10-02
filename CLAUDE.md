@@ -15,7 +15,7 @@ WordprocessingML is the same styled-paragraphs-of-runs model the engine already
 implements for IDML. DOCX is parsed/re-serialized through a shared **`paged-ooxml`**
 foundation over the vendored **`ooxmlsdk`** crate.
 
-Spec (the concept authority): [`docs/base-idea.md`](docs/base-idea.md) (kept IN
+Spec (the concept authority): [`docs/concept.md`](docs/concept.md) (kept IN
 this repo — it is self-documenting). Architecture: [`docs/architecture.md`](docs/architecture.md).
 Status/milestones: [`docs/status.md`](docs/status.md).
 

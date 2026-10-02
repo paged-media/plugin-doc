@@ -16,7 +16,7 @@
  *  @license    AGPL-3.0-only OR Paged Media Enterprise License (PMEL)
  */
 
-//! The native↔OOXML provenance map (the base-idea's `bindings.json`), built at
+//! The native↔OOXML provenance map (the concept paper's `bindings.json`), built at
 //! import time. It resolves a lowered story `(block, run)` coordinate to the
 //! source `<w:p>`/`<w:r>` ordinals the byte-splice patcher locates on.
 //!

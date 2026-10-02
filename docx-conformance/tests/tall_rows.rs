@@ -19,7 +19,7 @@
 //! ADR 029 — a table row taller than its page flows as text. Word splits
 //! such a row across pages; a native table row never splits (InDesign's
 //! rule), so the whole row is overset and its text gone. Found on a real
-//! document (`docs/acceptance-real-docx.md`, round 14): a web page saved as
+//! document (`docs/reference/acceptance-real-docx.md`, round 14): a web page saved as
 //! Word keeps its article, 46,409 characters, in one cell of a layout table,
 //! and 12 of Word's 52 pages were missing.
 

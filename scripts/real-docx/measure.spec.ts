@@ -15,7 +15,7 @@
  *  @copyright  Copyright (c) And The Next GmbH
  *  @license    AGPL-3.0-only OR Paged Media Enterprise License (PMEL)
  */
-// ADR 029 decision 6, measured (docs/acceptance-real-docx.md). NOT an editor
+// ADR 029 decision 6, measured (docs/reference/acceptance-real-docx.md). NOT an editor
 // spec: the documents are the private corpus, and the Word faces are this
 // machine's. scripts/real-docx-acceptance.sh copies it into an editor
 // checkout's tests/e2e for one run.

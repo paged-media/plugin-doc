@@ -18,7 +18,7 @@
 
 //! ADR 029 — Word sizes each LINE by the fonts on it: a line set
 //! entirely in 10 pt steps 11.5 pt where the paragraph's 12 pt lines step
-//! 13.8 (measured on a real document, `docs/acceptance-real-docx.md` round
+//! 13.8 (measured on a real document, `docs/reference/acceptance-real-docx.md` round
 //! 13: 21 paragraphs ending in a 10 pt citation were 2.3 pt too tall). The
 //! engine gives a line the largest leading among its characters (InDesign's
 //! rule, core's `mixed-leading`), so runs whose face differs from the

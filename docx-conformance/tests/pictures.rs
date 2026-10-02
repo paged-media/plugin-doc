@@ -21,7 +21,7 @@
 //! object only under AUTO leading, and every lowered style carries Word's
 //! pitch as a fixed one. So a body paragraph with a picture takes auto
 //! leading (`characterLeading` 0). Measured on real documents
-//! (`docs/acceptance-real-docx.md`, round 12): eight pictures took no room.
+//! (`docs/reference/acceptance-real-docx.md`, round 12): eight pictures took no room.
 
 // `__feat__<id>` names link these tests to the Cockpit feature row.
 #![allow(non_snake_case)]

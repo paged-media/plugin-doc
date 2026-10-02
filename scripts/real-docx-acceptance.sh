@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ADR 029 decision 6 against REAL Word documents (docs/acceptance-real-docx.md):
+# ADR 029 decision 6 against REAL Word documents (docs/reference/acceptance-real-docx.md):
 # Word's own page map (its PDF) versus the editor's (File▸Open through the
 # real pipeline), per page the paragraph its first body line belongs to.
 #

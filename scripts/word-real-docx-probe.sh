@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Ask Word how it lays the constructs the real corpus documents exposed
-# (docs/acceptance-real-docx.md): merged tab stops past the margin, a style
+# (docs/reference/acceptance-real-docx.md): merged tab stops past the margin, a style
 # based on a character style, a style's own list, an unstyled paragraph and
 # a legacy VML inline picture. Writes real_docx_docx(), has Word save it as
 # PDF (through word-pagination-probe.sh, which owns the Office automation

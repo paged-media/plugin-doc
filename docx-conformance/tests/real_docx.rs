@@ -17,7 +17,7 @@
  */
 
 //! What the real corpus documents of the ADR 029 acceptance exposed
-//! (`docs/acceptance-real-docx.md`), one construct per paragraph of
+//! (`docs/reference/acceptance-real-docx.md`), one construct per paragraph of
 //! `real_docx_docx()`, against Word's answer (`fixtures/real-docx.word.json`,
 //! `scripts/word-real-docx-probe.sh`). The text area is x = 36..324.
 

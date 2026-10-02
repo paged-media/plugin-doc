@@ -15,6 +15,16 @@ Word content is parsed and re-serialized through a shared OOXML foundation
 crate) with a **preservation invariant**: the original package is retained, and a
 zero-edit round-trip is byte-identical — Paged never destroys a document.
 
+## Documentation
+
+Everything about how the plugin is designed and built is in [`docs/`](./docs/README.md):
+
+- [`docs/concept.md`](./docs/concept.md): the concept paper, with notes on what was built.
+- [`docs/architecture.md`](./docs/architecture.md): crates, packages, the import and save-back paths, host doors.
+- [`docs/status.md`](./docs/status.md): the running status log.
+- [`docs/adr/`](./docs/adr/README.md): the architecture decisions, one per file.
+- [`docs/reference/acceptance-real-docx.md`](./docs/reference/acceptance-real-docx.md): the acceptance record against real Word documents.
+
 ## Status
 
 **M0 foundation + Tier-0 read path** — a `.docx` opens, its styled paragraphs,

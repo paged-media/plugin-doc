@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Ask Word where widow control and keepLines move lines (keeps_docx(),
-# docs/acceptance-real-docx.md): writes the fixture, has Word save it as PDF
+# docs/reference/acceptance-real-docx.md): writes the fixture, has Word save it as PDF
 # (through word-pagination-probe.sh, which owns the Office automation
 # traps) and prints, per page, the line labels Word put there, as the JSON
 # fixtures/keeps.word.json records.

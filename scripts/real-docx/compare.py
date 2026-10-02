@@ -1,4 +1,4 @@
-"""ADR 029 decision 6 (docs/acceptance-real-docx.md): compare Word's page
+"""ADR 029 decision 6 (docs/reference/acceptance-real-docx.md): compare Word's page
 map (its PDF) with ours (the editor's per-paragraph page geometry). A
 page's START PARAGRAPH is the body
 paragraph holding the page's first body line (a paragraph continuing from

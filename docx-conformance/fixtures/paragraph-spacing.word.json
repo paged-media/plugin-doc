@@ -1,0 +1,24 @@
+{
+  "fixture": "docx_conformance::paragraph_spacing_docx(Some(15) | Some(11) | None)",
+  "produced_by": "scripts/word-paragraph-spacing-probe.sh (Microsoft Word 16, PDF export, macOS)",
+  "measured": "2026-10-02",
+  "method": "baseline of <label>b minus baseline of <label>a (pdftotext -bbox); Times New Roman 12 pt single-spaced, whose line pitch is 13.75 pt (S01)",
+  "note": "the pairs measure the same in all three compatibility modes. Word leaves the LARGER of space after and space before, not their sum. contextualSpacing on the first paragraph of a same-style pair removes the room altogether; on the second only, the first's space after stays",
+  "pairs": [
+    { "pair": "S01", "after_twips": 0, "before_twips": 0, "contextual": "none", "step_pt": 13.75 },
+    { "pair": "S02", "after_twips": 120, "before_twips": 0, "contextual": "none", "step_pt": 19.75 },
+    { "pair": "S03", "after_twips": 0, "before_twips": 120, "contextual": "none", "step_pt": 20.03 },
+    { "pair": "S04", "after_twips": 120, "before_twips": 120, "contextual": "none", "step_pt": 19.75 },
+    { "pair": "S05", "after_twips": 240, "before_twips": 120, "contextual": "none", "step_pt": 25.75 },
+    { "pair": "S06", "after_twips": 120, "before_twips": 240, "contextual": "none", "step_pt": 25.77 },
+    { "pair": "S07", "after_twips": 200, "before_twips": 480, "contextual": "none", "step_pt": 37.75 },
+    { "pair": "S08", "after_twips": 120, "before_twips": 120, "contextual": "both", "step_pt": 13.75 },
+    { "pair": "S09", "after_twips": 120, "before_twips": 120, "contextual": "first", "step_pt": 13.75 },
+    { "pair": "S10", "after_twips": 120, "before_twips": 120, "contextual": "second", "step_pt": 20.0 }
+  ],
+  "top_of_page": {
+    "what": "a paragraph with 24 pt space before that opens a page; baseline_y with a 72 pt top margin (85.87 = no space before, 109.87 = the 24 pt kept)",
+    "after_a_page_break_character": { "mode_15": 85.87, "mode_11": 85.87, "no_settings": 85.87 },
+    "with_pageBreakBefore": { "mode_15": 85.87, "mode_11": 109.87, "no_settings": 109.87 }
+  }
+}

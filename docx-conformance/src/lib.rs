@@ -447,6 +447,177 @@ pub fn line_spacing_docx() -> Vec<u8> {
     ])
 }
 
+/// One [`paragraph_spacing_docx`] pair: `after` on the first paragraph,
+/// `before` on the second (twips), and whether each asks for
+/// `w:contextualSpacing`.
+pub struct SpacingPair {
+    pub label: &'static str,
+    pub after: u32,
+    pub before: u32,
+    pub contextual: (bool, bool),
+}
+
+/// The pairs [`paragraph_spacing_docx`] measures, in document order.
+pub const SPACING_PAIRS: &[SpacingPair] = &[
+    SpacingPair {
+        label: "S01",
+        after: 0,
+        before: 0,
+        contextual: (false, false),
+    },
+    SpacingPair {
+        label: "S02",
+        after: 120,
+        before: 0,
+        contextual: (false, false),
+    },
+    SpacingPair {
+        label: "S03",
+        after: 0,
+        before: 120,
+        contextual: (false, false),
+    },
+    SpacingPair {
+        label: "S04",
+        after: 120,
+        before: 120,
+        contextual: (false, false),
+    },
+    SpacingPair {
+        label: "S05",
+        after: 240,
+        before: 120,
+        contextual: (false, false),
+    },
+    SpacingPair {
+        label: "S06",
+        after: 120,
+        before: 240,
+        contextual: (false, false),
+    },
+    SpacingPair {
+        label: "S07",
+        after: 200,
+        before: 480,
+        contextual: (false, false),
+    },
+    SpacingPair {
+        label: "S08",
+        after: 120,
+        before: 120,
+        contextual: (true, true),
+    },
+    SpacingPair {
+        label: "S09",
+        after: 120,
+        before: 120,
+        contextual: (true, false),
+    },
+    SpacingPair {
+        label: "S10",
+        after: 120,
+        before: 120,
+        contextual: (false, true),
+    },
+];
+
+/// ADR 029 — paragraph-spacing ground truth: how much room Word leaves
+/// between a paragraph with space AFTER and one with space BEFORE
+/// (`scripts/word-paragraph-spacing-probe.sh` has Word export it as PDF and
+/// measures the baseline distances).
+///
+/// Times New Roman 12 pt, single spacing, US Letter with 1 in margins. Each
+/// [`SPACING_PAIRS`] entry is two one-line paragraphs, `<label>a` and
+/// `<label>b`, followed by a `sep` paragraph with no spacing. Then a page
+/// break and `TOP`, a paragraph with 24 pt space before that opens page 2
+/// (does the space survive at the top of a page?), and `TOP2`, the same on a
+/// page it reaches by `w:pageBreakBefore`.
+///
+/// `compat` is `settings.xml`'s `compatibilityMode` (`None` writes no
+/// settings part): Word's layout rules differ by mode.
+pub fn paragraph_spacing_docx(compat: Option<u32>) -> Vec<u8> {
+    const RPR: &str = r#"<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr>"#;
+    let para = |ppr: &str, before: u32, after: u32, ctx: bool, inner: &str| {
+        let ctx = if ctx { "<w:contextualSpacing/>" } else { "" };
+        format!(
+            r#"<w:p><w:pPr>{ppr}<w:spacing w:before="{before}" w:after="{after}" w:line="240" w:lineRule="auto"/>{ctx}</w:pPr>{inner}</w:p>"#
+        )
+    };
+    let run = |text: &str| format!(r#"<w:r>{RPR}<w:t xml:space="preserve">{text}</w:t></w:r>"#);
+    let mut body = String::new();
+    body.push_str(&para("", 0, 0, false, &run("first line")));
+    for c in SPACING_PAIRS {
+        body.push_str(&para(
+            "",
+            0,
+            c.after,
+            c.contextual.0,
+            &run(&format!("{}a after {}", c.label, c.after)),
+        ));
+        body.push_str(&para(
+            "",
+            c.before,
+            0,
+            c.contextual.1,
+            &run(&format!("{}b before {}", c.label, c.before)),
+        ));
+        body.push_str(&para("", 0, 0, false, &run("sep")));
+    }
+    // An empty paragraph holding only a page break, then TOP.
+    body.push_str(&para(
+        "",
+        0,
+        0,
+        false,
+        &format!(r#"<w:r>{RPR}<w:br w:type="page"/></w:r>"#),
+    ));
+    body.push_str(&para("", 480, 0, false, &run("TOP before 480")));
+    body.push_str(&para("", 0, 0, false, &run("TOPnext")));
+    body.push_str(&para(
+        "<w:pageBreakBefore/>",
+        480,
+        0,
+        false,
+        &run("TOP2 before 480"),
+    ));
+    body.push_str(&para("", 0, 0, false, &run("TOP2next")));
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body>
+</w:document>"#
+    );
+    let Some(mode) = compat else {
+        return zip_parts(&[
+            ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+            ("_rels/.rels", ROOT_RELS.as_bytes()),
+            ("word/_rels/document.xml.rels", DOC_RELS.as_bytes()),
+            ("word/document.xml", document.as_bytes()),
+            ("word/styles.xml", STYLES.as_bytes()),
+        ]);
+    };
+    let content_types = CONTENT_TYPES.replace(
+        "</Types>",
+        r#"<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>"#,
+    );
+    let rels = DOC_RELS.replace(
+        "</Relationships>",
+        r#"<Relationship Id="rSet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>"#,
+    );
+    let settings = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="{mode}"/></w:compat></w:settings>"#
+    );
+    zip_parts(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/_rels/document.xml.rels", rels.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+        ("word/styles.xml", STYLES.as_bytes()),
+        ("word/settings.xml", settings.as_bytes()),
+    ])
+}
+
 /// One page of [`breaks_docx`]: 5 in × 2.667 in, 0.5 in margins → a
 /// 288 pt × 120 pt body = exactly ten 12 pt lines (two 126 pt columns in a
 /// two-column section).

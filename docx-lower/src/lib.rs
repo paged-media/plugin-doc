@@ -553,6 +553,15 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
                 let next_in_section = matches!(doc.body.get(idx + 1), Some(Block::Paragraph(_)))
                     && !starts_story(idx + 1);
                 let start = stronger(entry, carry.take().map(break_rule));
+                // The neighbours Word's spacing rule looks at: body
+                // paragraphs of the same story, next to this one.
+                let neighbour = |at: Option<usize>| match at.and_then(|i| doc.body.get(i)) {
+                    Some(Block::Paragraph(q)) => Some(q),
+                    _ => None,
+                };
+                let before = neighbour(idx.checked_sub(1).filter(|_| !starts_story(idx)));
+                let after = neighbour(Some(idx + 1).filter(|&i| !starts_story(i)));
+                ctx.spacing_override = ctx.word_spacing(before, p, after);
                 let (para, tail) =
                     ctx.lower_body_paragraph(p, idx as u32, start, Some(next_in_section));
                 carry = tail;
@@ -954,6 +963,10 @@ struct Lowering {
     default_para_style: Option<String>,
     /// Tab stops past the right margin moved to it (`clamp_tabs`).
     clamped_tabs: usize,
+    /// What Word's paragraph-spacing rule changes on the body paragraph
+    /// about to be lowered ([`Lowering::word_spacing`]): its space before,
+    /// and whether its space after is dropped. Taken by the lowering.
+    spacing_override: (Option<f32>, bool),
     /// Body pictures after their paragraph's last character, addressed one
     /// character earlier ([`anchor_at`]).
     pictures_at_end: usize,
@@ -1222,6 +1235,15 @@ impl Lowering {
             direct.tabs = self.effective_tabs(&p.props.tabs, self.style_of(p));
         }
         let mut props = self.para_props(&direct);
+        let (space_before, no_space_after) = std::mem::take(&mut self.spacing_override);
+        if let Some(pt) = space_before {
+            props.retain(|sp| sp.path != "paragraphSpaceBefore");
+            props.push(len("paragraphSpaceBefore", pt));
+        }
+        if no_space_after {
+            props.retain(|sp| sp.path != "paragraphSpaceAfter");
+            props.push(len("paragraphSpaceAfter", 0.0));
+        }
         self.clamped_tabs += clamp_tabs(
             &mut props,
             if can_carry.is_some() {
@@ -1291,7 +1313,24 @@ impl Lowering {
         if !self.auto_hyphenation && p.runs.iter().any(|r| r.text.contains('\u{00AD}')) {
             props.push(boolean("paragraphHyphenation", true));
         }
-        if let Some(pt) = self.paragraph_pitch(p) {
+        // A line holding an inline picture is as tall as the picture in
+        // Word, unless the paragraph's line spacing is EXACT (Word then
+        // clips the picture). The engine (InDesign's rule, core `17d3d3d`)
+        // grows a line for its object only under AUTO leading; under a fixed
+        // one the object overlaps the lines above. So a body paragraph with
+        // a picture takes auto leading, which a leading of 0 asks for. Its
+        // text lines then step 1.2 x their size rather than Word's pitch:
+        // close, and nothing for a picture alone in its paragraph.
+        let exact = {
+            let style = self.style_of(p).map(str::to_owned);
+            self.resolve_spacing(p.props.line_spacing, style.as_deref())
+                .is_some_and(|ls| ls.rule == LineRule::Exact)
+        };
+        let grows_for_picture =
+            can_carry.is_some() && !exact && p.runs.iter().any(|r| !r.images.is_empty());
+        if grows_for_picture {
+            props.push(len("characterLeading", 0.0));
+        } else if let Some(pt) = self.paragraph_pitch(p) {
             let inherited = self
                 .para_base(explicit.clone())
                 .and_then(|base| self.style_leading.get(&base).copied());
@@ -1594,11 +1633,7 @@ impl Lowering {
         let right = side(m.right, tm.right, WORD_SIDE_TWIPS);
         let spacing =
             |this: &Self, p: &docx_core::Paragraph, pick: fn(&ParaProps) -> Option<i32>| {
-                let chain = this.style_chain(this.style_of(p));
-                pick(&p.props)
-                    .or_else(|| chain.iter().find_map(|s| pick(&s.para)))
-                    .or_else(|| pick(&this.word_defaults.para))
-                    .map_or(0.0, twip_to_pt)
+                this.resolved_para(p, pick).map_or(0.0, twip_to_pt)
             };
         if let Some(first) = cell.paragraphs.first() {
             top += spacing(self, first, |pp| pp.space_before);
@@ -1617,6 +1652,71 @@ impl Lowering {
             bottom += spacing(self, last, |pp| pp.space_after);
         }
         [top, left, bottom, right]
+    }
+
+    /// A paragraph property resolved the way Word does: the paragraph's
+    /// own, else its style chain's, else the document defaults'.
+    fn resolved_para<T>(
+        &self,
+        p: &docx_core::Paragraph,
+        pick: fn(&ParaProps) -> Option<T>,
+    ) -> Option<T> {
+        pick(&p.props)
+            .or_else(|| {
+                self.style_chain(self.style_of(p))
+                    .iter()
+                    .find_map(|s| pick(&s.para))
+            })
+            .or_else(|| pick(&self.word_defaults.para))
+    }
+
+    /// Word's rule for the room between two paragraphs, as the override it
+    /// needs on `p` (its space before, and whether its space after goes).
+    ///
+    /// Word leaves the LARGER of the first paragraph's space after and the
+    /// second's space before; the engine (as InDesign) adds the two. So a
+    /// paragraph's space before is lowered by what the paragraph before it
+    /// already leaves after itself. `w:contextualSpacing` between two
+    /// paragraphs of the same style: on the first, there is no room at all
+    /// between them; on the second only, its space before goes and the
+    /// first's space after stays. Measured in Word
+    /// (`fixtures/paragraph-spacing.word.json`: 6 + 6 gives 6, 12 + 6 and
+    /// 6 + 12 give 12, 10 + 24 gives 24, in every compatibility mode).
+    fn word_spacing(
+        &self,
+        before: Option<&docx_core::Paragraph>,
+        p: &docx_core::Paragraph,
+        after: Option<&docx_core::Paragraph>,
+    ) -> (Option<f32>, bool) {
+        let twips = |q: &docx_core::Paragraph, pick: fn(&ParaProps) -> Option<i32>| {
+            self.resolved_para(q, pick).unwrap_or(0).max(0)
+        };
+        let contextual = |q: &docx_core::Paragraph| {
+            self.resolved_para(q, |pp| pp.contextual_spacing) == Some(true)
+        };
+        let same_style = |a: &docx_core::Paragraph, b: &docx_core::Paragraph| {
+            self.style_of(a) == self.style_of(b)
+        };
+        let own_before = twips(p, |pp| pp.space_before);
+        let space_before = before.and_then(|a| {
+            let same = same_style(a, p);
+            let a_after = if contextual(a) && same {
+                0
+            } else {
+                twips(a, |pp| pp.space_after)
+            };
+            let p_before = if same && (contextual(a) || contextual(p)) {
+                0
+            } else {
+                own_before
+            };
+            let left = (p_before - a_after).max(0);
+            (left != own_before).then(|| twip_to_pt(left))
+        });
+        let no_space_after = after.is_some_and(|b| {
+            contextual(p) && same_style(p, b) && twips(p, |pp| pp.space_after) > 0
+        });
+        (space_before, no_space_after)
     }
 
     /// Synthesize (or reuse) a named style carrying direct formatting.

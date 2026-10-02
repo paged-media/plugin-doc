@@ -660,6 +660,10 @@ pub struct ParaProps {
     /// `Some(false)` is an explicit `w:val="0"`, which turns off a style's.
     #[serde(default)]
     pub page_break_before: Option<bool>,
+    /// `w:contextualSpacing`: no space between this paragraph and a
+    /// neighbour of the same style (ADR 029).
+    #[serde(default)]
+    pub contextual_spacing: Option<bool>,
     /// `w:tabs` — explicit tab stops (empty = inherit).
     pub tabs: Vec<TabStop>,
 }

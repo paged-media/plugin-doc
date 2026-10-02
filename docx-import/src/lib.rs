@@ -755,6 +755,7 @@ fn map_paragraph(
                     next: pp.keep_next.as_ref().map(|v| on(&v.val)),
                     lines: pp.keep_lines.as_ref().map(|v| on(&v.val)),
                     widow_control: pp.widow_control.as_ref().map(|v| on(&v.val)),
+                    contextual_spacing: pp.contextual_spacing.as_ref().map(|v| on(&v.val)),
                 },
                 pp.page_break_before.as_ref().map(|v| on(&v.val)),
                 &pp.tabs,
@@ -1479,6 +1480,7 @@ fn map_styles(styles: &wml::Styles) -> StyleCatalog {
                         next: None,
                         lines: None,
                         widow_control: base.widow_control.as_ref().map(|v| on(&v.val)),
+                        contextual_spacing: None,
                     },
                     None,
                     &None,
@@ -1540,6 +1542,7 @@ fn map_style(s: &wml::Style) -> Option<Style> {
                     next: pp.keep_next.as_ref().map(|v| on(&v.val)),
                     lines: pp.keep_lines.as_ref().map(|v| on(&v.val)),
                     widow_control: pp.widow_control.as_ref().map(|v| on(&v.val)),
+                    contextual_spacing: pp.contextual_spacing.as_ref().map(|v| on(&v.val)),
                 },
                 pp.page_break_before.as_ref().map(|v| on(&v.val)),
                 &pp.tabs,
@@ -1612,6 +1615,8 @@ struct Keeps {
     next: Option<bool>,
     lines: Option<bool>,
     widow_control: Option<bool>,
+    /// `w:contextualSpacing` (it rides here to keep `para_props` short).
+    contextual_spacing: Option<bool>,
 }
 
 fn para_props(
@@ -1652,6 +1657,7 @@ fn para_props(
     }
     p.keep_lines = keeps.lines;
     p.widow_control = keeps.widow_control;
+    p.contextual_spacing = keeps.contextual_spacing;
     p.page_break_before = page_break_before;
     if let Some(t) = tabs {
         for ts in &t.tab_stop {

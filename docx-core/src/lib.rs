@@ -773,6 +773,28 @@ pub struct Table {
     /// `w:tblGrid/w:gridCol/@w:w` — column widths in twips (defines column count).
     pub column_widths: Vec<i32>,
     pub rows: Vec<TableRow>,
+    /// `w:tblPr/w:tblCellMar` — the table's default cell margins (twips).
+    #[serde(default)]
+    pub cell_margins: CellMargins,
+}
+
+/// Cell margins in twips, each side as declared (`None` = not declared
+/// here). Word's own defaults are 108 twips left and right, 0 top and
+/// bottom.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CellMargins {
+    pub top: Option<i32>,
+    pub left: Option<i32>,
+    pub bottom: Option<i32>,
+    pub right: Option<i32>,
+}
+
+/// `w:tcPr/w:vAlign` — where a cell's content sits in a taller row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CellVAlign {
+    Top,
+    Center,
+    Bottom,
 }
 
 /// A table row (`w:tr`).
@@ -789,6 +811,12 @@ pub struct TableCell {
     pub grid_span: u32,
     /// `w:tcPr/w:vMerge` — vertical merge role.
     pub v_merge: VMerge,
+    /// `w:tcPr/w:tcMar` — this cell's own margins, over the table's.
+    #[serde(default)]
+    pub margins: CellMargins,
+    /// `w:tcPr/w:vAlign`.
+    #[serde(default)]
+    pub v_align: Option<CellVAlign>,
 }
 
 /// A cell's vertical-merge role (`w:vMerge`).

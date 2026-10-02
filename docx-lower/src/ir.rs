@@ -166,6 +166,14 @@ pub struct LoweredCell {
     pub col_span: u32,
     /// The cell's block content, lowered as paragraphs.
     pub paragraphs: Vec<LoweredParagraph>,
+    /// Native cell insets (top, left, bottom, right, points) that give the
+    /// cell Word's height and text width; see `Lowering::cell_insets`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insets_pt: Option<[f32; 4]>,
+    /// `w:vAlign` as the native vertical justification (`TopAlign` /
+    /// `CenterAlign` / `BottomAlign`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v_align: Option<String>,
 }
 
 impl LoweredStory {

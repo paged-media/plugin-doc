@@ -152,6 +152,11 @@ export interface LoweredCell {
   rowSpan: number;
   colSpan: number;
   paragraphs: LoweredParagraph[];
+  /** Native insets (top, left, bottom, right, pt) that give the cell Word's
+   *  height and text width. */
+  insetsPt?: [number, number, number, number];
+  /** `TopAlign` / `CenterAlign` / `BottomAlign` (Word's `w:vAlign`). */
+  vAlign?: string;
 }
 
 export interface LoweredSection {

@@ -330,6 +330,33 @@ export function buildTableCells(table: LoweredTable, storyId: string, tableId: s
         void pIdx;
       });
     }
+    // Word's cell geometry: margins, the first paragraph's space before and
+    // what Word's line box has beyond the native cell's (docx-lower
+    // `cell_insets`). Without them a native cell is the engine's zero-inset
+    // default and every row comes out shorter than Word's.
+    const elementId = {
+      kind: "tableCell",
+      id: { story_id: storyId, table_id: tableId, row: cell.row, col: cell.col },
+    };
+    if (cell.insetsPt) {
+      const paths = ["cellInsetTop", "cellInsetLeft", "cellInsetBottom", "cellInsetRight"];
+      cell.insetsPt.forEach((pt, i) => {
+        ops.push({
+          op: "setElementProperty",
+          args: { elementId, path: paths[i], value: { type: "length", value: pt } },
+        } as Mutation);
+      });
+    }
+    if (cell.vAlign) {
+      ops.push({
+        op: "setElementProperty",
+        args: {
+          elementId,
+          path: "cellVerticalJustification",
+          value: { type: "text", value: cell.vAlign },
+        },
+      } as Mutation);
+    }
     if (cell.rowSpan > 1 || cell.colSpan > 1) {
       ops.push({
         op: "setCellSpan",

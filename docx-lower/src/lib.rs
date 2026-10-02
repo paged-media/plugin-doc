@@ -1524,12 +1524,22 @@ impl Lowering {
                             })
                             .collect();
                         let idx = cells.len();
+                        let insets_pt = self.cell_insets(t, cell);
                         cells.push(LoweredCell {
                             row: r as u32,
                             col,
                             row_span: 1,
                             col_span: span,
                             paragraphs,
+                            insets_pt: Some(insets_pt),
+                            v_align: cell.v_align.map(|v| {
+                                match v {
+                                    docx_core::CellVAlign::Top => "TopAlign",
+                                    docx_core::CellVAlign::Center => "CenterAlign",
+                                    docx_core::CellVAlign::Bottom => "BottomAlign",
+                                }
+                                .to_string()
+                            }),
                         });
                         if cell.v_merge == docx_core::VMerge::Restart {
                             vmerge_anchor.insert(col, idx);
@@ -1548,6 +1558,57 @@ impl Lowering {
             column_widths_pt,
             cells,
         }
+    }
+
+    /// The native insets (top, left, bottom, right, in points) that give a
+    /// cell the height and text width Word gives it.
+    ///
+    /// Word and the native table size a cell differently. Word stacks full
+    /// line boxes: every line takes its pitch, the first paragraph's space
+    /// before and the last one's space after count, and the cell margins
+    /// (`w:tcMar` over `w:tblCellMar`, Word's default 5.4 pt left and right,
+    /// none above or below) wrap the result. The native cell (InDesign's
+    /// rule, core `2e3c998`) puts the first baseline one ASCENT below the top
+    /// inset, ends at the last baseline, and ignores the first paragraph's
+    /// space before and the last one's space after. So the insets carry the
+    /// difference: the top one the margin and the first space before, the
+    /// bottom one the margin, the last space after, and what Word's first
+    /// line box has beyond its ascent (pitch - ascent).
+    fn cell_insets(&mut self, t: &docx_core::Table, cell: &docx_core::TableCell) -> [f32; 4] {
+        const WORD_SIDE_TWIPS: i32 = 108;
+        let side = |own: Option<i32>, table: Option<i32>, default: i32| {
+            twip_to_pt(own.or(table).unwrap_or(default))
+        };
+        let (m, tm) = (cell.margins, t.cell_margins);
+        let mut top = side(m.top, tm.top, 0);
+        let left = side(m.left, tm.left, WORD_SIDE_TWIPS);
+        let mut bottom = side(m.bottom, tm.bottom, 0);
+        let right = side(m.right, tm.right, WORD_SIDE_TWIPS);
+        let spacing =
+            |this: &Self, p: &docx_core::Paragraph, pick: fn(&ParaProps) -> Option<i32>| {
+                let chain = this.style_chain(this.style_of(p));
+                pick(&p.props)
+                    .or_else(|| chain.iter().find_map(|s| pick(&s.para)))
+                    .or_else(|| pick(&this.word_defaults.para))
+                    .map_or(0.0, twip_to_pt)
+            };
+        if let Some(first) = cell.paragraphs.first() {
+            top += spacing(self, first, |pp| pp.space_before);
+            let style = self.style_of(first).map(str::to_owned);
+            let (font, size) = self.resolve_face(
+                first.runs.iter().find(|r| !r.text.is_empty()),
+                style.as_deref(),
+            );
+            let size_pt = size.map_or(10.0, half_pt_to_pt);
+            let ascent = line_height::ascent_em(font.as_deref()) * size_pt;
+            if let Some(pitch) = self.paragraph_pitch(first) {
+                bottom += (pitch - ascent).max(0.0);
+            }
+        }
+        if let Some(last) = cell.paragraphs.last() {
+            bottom += spacing(self, last, |pp| pp.space_after);
+        }
+        [top, left, bottom, right]
     }
 
     /// Synthesize (or reuse) a named style carrying direct formatting.
@@ -2405,6 +2466,74 @@ mod tests {
         }
     }
 
+    /// A Word cell's geometry as native insets: Word's default side margins,
+    /// the first paragraph's space before on top, and below the last baseline
+    /// what Word's line box has beyond the ascent plus the last space after.
+    #[test]
+    fn a_cell_carries_words_margins_and_line_box_as_insets() {
+        let para = |before: Option<i32>, after: Option<i32>| Paragraph {
+            runs: vec![run(
+                "x",
+                RunProps {
+                    font: Some("Arial".into()),
+                    size_half_pts: Some(22),
+                    ..Default::default()
+                },
+            )],
+            props: ParaProps {
+                space_before: before,
+                space_after: after,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let cell = |margins: docx_core::CellMargins, v_align| TableCell {
+            paragraphs: vec![para(Some(120), None), para(None, Some(200))],
+            grid_span: 1,
+            v_merge: VMerge::None,
+            margins,
+            v_align,
+        };
+        let mut doc = DocxDocument::default();
+        doc.body.push(Block::Table(Table {
+            column_widths: vec![2000, 2000],
+            rows: vec![TableRow {
+                cells: vec![
+                    cell(docx_core::CellMargins::default(), None),
+                    cell(
+                        docx_core::CellMargins {
+                            top: Some(40),
+                            left: Some(0),
+                            ..Default::default()
+                        },
+                        Some(docx_core::CellVAlign::Center),
+                    ),
+                ],
+            }],
+            cell_margins: docx_core::CellMargins {
+                bottom: Some(20),
+                right: Some(60),
+                ..Default::default()
+            },
+        }));
+        let l = lower(&doc);
+        let LoweredBlock::Table(t) = &l.story.blocks[0] else {
+            panic!("a table");
+        };
+        // Arial 11 pt: Word's single line 2355/2048 em, ascent 1854/2048 em.
+        let below = 11.0 * (2355.0 - 1854.0) / 2048.0;
+        let close = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.01);
+        let a = t.cells[0].insets_pt.expect("insets");
+        // top: 0 + space before 6; sides: table right 3, Word's default left
+        // 5.4; bottom: table 1 + line box below the ascent + space after 10.
+        assert!(close(a, [6.0, 5.4, 1.0 + below + 10.0, 3.0]), "{a:?}");
+        assert_eq!(t.cells[0].v_align, None);
+        let b = t.cells[1].insets_pt.expect("insets");
+        // the cell's own top 2 and left 0 win over the table's.
+        assert!(close(b, [2.0 + 6.0, 0.0, 1.0 + below + 10.0, 3.0]), "{b:?}");
+        assert_eq!(t.cells[1].v_align.as_deref(), Some("CenterAlign"));
+    }
+
     fn ptab_notes(l: &LoweredDoc) -> Vec<&str> {
         l.diagnostics
             .iter()
@@ -2478,8 +2607,10 @@ mod tests {
                     }],
                     grid_span: 1,
                     v_merge: VMerge::None,
+                    ..Default::default()
                 }],
             }],
+            ..Default::default()
         }));
         let l = lower(&doc);
         assert!(

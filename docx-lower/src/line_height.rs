@@ -97,6 +97,50 @@ pub fn measured_single_em(font: &str) -> Option<f32> {
         .map(|(_, units)| f32::from(*units) / 2048.0)
 }
 
+/// hhea ascenders (1/2048 em) of the measured faces, read from the font
+/// files Word ships (fontTools, 2026-10-02). The native table puts a cell's
+/// first baseline one ascent below its top inset.
+const ASCENT: &[(&str, u16)] = &[
+    ("Aptos", 1923),
+    ("Arial", 1854),
+    ("Arial Narrow", 1916),
+    ("Book Antiqua", 1891),
+    ("Calibri", 1950),
+    ("Calibri Light", 1950),
+    ("Cambria", 1946),
+    ("Candara", 1484),
+    ("Comic Sans MS", 2257),
+    ("Consolas", 1521),
+    ("Constantia", 1538),
+    ("Corbel", 1523),
+    ("Century Gothic", 2060),
+    ("Courier New", 1705),
+    ("Franklin Gothic Book", 1877),
+    ("Garamond", 1765),
+    ("Georgia", 1878),
+    ("Gill Sans MT", 1903),
+    ("Helvetica", 1577),
+    ("Lucida Sans Unicode", 2246),
+    ("Palatino Linotype", 2150),
+    ("Tahoma", 2049),
+    ("Times New Roman", 1825),
+    ("Trebuchet MS", 1923),
+    ("Verdana", 2059),
+];
+
+/// The ascent of `font` in ems (Calibri's when the face is unknown or the
+/// theme's, like [`FALLBACK_EM`]).
+pub fn ascent_em(font: Option<&str>) -> f32 {
+    let units = font
+        .and_then(|f| {
+            ASCENT
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(f.trim()))
+        })
+        .map_or(1950, |(_, u)| *u);
+    f32::from(units) / 2048.0
+}
+
 /// Word's single line height in points for a run in `font` (`None` = theme
 /// or default face) at `size_pt`.
 pub fn single_line_pt(font: Option<&str>, size_pt: f32) -> f32 {

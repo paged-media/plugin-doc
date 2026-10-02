@@ -38,7 +38,8 @@ use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_ma
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_drawingml_2006_wordprocessing_drawing as wp;
 use paged_ooxml::ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main as wml;
 use paged_ooxml::ooxmlsdk::simple_type::{
-    HpsMeasureValue, OnOffValue, SignedHpsMeasureValue, SignedTwipsMeasureValue, TwipsMeasureValue,
+    DecimalNumberOrPercentValue, HpsMeasureValue, MeasurementOrPercentValue, OnOffValue,
+    SignedHpsMeasureValue, SignedTwipsMeasureValue, TwipsMeasureValue,
 };
 use paged_ooxml::{parse_root, part_dir, rels, resolve_target, OoxmlError, OpcPackage};
 
@@ -922,9 +923,32 @@ fn map_table(t: &wml::Table, ctx: &ImportCtx, table_ord: u32) -> docx_core::Tabl
             row_ord += 1;
         }
     }
+    let cell_margins = t
+        .table_properties
+        .as_deref()
+        .and_then(|p| p.table_cell_margin_default.as_deref())
+        .map(|m| docx_core::CellMargins {
+            top: m.top_margin.as_ref().and_then(|x| margin_twips(&x.width)),
+            left: m
+                .table_cell_left_margin
+                .as_ref()
+                .and_then(|x| margin_twips(&x.width))
+                .or_else(|| m.start_margin.as_ref().and_then(|x| margin_twips(&x.width))),
+            bottom: m
+                .bottom_margin
+                .as_ref()
+                .and_then(|x| margin_twips(&x.width)),
+            right: m
+                .table_cell_right_margin
+                .as_ref()
+                .and_then(|x| margin_twips(&x.width))
+                .or_else(|| m.end_margin.as_ref().and_then(|x| margin_twips(&x.width))),
+        })
+        .unwrap_or_default();
     docx_core::Table {
         column_widths,
         rows,
+        cell_margins,
     }
 }
 
@@ -965,7 +989,36 @@ fn map_cell(
             para += 1;
         }
     }
+    let margins = props
+        .and_then(|p| p.table_cell_margin.as_deref())
+        .map(|m| docx_core::CellMargins {
+            top: m.top_margin.as_ref().and_then(|x| margin_twips(&x.width)),
+            left: m
+                .left_margin
+                .as_ref()
+                .and_then(|x| margin_twips(&x.width))
+                .or_else(|| m.start_margin.as_ref().and_then(|x| margin_twips(&x.width))),
+            bottom: m
+                .bottom_margin
+                .as_ref()
+                .and_then(|x| margin_twips(&x.width)),
+            right: m
+                .right_margin
+                .as_ref()
+                .and_then(|x| margin_twips(&x.width))
+                .or_else(|| m.end_margin.as_ref().and_then(|x| margin_twips(&x.width))),
+        })
+        .unwrap_or_default();
+    let v_align = props
+        .and_then(|p| p.table_cell_vertical_alignment.as_ref())
+        .map(|v| match v.val {
+            wml::TableVerticalAlignmentValues::Top => docx_core::CellVAlign::Top,
+            wml::TableVerticalAlignmentValues::Center => docx_core::CellVAlign::Center,
+            wml::TableVerticalAlignmentValues::Bottom => docx_core::CellVAlign::Bottom,
+        });
     docx_core::TableCell {
+        margins,
+        v_align,
         paragraphs,
         grid_span,
         v_merge,
@@ -1725,6 +1778,18 @@ fn stwips(v: &SignedTwipsMeasureValue) -> Option<i32> {
     match v {
         SignedTwipsMeasureValue::Twips(n) => Some(*n as i32),
         SignedTwipsMeasureValue::UniversalMeasure(_) => None,
+    }
+}
+
+/// A cell margin (`w:tblCellMar` / `w:tcMar` child) in twips. Word writes
+/// these as plain numbers with `w:type="dxa"`; a percentage or a
+/// unit-suffixed measure is not carried.
+fn margin_twips(v: &Option<MeasurementOrPercentValue>) -> Option<i32> {
+    match v.as_ref()? {
+        MeasurementOrPercentValue::DecimalNumberOrPercent(
+            DecimalNumberOrPercentValue::DecimalNumber(n),
+        ) => Some(*n as i32),
+        _ => None,
     }
 }
 

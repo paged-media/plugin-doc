@@ -424,3 +424,35 @@ describe("buildDocumentMutations (text-only)", () => {
     expect(ops.length).toBeGreaterThan(5);
   });
 });
+
+describe("buildTableCells — Word's cell geometry", () => {
+  it("sends each cell's insets and vertical alignment", () => {
+    const table = {
+      rows: 1,
+      cols: 1,
+      columnWidthsPt: [100],
+      cells: [
+        {
+          row: 0,
+          col: 0,
+          rowSpan: 1,
+          colSpan: 1,
+          paragraphs: [{ runs: [{ text: "x" }] }],
+          insetsPt: [6, 5.4, 13.7, 3],
+          vAlign: "CenterAlign",
+        },
+      ],
+    } as unknown as import("../src/lowered.js").LoweredTable;
+    const batch = buildTableCells(table, "s", "Table/t");
+    const ops = (batch.args as { ops: Array<{ op: string; args: Record<string, unknown> }> }).ops;
+    const elementId = { kind: "tableCell", id: { story_id: "s", table_id: "Table/t", row: 0, col: 0 } };
+    const set = ops.filter((o) => o.op === "setElementProperty").map((o) => o.args);
+    expect(set).toEqual([
+      { elementId, path: "cellInsetTop", value: { type: "length", value: 6 } },
+      { elementId, path: "cellInsetLeft", value: { type: "length", value: 5.4 } },
+      { elementId, path: "cellInsetBottom", value: { type: "length", value: 13.7 } },
+      { elementId, path: "cellInsetRight", value: { type: "length", value: 3 } },
+      { elementId, path: "cellVerticalJustification", value: { type: "text", value: "CenterAlign" } },
+    ]);
+  });
+});

@@ -291,7 +291,7 @@ ops use.)
   the tier sections above. Footnotes and headers/footers are PARSED, carried
   in the IR and diagnosed, not placed.)
 - **Headers, footnote numbering, floating drawings (RFI DOC-05/06/07,
-  thoughts ADR 033/034/035)** — every section's header/footer references are
+  ADR 033/034/035)** — every section's header/footer references are
   read (default/first/even, `titlePg`, `evenAndOddHeaders`, `pgNumType`,
   header/footer distances) with Word's inheritance, checked page by page
   against Word's PDF (`fixtures/headers.word.json`, which also found Word's
@@ -314,7 +314,7 @@ ops use.)
 - **DOC-01** `host.nativeDocument.open(bytes)` and **DOC-03**
   `readModel/readComposition/listParts` now **exist** in the SDK contract
   (conditional — live only when the editor injects a `NativeDocumentBackend`). The
-  base-idea listed them as missing; they landed after it was drafted. The importer
+  concept paper (`concept.md`) listed them as missing; they landed after it was drafted. The importer
   declares `openNative`/`readNative` and probes `host.supports(...)`.
 - **DOC-03 — structured whole-document read (NEW ask, M2 blocker).** `readModel`
   returns the core-owned `.pgm` model bytes, which an isolation-clean plugin cannot
@@ -637,7 +637,7 @@ proving the save-back rather than passing by construction.
 STILL LOCAL, not committed: the editor wiring depends on two publishes — the
 canvas-wasm v55 release (DOC-03 read + cell-qualified applyStyle) and a
 `@paged-media/doc` canary. Until both land, this runs only under
-`~/paged/sync-wasm.sh` + `link:` overrides.
+`sync-wasm.sh` + `link:` overrides.
 
 ## Save-back: tabs, non-breaking hyphens and run content the text cannot place
 

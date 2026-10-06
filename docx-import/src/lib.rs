@@ -28,9 +28,10 @@
 use docx_core::{
     Block, BreakKind, CellPath, DocxDocument, Float, FloatPosition, FloatWrap, HeaderFooter,
     HeaderFooterKind, HeaderFooterRef, HeaderFooterSet, Image, Justification, LineRule,
-    LineSpacing, ListKind, ListMarker, Note, NoteProps, NoteRestart, ParaProps, Paragraph,
-    PositionalTab, PtabAlignment, PtabBase, Run, RunBreak, RunProps, RunSource, RunSymbol, Section,
-    SectionKind, Style, StyleCatalog, StyleKind, TabStop, VertAlign, LINE_BREAK, SOFT_HYPHEN,
+    LineSpacing, ListKind, ListMarker, MergeField, Note, NoteProps, NoteRestart, ParaProps,
+    Paragraph, PositionalTab, PtabAlignment, PtabBase, Run, RunBreak, RunProps, RunSource,
+    RunSymbol, Section, SectionKind, Style, StyleCatalog, StyleKind, TabStop, VertAlign,
+    LINE_BREAK, SOFT_HYPHEN,
 };
 use paged_ooxml::ooxmlsdk::schemas::schemas_microsoft_com_office_word as w10;
 use paged_ooxml::ooxmlsdk::schemas::schemas_microsoft_com_vml as vml;
@@ -823,6 +824,8 @@ fn map_paragraph(
     // wrapped run keeps a locatable address of its own.
     let mut link_ord = 0u32;
     let mut field_ord = 0u32;
+    // Ordinal of the next MERGEFIELD in this paragraph (both field forms).
+    let mut merge_ord = 0u32;
     for choice in &p.paragraph_choice {
         match choice {
             wml::ParagraphChoice::WRun(r) => {
@@ -835,6 +838,10 @@ fn map_paragraph(
                             if let Some(f) = fields.last_mut() {
                                 f.result_url = parse_hyperlink_instr(&f.instruction);
                                 f.result_field = field_name(&f.instruction);
+                                f.merge = parse_merge_field(&f.instruction, merge_ord);
+                                if f.merge.is_some() {
+                                    merge_ord += 1;
+                                }
                                 f.separated = true;
                             }
                         }
@@ -858,6 +865,7 @@ fn map_paragraph(
                             run.hyperlink = Some(url.clone());
                         }
                         run.field = f.result_field.clone();
+                        run.merge_field = f.merge.clone();
                     }
                 }
                 runs.push(run);
@@ -883,12 +891,17 @@ fn map_paragraph(
             // HYPERLINK, its inner display runs become links.
             wml::ParagraphChoice::SimpleField(fs) => {
                 let url = parse_hyperlink_instr(&fs.instruction);
+                let merge = parse_merge_field(&fs.instruction, merge_ord);
+                if merge.is_some() {
+                    merge_ord += 1;
+                }
                 let mut inner = 0u32;
                 for c in &fs.simple_field_choice {
                     if let wml::SimpleFieldChoice::WRun(r) = c {
                         let mut run = map_run(r, ctx);
                         run.hyperlink = url.clone();
                         run.field = field_name(&fs.instruction);
+                        run.merge_field = merge.clone();
                         run.source = Some(RunSource::Field {
                             field_ord,
                             run_ord: inner,
@@ -1074,6 +1087,8 @@ struct FieldFrame {
     /// `DATE`, `REF`, … Stamped on the result runs so lowering can report which
     /// field kinds became frozen text.
     result_field: Option<String>,
+    /// The parsed field when it is a `MERGEFIELD` (stamped on its result runs).
+    merge: Option<MergeField>,
 }
 
 /// The `w:fldChar` type carried by a run, if any (a control run — no display text).
@@ -1110,6 +1125,84 @@ fn field_name(instr: &str) -> Option<String> {
         .next()
         .map(|t| t.to_ascii_uppercase())
         .filter(|t| !t.is_empty())
+}
+
+/// The tokens of a field instruction: whitespace-separated words, a
+/// double-quoted argument as one token (quotes removed, `\"` unescaped), and
+/// each backslash switch as its own token (`\*`, `\b`).
+fn instruction_tokens(instr: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    let mut chars = instr.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+        } else if c == '"' {
+            chars.next();
+            let mut t = String::new();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' if chars.peek() == Some(&'"') => t.push(chars.next().unwrap_or('"')),
+                    '"' => break,
+                    c => t.push(c),
+                }
+            }
+            out.push((t, true));
+        } else {
+            let mut t = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_whitespace() || (c == '"' && !t.is_empty()) {
+                    break;
+                }
+                t.push(c);
+                chars.next();
+            }
+            out.push((t, false));
+        }
+    }
+    out
+}
+
+/// Parse a `MERGEFIELD` instruction (Word mail merge); `None` for any other
+/// field or a MERGEFIELD without a name. `occurrence` is the field's ordinal
+/// among the paragraph's merge fields.
+pub fn parse_merge_field(instr: &str, occurrence: u32) -> Option<MergeField> {
+    let tokens = instruction_tokens(instr);
+    let (head, _) = tokens.first()?;
+    if !head.eq_ignore_ascii_case("MERGEFIELD") {
+        return None;
+    }
+    let mut field = MergeField {
+        instruction: instr.to_string(),
+        occurrence,
+        ..Default::default()
+    };
+    let mut i = 1;
+    while i < tokens.len() {
+        let (t, quoted) = &tokens[i];
+        let switch = !quoted && t.starts_with('\\');
+        let arg = tokens.get(i + 1).map(|(a, _)| a.clone());
+        match (switch, t.to_ascii_lowercase().as_str()) {
+            (true, "\\b") => {
+                field.before = arg;
+                i += 1;
+            }
+            (true, "\\f") => {
+                field.after = arg;
+                i += 1;
+            }
+            (true, "\\*") => {
+                field.format.extend(arg);
+                i += 1;
+            }
+            (true, "\\m") => field.mapped = true,
+            (true, "\\v") => field.vertical = true,
+            (true, _) => {}
+            (false, _) if field.name.is_empty() => field.name = t.clone(),
+            (false, _) => {}
+        }
+        i += 1;
+    }
+    (!field.name.is_empty()).then_some(field)
 }
 
 fn parse_hyperlink_instr(instr: &str) -> Option<String> {
@@ -1247,6 +1340,7 @@ fn map_run(r: &wml::Run, ctx: &ImportCtx) -> Run {
         source: None,
         note_ref,
         field: None,
+        merge_field: None,
     }
 }
 

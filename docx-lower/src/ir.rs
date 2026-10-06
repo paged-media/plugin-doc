@@ -339,6 +339,12 @@ pub struct LoweredRun {
     /// this only carries the click target). `None` for ordinary runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hyperlink_url: Option<String>,
+    /// When the run is (part of) a Word `MERGEFIELD`'s result, the parsed
+    /// field: the bundle's object model addresses it (`mergeField`) and a
+    /// data binding sets its result through save-back. The text pours as
+    /// ordinary text; nothing native marks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_field: Option<docx_core::MergeField>,
 }
 
 /// Page geometry for the first section, in points.

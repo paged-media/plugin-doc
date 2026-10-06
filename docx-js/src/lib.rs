@@ -137,6 +137,24 @@ mod wasm {
             Ok(bytes)
         }
 
+        /// The object model's writes (`{ runs: [{block, run, text}],
+        /// mergeFields: [{block, occurrence, value}] }`, lowered story
+        /// coordinates), saved as a targeted patch: the edited `.docx` bytes.
+        /// The refusal ledger is `last_save_skips`.
+        pub fn save_object_edits(&self, edits_json: &str) -> Result<Vec<u8>, JsValue> {
+            let session = self
+                .session
+                .as_ref()
+                .ok_or_else(|| JsValue::from_str("no document loaded"))?;
+            let edits: crate::core::ObjectEdits =
+                serde_json::from_str(edits_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let (bytes, skips) = session
+                .save_object_edits(&edits)
+                .map_err(|e| JsValue::from_str(&e))?;
+            *self.last_skips.borrow_mut() = skips;
+            Ok(bytes)
+        }
+
         /// M2 edited save-back driven by the DOC-03 read: forward the host's
         /// `StoryContent` JSON (`host.document.storyContent(storyId)`); it is
         /// overlaid on the import baseline, diffed, and saved. This is the LIVE

@@ -1727,6 +1727,52 @@ pub fn field_hyperlink_docx() -> Vec<u8> {
     ])
 }
 
+/// A mail-merge letter: Word `MERGEFIELD`s in both field forms — complex
+/// (`fldChar` + `instrText`, the result split across two runs, the instruction
+/// split across two `instrText` runs, a quoted name with a space and `\b` /
+/// `\*` switches), simple (`w:fldSimple`), two fields of the same name in one
+/// paragraph, a `PAGE` field that is not a merge field, and a merge field in a
+/// second paragraph.
+pub fn merge_field_docx() -> Vec<u8> {
+    let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#;
+    let document = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">Dear </w:t></w:r>
+      <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+      <w:r><w:instrText xml:space="preserve"> MERGEFIELD "First </w:instrText></w:r>
+      <w:r><w:instrText xml:space="preserve">Name" \b "Mx " \* MERGEFORMAT </w:instrText></w:r>
+      <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+      <w:r><w:t>«First</w:t></w:r>
+      <w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve"> Name»</w:t></w:r>
+      <w:r><w:fldChar w:fldCharType="end"/></w:r>
+      <w:r><w:t xml:space="preserve">, from </w:t></w:r>
+      <w:fldSimple w:instr=" MERGEFIELD City \* Upper "><w:r><w:t>«City»</w:t></w:r></w:fldSimple>
+      <w:r><w:t xml:space="preserve"> and </w:t></w:r>
+      <w:fldSimple w:instr=" MERGEFIELD City "><w:r><w:t>«City»</w:t></w:r></w:fldSimple>
+      <w:r><w:t xml:space="preserve">, page </w:t></w:r>
+      <w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple>
+    </w:p>
+    <w:p>
+      <w:r><w:t xml:space="preserve">Order </w:t></w:r>
+      <w:fldSimple w:instr=" MERGEFIELD OrderNo \f &quot;.&quot; \m "><w:r><w:t>«OrderNo»</w:t></w:r></w:fldSimple>
+    </w:p>
+    <w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>
+  </w:body>
+</w:document>"#;
+    zip_parts(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+    ])
+}
+
 /// A document with a footnote: an in-text `w:footnoteReference` plus a
 /// `word/footnotes.xml` carrying the note body (and Word's two separator
 /// pseudo-notes, which must be skipped).

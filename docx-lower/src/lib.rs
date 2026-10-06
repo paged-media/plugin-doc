@@ -1616,6 +1616,7 @@ impl Lowering {
             text: r.text.clone(),
             char_style_id,
             hyperlink_url: external_url,
+            merge_field: r.merge_field.clone(),
         }
     }
 

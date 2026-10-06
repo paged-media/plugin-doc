@@ -315,6 +315,44 @@ pub struct Run {
     /// are handled separately (see [`Run::hyperlink`]).
     #[serde(default)]
     pub field: Option<String>,
+    /// When this run is (part of) the RESULT of a Word `MERGEFIELD` (mail
+    /// merge), the parsed field: its data-source column name and switches.
+    /// The run's `text` is the field's current result (Word shows
+    /// `«Name»` until it merges). A field whose result spans several runs
+    /// stamps the same [`MergeField`] (same `occurrence`) on each.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_field: Option<MergeField>,
+}
+
+/// A parsed Word `MERGEFIELD` instruction (ECMA-376 Part 1, 17.16.5.35):
+/// `MERGEFIELD FieldName [\b "before"] [\f "after"] [\m] [\v] [\* Format]`.
+/// The instruction is kept verbatim as well, so nothing the parser does not
+/// model is lost (save-back never rewrites it: only the RESULT runs change).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeField {
+    /// The data-source column the field merges (`FirstName`, `First Name`).
+    pub name: String,
+    /// The instruction text as written (`" MERGEFIELD FirstName \* MERGEFORMAT "`).
+    pub instruction: String,
+    /// The field's ordinal among the paragraph's merge fields (0-based):
+    /// tells two adjacent fields of the same name apart.
+    pub occurrence: u32,
+    /// `\b` — text inserted before the value when the value is not empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    /// `\f` — text inserted after the value when the value is not empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// `\m` — the name is a mapped field.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mapped: bool,
+    /// `\v` — vertical formatting (East Asian).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vertical: bool,
+    /// Every `\*` general-format switch argument, in order (`Upper`,
+    /// `MERGEFORMAT`, …).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub format: Vec<String>,
 }
 
 /// A page or column break inside a run (`w:br` with `w:type` `page` or

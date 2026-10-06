@@ -34,6 +34,11 @@ import { placeEmbedded } from "./place.js";
 import { openStandalone } from "./open.js";
 import { discoverDocs, readDocBytes, readLowered, type DocState } from "./doc-state.js";
 import { contributeDocObjectModel } from "./object-model.js";
+import {
+  DOC_PROPERTIES_PANEL,
+  PROPERTIES_PANEL_ID,
+  publishPropertyLists,
+} from "./panels/properties-panel.js";
 import { mergeSectionContents, pouredParagraphCount, sectionBlocks } from "@paged-media/doc-host-model";
 import type { StoryContentLike } from "@paged-media/doc-host-model";
 
@@ -357,6 +362,22 @@ export function activate(host: BundleHost): BundleHandle {
     place: (name, bytes) => ingest(name, bytes, "place"),
     exportBytes: (state) => exportState(state),
   });
+
+  // ADR 323 — the object properties as host-rendered PropertyFields (a
+  // schema panel of property rows; needs the object model + bindings).
+  if (objectModel && host.supports("contribute.schemaPanel@1")) {
+    disposers.push(
+      host.contribute.schemaPanel({
+        id: PROPERTIES_PANEL_ID,
+        title: DOC_PROPERTIES_PANEL.title,
+        icon: DOC_PROPERTIES_PANEL.icon,
+        defaultDock: "right",
+        schema: DOC_PROPERTIES_PANEL,
+      }).dispose,
+    );
+    const lists = publishPropertyLists(host);
+    disposers.push(() => lists.dispose());
+  }
 
   host.log.info("paged.doc activated");
   // F1 — the menu bar. Before plugin-api 0.2.33 there was no menu door,

@@ -29,7 +29,8 @@
   },
   "contributes": {
     "panels": [
-      "media.paged.doc.panel.outline"
+      "media.paged.doc.panel.outline",
+      "media.paged.doc.panel.properties"
     ],
     "commands": [
       "media.paged.doc.command.placeDoc"

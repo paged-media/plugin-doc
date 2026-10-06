@@ -210,6 +210,25 @@ describe.skipIf(!docxPresent)("doc conformance — object model (real host + rea
     expect(await storyTexts(host, story)).toEqual([FIRST, "Order «OrderNo»"]);
   });
 
+  it("a page item scope lists that frame's objects only (the panel's selection, ADR 323 §4)", async () => {
+    const out = (await h.objects.invoke("media.paged.doc.command.placeDoc", {
+      bytes: fixture("merge-letter.docx"),
+      fileName: "scoped.docx",
+    })) as { document: string };
+    const frame = out.document.split("/").pop()!;
+    expect(await h.objects.query(`frame:${frame} > plugin:media.paged.doc/docxDocument`)).toEqual([out.document]);
+    const fields = await h.objects.query(`frame:${frame} > plugin:media.paged.doc/mergeField`);
+    expect(fields.length).toBeGreaterThan(0);
+    expect(fields.every((f) => f.includes(`/${frame}/`))).toBe(true);
+    const block = docAddress("block", `${frame}/b1`);
+    expect(await h.objects.query(`${block} > plugin:media.paged.doc/mergeField`)).toEqual([
+      docAddress("mergeField", `${frame}/b1/f0`),
+    ]);
+    const runs = await h.objects.query(`${block} > plugin:media.paged.doc/run`);
+    expect(runs.length).toBeGreaterThan(0);
+    expect(runs.every((r) => r.startsWith(`plugin:media.paged.doc/run/${frame}/b1/`))).toBe(true);
+  });
+
   it("every panel field is a row of its kind", () => {
     for (const f of PANEL_FIELDS) expect(schemaOf(f.kind).some((r) => r.path === f.path), `${f.kind}.${f.path}`).toBe(true);
   });

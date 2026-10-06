@@ -359,6 +359,21 @@ async function planDocOps(host: BundleHost, ops: readonly ObjectOp[]): Promise<O
   }
 }
 
+/** A `list` scope (`query.within`) → the frame (and block) it confines
+ *  to: one of this bundle's documents or blocks, or the page item hosting a
+ *  document (`<frame> > plugin:media.paged.doc/<kind>` — a panel's
+ *  selection). `null` = unscoped. */
+function scopeOf(within: string | undefined): { frame: string; block?: number } | null {
+  if (!within) return null;
+  const doc = parseId(within, "docxDocument");
+  if (doc) return { frame: doc.frame };
+  const block = parseId(within, "block");
+  if (block) return { frame: block.frame, block: block.block };
+  const a = parseAddress(within);
+  if (a && (a.kind === "item" || a.kind === "frame")) return { frame: a.id };
+  return { frame: "\u0000none" };
+}
+
 // ------------------------------------------------------------- kinds
 
 function documentKind(host: BundleHost): ObjectKindContribution {
@@ -374,8 +389,12 @@ function documentKind(host: BundleHost): ObjectKindContribution {
       const d = parseId(address, "docxDocument");
       return d ? `frame:${d.frame}` : null;
     },
-    async list() {
-      return (await discoverDocs(host)).map((s) => docAddress("docxDocument", (s.frame as { id: string }).id));
+    async list(query) {
+      const scoped = scopeOf(query.within);
+      return (await discoverDocs(host))
+        .map((s) => (s.frame as { id: string }).id)
+        .filter((frame) => !scoped || scoped.frame === frame)
+        .map((frame) => docAddress("docxDocument", frame));
     },
     async get(address, path) {
       const d = parseId(address, "docxDocument");
@@ -429,7 +448,7 @@ function blockKind(host: BundleHost): ObjectKindContribution {
       return d ? `frame:${d.frame}` : null;
     },
     async list(query) {
-      const scoped = query.within ? parseId(query.within, "docxDocument") : null;
+      const scoped = scopeOf(query.within);
       const out: Address[] = [];
       for (const s of await discoverDocs(host)) {
         const frame = (s.frame as { id: string }).id;
@@ -494,16 +513,14 @@ function runKind(host: BundleHost): ObjectKindContribution {
       return d ? `frame:${d.frame}` : null;
     },
     async list(query) {
-      const scopedDoc = query.within ? parseId(query.within, "docxDocument") : null;
-      const scopedBlock = query.within ? parseId(query.within, "block") : null;
+      const scope = scopeOf(query.within);
       const out: Address[] = [];
       for (const s of await discoverDocs(host)) {
         const frame = (s.frame as { id: string }).id;
-        const scope = scopedDoc ?? scopedBlock;
         if (scope && scope.frame !== frame) continue;
         const ir = await readLowered(host, s);
         for (const { d, p } of ir ? paragraphs(ir, frame) : []) {
-          if (scopedBlock && scopedBlock.block !== d.block) continue;
+          if (scope?.block !== undefined && scope.block !== d.block) continue;
           p.runs.forEach((_, j) => out.push(docAddress("run", idText(d, `r${j}`))));
         }
       }
@@ -543,13 +560,14 @@ function mergeFieldKind(host: BundleHost): ObjectKindContribution {
       return d ? `frame:${d.frame}` : null;
     },
     async list(query) {
-      const scoped = query.within ? parseId(query.within, "docxDocument") : null;
+      const scoped = scopeOf(query.within);
       const out: Address[] = [];
       for (const s of await discoverDocs(host)) {
         const frame = (s.frame as { id: string }).id;
         if (scoped && scoped.frame !== frame) continue;
         const ir = await readLowered(host, s);
         for (const { d, p } of ir ? paragraphs(ir, frame) : []) {
+          if (scoped?.block !== undefined && scoped.block !== d.block) continue;
           for (const o of fieldsOf(p).keys()) out.push(docAddress("mergeField", idText(d, `f${o}`)));
         }
       }

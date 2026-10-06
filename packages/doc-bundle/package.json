@@ -32,15 +32,15 @@
     "build": "tsup src/index.ts --format esm --dts"
   },
   "peerDependencies": {
-    "@paged-media/plugin-api": ">=0.2.43-canary.0",
-    "@paged-media/plugin-sdk": ">=0.2.43-canary.0",
+    "@paged-media/plugin-api": ">=0.2.45-canary.0",
+    "@paged-media/plugin-sdk": ">=0.2.45-canary.0",
     "react": "^18.3.0"
   },
   "devDependencies": {
     "@paged-media/canvas-wasm": "0.70.0",
     "@paged-media/doc-host-model": "workspace:*",
-    "@paged-media/plugin-api": "0.2.43-canary.0",
-    "@paged-media/plugin-sdk": "0.2.43-canary.0",
+    "@paged-media/plugin-api": "0.2.45-canary.0",
+    "@paged-media/plugin-sdk": "0.2.45-canary.0",
     "@types/node": "^20.19.43",
     "@types/react": "^18.3.31",
     "react": "^18.3.1",

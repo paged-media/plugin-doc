@@ -62,6 +62,7 @@ export async function placeEmbedded(
   host: BundleHost,
   ir: LoweredDoc,
   source: Uint8Array,
+  fileName?: string,
 ): Promise<PlacedDoc | null> {
   // The pages collection carries `selfId`, NOT `id` — reading `.id` yielded
   // undefined on every real host, so placement always bailed with "no page to
@@ -125,7 +126,13 @@ export async function placeEmbedded(
     await host.parts.write(partPath, source);
     await host.document.setMetadata(frameId, {
       v: 1,
-      data: { part: partPath, blocks: ir.story.blocks.length },
+      data: {
+        part: partPath,
+        blocks: ir.story.blocks.length,
+        sections: [storyId],
+        ...(fileName ? { fileName } : {}),
+        midPageColumns: true,
+      },
     });
   } catch (err) {
     host.log.warn(`paged.doc: could not persist source part: ${String(err)}`);

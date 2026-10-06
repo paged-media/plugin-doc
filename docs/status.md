@@ -1,5 +1,18 @@
 # paged.doc — status
 
+## Object model and merge fields (ADR 605, `om/object-model` branch, plugin-api 0.2.43)
+
+- `MERGEFIELD` parsed in both field forms (name, switches, instruction), carried on runs and
+  through the lowering.
+- `host.objects` kinds `docxDocument`, `block`, `run`, `mergeField`; `run.text` (body) and
+  `mergeField.value` writable as one undo step (save-back patch + poured text + label).
+  Typed commands `placeDoc`, `exportDocx`, `fillMergeFields`.
+- The bundle runs in the SDK's headless host (`test/conformance/`, real engine + real
+  docx-js); a 10-op batch costs 1 commit, 2 engine boots and 3 host reads.
+- Open: table-cell runs are not writable; the embedded place needs engine 0.70
+  (`insertTextFrame` is `notImplemented` on 0.69, so "Place Word document…" fails there);
+  exporting a document with coalesced runs duplicates text (pinned as an expected failure).
+
 ## This pass: M0 (foundation) + M1 Tier-0 read path
 
 **DONE + verified (all green):**

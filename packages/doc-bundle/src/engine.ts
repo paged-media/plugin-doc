@@ -40,6 +40,7 @@ interface WasmDocEngine {
   lowered_json(): string;
   block_count(): number;
   save_verbatim(): Uint8Array;
+  save_object_edits(editsJson: string): Uint8Array;
   save_edited_from_content(contentJson: string): Uint8Array;
   last_save_skips(): string;
   skeleton_idml(name: string): Uint8Array;
@@ -111,6 +112,22 @@ export class DocEngine {
   /** Zero-edit save-back (verbatim carry-through of the retained package). */
   saveVerbatim(): Uint8Array {
     return this.inner.save_verbatim();
+  }
+
+  /**
+   * The object model's writes, saved as a targeted patch: run texts and merge
+   * field results, addressed in lowered story coordinates. The engine picks
+   * the runs a merge field's result spans and never touches its field code;
+   * only the changed `w:t` are rewritten. Throws with the engine's reason
+   * (no such block / run / field, a table cell). `skips` is the patcher's
+   * refusal ledger.
+   */
+  saveObjectEdits(edits: {
+    runs?: ReadonlyArray<{ block: number; run: number; text: string }>;
+    mergeFields?: ReadonlyArray<{ block: number; occurrence: number; value: string }>;
+  }): { bytes: Uint8Array; skips: string[] } {
+    const bytes = this.inner.save_object_edits(JSON.stringify(edits));
+    return { bytes, skips: this.lastSaveSkips() };
   }
 
   /**

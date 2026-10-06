@@ -32,6 +32,8 @@ import { createDocStore } from "./panels/outline-model.js";
 import { makeOutlinePanel } from "./panels/outline-panel.js";
 import { placeEmbedded } from "./place.js";
 import { openStandalone } from "./open.js";
+import { discoverDocs, readDocBytes, readLowered, type DocState } from "./doc-state.js";
+import { contributeDocObjectModel } from "./object-model.js";
 import { mergeSectionContents, pouredParagraphCount, sectionBlocks } from "@paged-media/doc-host-model";
 import type { StoryContentLike } from "@paged-media/doc-host-model";
 
@@ -44,6 +46,8 @@ const DOCX_MIME =
  *  read-back uses to pull the EDITED content for save-back. */
 interface LastDoc {
   fileName: string;
+  /** The frame carrying the document's label (its persisted state). */
+  frameId: ElementId | null;
   source: Uint8Array;
   /** The story or stories the document lives in: one when placed embedded,
    *  one per Word section when opened standalone (ADR 029), in order. */
@@ -72,7 +76,7 @@ export function activate(host: BundleHost): BundleHandle {
     name: string,
     bytes: Uint8Array,
     mode: "open" | "place",
-  ): Promise<void> {
+  ): Promise<{ frame: ElementId; story: string | null } | null> {
     const engine = await DocEngine.boot();
     try {
       engine.loadDocx(bytes);
@@ -90,6 +94,7 @@ export function activate(host: BundleHost): BundleHandle {
         // columns (another story per column change): count what it poured.
         last = {
           fileName: name,
+          frameId: opened.frameId,
           source: bytes,
           storyIds: opened.storyIds,
           pouredParagraphs: sectionBlocks(opened.ir).map(pouredParagraphCount),
@@ -102,9 +107,10 @@ export function activate(host: BundleHost): BundleHandle {
           storyId: opened.storyIds[0] ?? null,
         });
       } else {
-        const placed = await placeEmbedded(host, ir, bytes);
+        const placed = await placeEmbedded(host, ir, bytes, name);
         last = {
           fileName: name,
+          frameId: placed?.frameId ?? null,
           source: bytes,
           storyIds: placed?.storyId ? [placed.storyId] : [],
           pouredParagraphs: [paragraphCounts.reduce((a, b) => a + b, 0)],
@@ -123,6 +129,43 @@ export function activate(host: BundleHost): BundleHandle {
         }
       }
       host.shell.openPanel(PANEL_ID);
+      return last.frameId ? { frame: last.frameId, story: last.storyIds[0] ?? null } : null;
+    } finally {
+      engine.dispose();
+    }
+  }
+
+  /**
+   * A document's bytes for export, from its PERSISTED state (the label's
+   * .docx part, which object-model writes advance): the edited story read
+   * back, overlaid on that baseline and saved as a targeted patch; the part
+   * verbatim when the host has no story read. Null when the part is missing.
+   */
+  async function exportState(state: DocState): Promise<Uint8Array | null> {
+    const source = await readDocBytes(host, state);
+    if (!source) return null;
+    const sections = state.data.sections ?? [];
+    if (!host.supports("document.readStory@1") || sections.length === 0) return source;
+    const ir = await readLowered(host, state);
+    if (!ir) return source;
+    const readStory = host.document.storyContent;
+    const contents: StoryContentLike[] = [];
+    for (const id of sections) {
+      const c = (await readStory.call(host.document, id)) as StoryContentLike | null;
+      if (!c) return source;
+      contents.push(c);
+    }
+    const content = mergeSectionContents(contents, sectionBlocks(ir).map(pouredParagraphCount));
+    const engine = await DocEngine.boot();
+    try {
+      engine.loadDocx(source);
+      engine.setMidPageColumns(state.data.midPageColumns ?? true);
+      const bytes = engine.saveEditedFromContent(content);
+      host.diagnostics.set(
+        "media.paged.doc/save-back",
+        engine.lastSaveSkips().map((message) => ({ severity: "warning" as const, message })),
+      );
+      return bytes;
     } finally {
       engine.dispose();
     }
@@ -145,6 +188,18 @@ export function activate(host: BundleHost): BundleHandle {
   } | null> {
     if (!last) return null;
     const verbatim = { bytes: last.source, fileName: last.fileName };
+    // The persisted state wins: object-model writes advance the label's .docx.
+    const frame = last.frameId ? (last.frameId as { id: string }).id : null;
+    const state = frame ? (await discoverDocs(host)).find((d) => (d.frame as { id: string }).id === frame) : undefined;
+    if (state) {
+      try {
+        const bytes = await exportState(state);
+        if (bytes) return { bytes, fileName: last.fileName };
+      } catch (err) {
+        host.log.warn(`paged.doc: edited save-back failed, exporting the unedited source: ${String(err)}`);
+        return verbatim;
+      }
+    }
     if (!host.supports("document.readStory@1") || last.storyIds.length === 0) {
       return verbatim;
     }
@@ -228,7 +283,9 @@ export function activate(host: BundleHost): BundleHandle {
         title: "Word document (.docx)",
         extensions: [".docx", ".dotx"],
         mimeTypes: [DOCX_MIME],
-        import: ({ name, bytes }) => ingest(name, bytes, "open"),
+        import: async ({ name, bytes }) => {
+          await ingest(name, bytes, "open");
+        },
       }).dispose,
     );
   }
@@ -293,6 +350,14 @@ export function activate(host: BundleHost): BundleHandle {
     );
   }
 
+  // ADR 323 — the object model: the placed document, its blocks, runs and
+  // mail-merge fields through `host.objects`, plus the typed commands.
+  // Headless (no panel, no selection, no edit context).
+  const objectModel = contributeDocObjectModel(host, {
+    place: (name, bytes) => ingest(name, bytes, "place"),
+    exportBytes: (state) => exportState(state),
+  });
+
   host.log.info("paged.doc activated");
   // F1 — the menu bar. Before plugin-api 0.2.33 there was no menu door,
   // so every command in this bundle lived behind Cmd+K and nowhere else.
@@ -301,6 +366,7 @@ export function activate(host: BundleHost): BundleHandle {
   return {
     dispose() {
       menuSub.dispose();
+      objectModel?.dispose();
       for (const d of disposers) d();
     },
   };

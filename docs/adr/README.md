@@ -17,6 +17,7 @@ on 2026-10-02 from the code as it stood, for decisions made earlier; their statu
 | [602](602-save-back-is-a-byte-splice.md) | Save-back is a byte-level splice into the original file, never a regeneration | Accepted, recorded retroactively 2026-10-02 |
 | [603](603-two-entry-points.md) | Two entry points: Open opens the file as the document, Insert places it in a frame | Accepted, recorded retroactively 2026-10-02 |
 | [604](604-word-is-the-oracle.md) | Microsoft Word is the test oracle | Accepted, recorded retroactively 2026-10-02 |
+| [605](605-object-model-and-merge-fields.md) | A placed Word document is an object model; merge fields bind through it | Accepted 2026-10-06 |
 
 Decisions made in other repositories that this plugin's code rests on are listed in
 [`../README.md`](../README.md).

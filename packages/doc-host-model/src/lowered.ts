@@ -58,6 +58,28 @@ export interface LoweredRun {
    *  an `insertHyperlink` over the run range so it becomes natively clickable.
    *  (The blue+underline look still rides on `charStyleId`.) Absent otherwise. */
   hyperlinkUrl?: string | null;
+  /** When the run is (part of) a Word MERGEFIELD's result, the parsed field
+   *  (`docx_core::MergeField`). The text pours as ordinary text; the bundle's
+   *  object model addresses the field (`mergeField`). Absent otherwise. */
+  mergeField?: LoweredMergeField | null;
+}
+
+/** A Word `MERGEFIELD` (mail merge) as `docx-import` parsed it. */
+export interface LoweredMergeField {
+  /** The data-source column (`FirstName`, `First Name`). */
+  name: string;
+  /** The instruction as written (kept: save-back never rewrites it). */
+  instruction: string;
+  /** Ordinal among the paragraph's merge fields. */
+  occurrence: number;
+  /** `\b` / `\f` — text before / after a non-empty value. */
+  before?: string | null;
+  after?: string | null;
+  /** `\m` mapped, `\v` vertical. */
+  mapped?: boolean;
+  vertical?: boolean;
+  /** `\*` format switches, in order. */
+  format?: string[];
 }
 
 export interface LoweredParagraph {

@@ -1,7 +1,7 @@
 {
   "id": "media.paged.doc",
   "name": "paged.doc",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "apiVersion": "^0.2",
   "publisher": "paged.media",
   "capabilities": {
@@ -11,8 +11,12 @@
       "readNative": true,
       "openNative": true
     },
-    "rendering": ["hitTest"],
-    "editContext": ["wordDocument"],
+    "rendering": [
+      "hitTest"
+    ],
+    "editContext": [
+      "wordDocument"
+    ],
     "clipboard": "none",
     "wasm": [
       {
@@ -24,15 +28,512 @@
     ]
   },
   "contributes": {
-    "panels": ["media.paged.doc.panel.outline"],
-    "commands": ["media.paged.doc.command.placeDoc"],
-    "importers": ["media.paged.doc.importer.docx"],
-    "exporters": ["media.paged.doc.exporter.docx"],
-    "editContexts": [{ "type": "wordDocument", "entry": "doubleClick" }],
-    "objectTypes": [{ "type": "wordDocument", "bakedFallback": "group" }],
+    "panels": [
+      "media.paged.doc.panel.outline"
+    ],
+    "commands": [
+      "media.paged.doc.command.placeDoc"
+    ],
+    "importers": [
+      "media.paged.doc.importer.docx"
+    ],
+    "exporters": [
+      "media.paged.doc.exporter.docx"
+    ],
+    "editContexts": [
+      {
+        "type": "wordDocument",
+        "entry": "doubleClick"
+      }
+    ],
+    "objectTypes": [
+      {
+        "type": "wordDocument",
+        "bakedFallback": "group"
+      }
+    ],
     "partTypes": [
-      { "type": "docx", "role": "source", "format": "opc", "linkable": true },
-      { "type": "docLowered", "role": "derived", "format": "json" }
-    ]
+      {
+        "type": "docx",
+        "role": "source",
+        "format": "opc",
+        "linkable": true
+      },
+      {
+        "type": "docLowered",
+        "role": "derived",
+        "format": "json"
+      }
+    ],
+    "objectModel": {
+      "kinds": [
+        {
+          "kind": "docxDocument",
+          "title": "Word document",
+          "schema": [
+            {
+              "path": "fileName",
+              "type": {
+                "kind": "text"
+              },
+              "nullable": true,
+              "access": "readOnly",
+              "title": "File name"
+            },
+            {
+              "path": "frame",
+              "type": {
+                "kind": "ref",
+                "to": "frame"
+              },
+              "access": "readOnly",
+              "title": "Frame",
+              "summary": "The page item that carries the document's label."
+            },
+            {
+              "path": "stories",
+              "type": {
+                "kind": "list",
+                "of": {
+                  "kind": "ref",
+                  "to": "story"
+                }
+              },
+              "access": "readOnly",
+              "title": "Stories",
+              "summary": "The story per Word section the document was poured into, in order."
+            },
+            {
+              "path": "sourcePart",
+              "type": {
+                "kind": "text"
+              },
+              "access": "readOnly",
+              "title": "Source part",
+              "summary": "The container part holding the .docx the label names."
+            },
+            {
+              "path": "blockCount",
+              "type": {
+                "kind": "number",
+                "integer": true
+              },
+              "access": "readOnly",
+              "title": "Blocks"
+            },
+            {
+              "path": "paragraphCount",
+              "type": {
+                "kind": "number",
+                "integer": true
+              },
+              "access": "readOnly",
+              "title": "Paragraphs"
+            },
+            {
+              "path": "tableCount",
+              "type": {
+                "kind": "number",
+                "integer": true
+              },
+              "access": "readOnly",
+              "title": "Tables"
+            },
+            {
+              "path": "imageCount",
+              "type": {
+                "kind": "number",
+                "integer": true
+              },
+              "access": "readOnly",
+              "title": "Images"
+            },
+            {
+              "path": "mergeFieldNames",
+              "type": {
+                "kind": "list",
+                "of": {
+                  "kind": "text"
+                }
+              },
+              "access": "derived",
+              "title": "Merge fields",
+              "summary": "The data-source columns the document's MERGEFIELDs name, first-use order."
+            },
+            {
+              "path": "diagnostics",
+              "type": {
+                "kind": "list",
+                "of": {
+                  "kind": "text"
+                }
+              },
+              "access": "derived",
+              "title": "Diagnostics",
+              "summary": "What the lowering could not carry."
+            }
+          ]
+        },
+        {
+          "kind": "block",
+          "title": "Word block",
+          "schema": [
+            {
+              "path": "kind",
+              "type": {
+                "kind": "enum",
+                "members": [
+                  "paragraph",
+                  "table",
+                  "image"
+                ]
+              },
+              "access": "readOnly",
+              "title": "Kind"
+            },
+            {
+              "path": "index",
+              "type": {
+                "kind": "number",
+                "integer": true
+              },
+              "access": "readOnly",
+              "title": "Index",
+              "summary": "The block's position in the lowered story (images: their paragraph's)."
+            },
+            {
+              "path": "text",
+              "type": {
+                "kind": "text",
+                "multiline": true
+              },
+              "access": "derived",
+              "title": "Text",
+              "summary": "A paragraph's text; a table's cells (tab between cells, newline between rows); empty for an image."
+            },
+            {
+              "path": "paragraphStyle",
+              "type": {
+                "kind": "text"
+              },
+              "nullable": true,
+              "access": "readOnly",
+              "title": "Paragraph style"
+            },
+            {
+              "path": "runCount",
+              "type": {
+                "kind": "number",
+                "integer": true
+              },
+              "access": "readOnly",
+              "title": "Runs"
+            },
+            {
+              "path": "rows",
+              "type": {
+                "kind": "number",
+                "integer": true
+              },
+              "nullable": true,
+              "access": "readOnly",
+              "title": "Rows"
+            },
+            {
+              "path": "columns",
+              "type": {
+                "kind": "number",
+                "integer": true
+              },
+              "nullable": true,
+              "access": "readOnly",
+              "title": "Columns"
+            },
+            {
+              "path": "widthPt",
+              "type": {
+                "kind": "number",
+                "unit": "pt"
+              },
+              "nullable": true,
+              "access": "readOnly",
+              "title": "Width"
+            },
+            {
+              "path": "heightPt",
+              "type": {
+                "kind": "number",
+                "unit": "pt"
+              },
+              "nullable": true,
+              "access": "readOnly",
+              "title": "Height"
+            },
+            {
+              "path": "document",
+              "type": {
+                "kind": "ref",
+                "to": "plugin:media.paged.doc/docxDocument"
+              },
+              "access": "readOnly",
+              "title": "Document"
+            }
+          ]
+        },
+        {
+          "kind": "run",
+          "title": "Word run",
+          "schema": [
+            {
+              "path": "text",
+              "type": {
+                "kind": "text"
+              },
+              "title": "Text",
+              "summary": "The run's text. Writable for body paragraphs: save-back rewrites the run's w:t and the poured text changes in the same undo step; table-cell runs refuse."
+            },
+            {
+              "path": "characterStyle",
+              "type": {
+                "kind": "text"
+              },
+              "nullable": true,
+              "access": "readOnly",
+              "title": "Character style"
+            },
+            {
+              "path": "hyperlink",
+              "type": {
+                "kind": "text"
+              },
+              "nullable": true,
+              "access": "readOnly",
+              "title": "Hyperlink"
+            },
+            {
+              "path": "mergeField",
+              "type": {
+                "kind": "text"
+              },
+              "nullable": true,
+              "access": "readOnly",
+              "title": "Merge field",
+              "summary": "The MERGEFIELD column when the run is part of a merge field's result."
+            },
+            {
+              "path": "block",
+              "type": {
+                "kind": "ref",
+                "to": "plugin:media.paged.doc/block"
+              },
+              "access": "readOnly",
+              "title": "Block"
+            }
+          ]
+        },
+        {
+          "kind": "mergeField",
+          "title": "Merge field",
+          "schema": [
+            {
+              "path": "name",
+              "type": {
+                "kind": "text"
+              },
+              "access": "readOnly",
+              "title": "Name",
+              "summary": "The data-source column (MERGEFIELD's argument)."
+            },
+            {
+              "path": "value",
+              "type": {
+                "kind": "text"
+              },
+              "title": "Value",
+              "summary": "The field's result as the document shows it. A write sets the result (Word's merged value) and keeps the field code, so the .docx still merges in Word."
+            },
+            {
+              "path": "instruction",
+              "type": {
+                "kind": "text"
+              },
+              "access": "readOnly",
+              "title": "Instruction"
+            },
+            {
+              "path": "before",
+              "type": {
+                "kind": "text"
+              },
+              "nullable": true,
+              "access": "readOnly",
+              "title": "Text before (\\b)"
+            },
+            {
+              "path": "after",
+              "type": {
+                "kind": "text"
+              },
+              "nullable": true,
+              "access": "readOnly",
+              "title": "Text after (\\f)"
+            },
+            {
+              "path": "format",
+              "type": {
+                "kind": "list",
+                "of": {
+                  "kind": "text"
+                }
+              },
+              "access": "readOnly",
+              "title": "Format switches (\\*)"
+            },
+            {
+              "path": "mapped",
+              "type": {
+                "kind": "bool"
+              },
+              "access": "readOnly",
+              "title": "Mapped (\\m)"
+            },
+            {
+              "path": "writable",
+              "type": {
+                "kind": "bool"
+              },
+              "access": "derived",
+              "title": "Writable",
+              "summary": "False for a field in a table cell."
+            },
+            {
+              "path": "runs",
+              "type": {
+                "kind": "list",
+                "of": {
+                  "kind": "ref",
+                  "to": "plugin:media.paged.doc/run"
+                }
+              },
+              "access": "readOnly",
+              "title": "Result runs"
+            },
+            {
+              "path": "block",
+              "type": {
+                "kind": "ref",
+                "to": "plugin:media.paged.doc/block"
+              },
+              "access": "readOnly",
+              "title": "Block"
+            },
+            {
+              "path": "document",
+              "type": {
+                "kind": "ref",
+                "to": "plugin:media.paged.doc/docxDocument"
+              },
+              "access": "readOnly",
+              "title": "Document"
+            }
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "id": "media.paged.doc.command.placeDoc",
+          "title": "Place Word document",
+          "args": {
+            "kind": "struct",
+            "fields": {
+              "bytes": {
+                "kind": "bytes",
+                "mime": [
+                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ]
+              },
+              "fileName": {
+                "kind": "text"
+              }
+            }
+          },
+          "result": {
+            "kind": "struct",
+            "fields": {
+              "document": {
+                "kind": "ref",
+                "to": "plugin:media.paged.doc/docxDocument"
+              },
+              "frame": {
+                "kind": "ref",
+                "to": "frame"
+              },
+              "story": {
+                "kind": "ref",
+                "to": "story"
+              }
+            }
+          }
+        },
+        {
+          "id": "media.paged.doc.command.exportDocx",
+          "title": "Export Word document",
+          "args": {
+            "kind": "struct",
+            "fields": {
+              "document": {
+                "kind": "ref",
+                "to": "plugin:media.paged.doc/docxDocument"
+              }
+            }
+          },
+          "result": {
+            "kind": "struct",
+            "fields": {
+              "bytes": {
+                "kind": "bytes"
+              },
+              "fileName": {
+                "kind": "text"
+              }
+            }
+          }
+        },
+        {
+          "id": "media.paged.doc.command.fillMergeFields",
+          "title": "Fill merge fields",
+          "args": {
+            "kind": "struct",
+            "fields": {
+              "document": {
+                "kind": "ref",
+                "to": "plugin:media.paged.doc/docxDocument"
+              },
+              "values": {
+                "kind": "map",
+                "of": {
+                  "kind": "text"
+                }
+              }
+            }
+          },
+          "result": {
+            "kind": "struct",
+            "fields": {
+              "filled": {
+                "kind": "number",
+                "integer": true
+              },
+              "unknown": {
+                "kind": "list",
+                "of": {
+                  "kind": "text"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
   }
 }

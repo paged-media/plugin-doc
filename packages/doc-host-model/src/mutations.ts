@@ -640,3 +640,49 @@ export function mergeSectionContents(
   });
   return { selfId: contents[0]?.selfId, paragraphs };
 }
+
+/** Where a body run sits in the native story it was poured into: the
+ *  story's index in {@link sectionBlocks} order, the index of the NATIVE
+ *  paragraph its Word paragraph became (one per paragraph block and per
+ *  break-split segment, one per table host paragraph — the pour's own count),
+ *  and the text around it: what the paragraph must still read for the
+ *  location to hold, the run's text, and the text before it in the
+ *  paragraph. Pure. `null` for a block that is not a body paragraph, a run
+ *  it does not have, or a paragraph a page/column break split (its runs span
+ *  several native paragraphs). The caller turns `prefix` / `text` into the
+ *  engine's text-op offsets against the LIVE story and checks
+ *  `paragraphText` first, so a paragraph edited on the canvas since is
+ *  refused rather than written over. */
+export function bodyRunLocation(
+  ir: LoweredDoc,
+  block: number,
+  run: number,
+): { story: number; paragraph: number; paragraphText: string; prefix: string; text: string } | null {
+  const target = ir.story.blocks[block];
+  if (!target || target.kind !== "paragraph" || run < 0 || run >= target.runs.length) return null;
+  if ((target.segments ?? []).length > 0) return null;
+  const groups = sectionBlocks(ir);
+  let first = 0;
+  for (let story = 0; story < groups.length; story++) {
+    const group = groups[story];
+    if (block < first + group.length) {
+      const one = (p: LoweredParagraph) => 1 + (p.segments?.length ?? 0);
+      let paragraph = 0;
+      for (const b of group.slice(0, block - first)) {
+        if (b.kind === "paragraph") paragraph += one(b);
+        else if (b.flow && b.flow.length > 0) paragraph += b.flow.reduce((n, p) => n + one(p), 0);
+        else paragraph += 1;
+      }
+      const texts = target.runs.map((r) => r.text);
+      return {
+        story,
+        paragraph,
+        paragraphText: texts.join(""),
+        prefix: texts.slice(0, run).join(""),
+        text: texts[run],
+      };
+    }
+    first += group.length;
+  }
+  return null;
+}

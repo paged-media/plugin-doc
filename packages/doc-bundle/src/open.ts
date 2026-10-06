@@ -131,18 +131,28 @@ export async function openStandalone(
   name: string,
 ): Promise<Opened | null> {
   if (!canOpenStandalone(host)) return null;
+  const open = (idml: Uint8Array) => host.nativeDocument.open(idml);
+  await open(engine.skeletonIdml(name));
+  return finishStandalone(host, engine, ir, source, name, open);
+}
 
-  // 1. The skeleton: a page, frame and empty story per section (IDML).
+/**
+ * Everything after the skeleton is open: styles (re-opening the skeleton
+ * lowered without span/split columns when the engine refuses them), grow
+ * rules, the pour, and the persisted state — the source part plus the label
+ * on the section frame. `open` loads an IDML package as the document (the
+ * host's native open; a headless host's direct load), used only for that
+ * column fallback.
+ */
+export async function finishStandalone(
+  host: BundleHost,
+  engine: DocEngine,
+  ir: LoweredDoc,
+  source: Uint8Array,
+  name: string,
+  open: (idml: Uint8Array) => Promise<unknown>,
+): Promise<Opened> {
   let storyIds = engine.skeletonStories();
-  await host.nativeDocument.open(engine.skeletonIdml(name));
-
-  // 2. Style catalog + swatches, once, before any applyStyle references them.
-  //    They are also the probe for span/split columns: a Word section that
-  //    changes the columns mid-page lowers to them (protocol 64). An engine
-  //    that refuses them cannot lay that lowering out, and the plugin API
-  //    has no flag that says so up front, so the document is lowered again
-  //    with a page break at each column change (the lowering before span
-  //    columns: right page content, an extra page per change) and reopened.
   let midPageColumns = engine.usesMidPageColumns();
   const refusals = await applyStyleOpsReporting(host, buildStyleMutations(ir));
   if (midPageColumns && SPAN_COLUMN_PATHS.some((p) => refusals.paths.has(p))) {
@@ -150,7 +160,7 @@ export async function openStandalone(
     midPageColumns = false;
     ir = engine.lowered();
     storyIds = engine.skeletonStories();
-    await host.nativeDocument.open(engine.skeletonIdml(name));
+    await open(engine.skeletonIdml(name));
     await applyStyleOpsReporting(host, buildStyleMutations(ir));
     host.diagnostics.set(COLUMNS_DIAGNOSTICS_KEY, [
       {
@@ -164,25 +174,26 @@ export async function openStandalone(
     host.diagnostics.set(COLUMNS_DIAGNOSTICS_KEY, []);
   }
 
-  // 2b. The grow rules IDML cannot carry, before the pour oversets.
   await setGrowRules(host, storyIds);
 
-  // 3. Each section's blocks into its own story. The engine grows each
-  //    story's pages as the pour oversets its frame.
   const groups = sectionBlocks(ir);
   for (let k = 0; k < groups.length && k < storyIds.length; k++) {
     await pourSteps(host, buildStoryBlocks(groups[k], storyIds[k]));
   }
 
-  // 4. Persist the source (the save-back baseline travels with the document)
-  //    and bind it to the first section's frame.
   const frameId: ElementId = { kind: "textFrame", id: "docx_f0" };
   const partPath = `${storyIds[0] ?? "docx"}/source.docx`;
   try {
     await host.parts.write(partPath, source);
     await host.document.setMetadata(frameId, {
       v: 1,
-      data: { part: partPath, blocks: ir.story.blocks.length, sections: storyIds },
+      data: {
+        part: partPath,
+        blocks: ir.story.blocks.length,
+        sections: storyIds,
+        fileName: name,
+        midPageColumns,
+      },
     });
   } catch (err) {
     host.log.warn(`paged.doc: could not persist source part: ${String(err)}`);

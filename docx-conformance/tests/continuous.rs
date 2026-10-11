@@ -208,7 +208,9 @@ fn without_span_columns_a_column_change_opens_a_page__feat__plugin_doc_word_pagi
         .zip(["section 5 ", "section 6 ", "section 7 "])
     {
         assert!(
-            w.starts_with(n) && w.contains("protocol 64") && w.contains("new page"),
+            w.starts_with(n)
+                && w.contains("cannot change columns mid-page")
+                && w.contains("new page"),
             "{w}"
         );
     }

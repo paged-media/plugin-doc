@@ -309,8 +309,7 @@ fn finish_story(
     };
     diagnostics.push(Diagnostic::info(
         format!(
-            "sections {}–{} change the columns mid-page, as Word does: {how} (span/split \
-             columns, protocol 64)",
+            "sections {}–{} change the columns mid-page, as Word does: {how}",
             first + 1,
             last
         ),
@@ -372,10 +371,7 @@ fn join(
         let why = if sec.kind == SectionKind::NextColumn {
             Some("Word was not asked where a nextColumn section with other columns goes")
         } else if !options.mid_page_columns {
-            Some(
-                "this engine cannot change columns mid-page (span/split columns need \
-                 protocol 64)",
-            )
+            Some("this editor version cannot change columns mid-page")
         } else {
             None
         };

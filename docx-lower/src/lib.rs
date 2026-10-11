@@ -218,8 +218,7 @@ fn float_diagnostic(block: usize, img: &LoweredImage, f: &LoweredFloat) -> Diagn
         format!(
             "a floating picture in body block {block} ({:.1} x {:.1} pt; {how}; {place}) is \
              placed INLINE at the start of its paragraph: Word's position and text wrap are \
-             not carried onto the page yet (thoughts ADR 035, RFI C-47/C-48), so the text \
-             does not flow around it",
+             not carried onto the page yet, so the text does not flow around it",
             img.width_pt, img.height_pt
         ),
         2,
@@ -614,9 +613,9 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
     if ctx.breaks > 0 {
         ctx.diagnostics.push(Diagnostic::info(
             format!(
-                "{} page/column break(s) lowered to the engine's break-before rule \
-                 (paragraphStartParagraph); an engine before protocol 64 refuses the \
-                 rule and only the breaks are lost",
+                "{} page/column break(s) kept as a start-on-next-page/column rule on \
+                 the following paragraph; an older editor version cannot apply that rule, \
+                 and then only the breaks are lost",
                 ctx.breaks
             ),
             3,
@@ -710,7 +709,7 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
             if per.windows(2).all(|w| w[0] == w[1]) {
                 describe_note_numbering(per[0].as_ref(), endnote)
             } else {
-                "per section, differing (see the IR's sections)".to_string()
+                "per section, differing between sections".to_string()
             }
         };
         let mut msg = String::new();
@@ -732,11 +731,10 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
         msg.push_str(&format!(
             " parsed ({refs} in-text reference(s)), the numbering carried per section; \
              NOT placed on the page: neither the note text nor its reference mark is \
-             shown, because the engine's native footnotes have no create door yet \
-             (thoughts ADR 034, RFI C-43){}. The note text is preserved in the source \
-             .docx and round-trips on save",
+             shown, because footnotes cannot be added to the page yet{}. The note text \
+             is preserved in the source .docx and round-trips on save",
             if endnotes > 0 {
-                " and endnotes no native construct"
+                " and endnotes are not supported yet"
             } else {
                 ""
             }
@@ -815,9 +813,9 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
             kinds.push("inherited from an earlier section");
         }
         msg.push_str(&format!(
-            " parsed across {} section(s){}, each section's headers and footers carried \
-             in the IR; NOT placed on the page yet (the native pages get no master for \
-             them, thoughts ADR 033). Their text is preserved in the source .docx and \
+            " parsed across {} section(s){}, each section's headers and footers read; \
+             NOT placed on the page yet (headers and footers are not shown on the pages \
+             yet). Their text is preserved in the source .docx and \
              round-trips on save",
             doc.sections.len().max(1),
             if kinds.is_empty() {
@@ -1208,7 +1206,7 @@ impl Lowering {
                 StyleKind::Table | StyleKind::Numbering => {
                     self.diagnostics.push(Diagnostic::info(
                         format!(
-                            "style '{}' ({:?}) is not a Tier-0 construct and was skipped",
+                            "style '{}' ({:?}) is not supported yet and was skipped",
                             s.style_id, s.kind
                         ),
                         3,

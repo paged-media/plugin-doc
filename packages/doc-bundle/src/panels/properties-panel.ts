@@ -62,7 +62,7 @@ const list = (rows: string, select: string) => ({
 export const DOC_PROPERTIES_PANEL: PanelSchema = {
   id: PROPERTIES_PANEL_ID,
   title: "Word properties",
-  icon: "panel-canvas",
+  icon: "panel-properties",
   defaultDock: "right",
   sections: [
     {

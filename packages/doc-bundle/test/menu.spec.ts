@@ -16,6 +16,8 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { MENU_COMMAND_PREFIX, MENU_ENTRIES } from "../src/menu";
+import { createDocStore } from "../src/panels/outline-model.js";
+import { INSERT_LABEL, makeOutlinePanel } from "../src/panels/outline-panel.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MANIFEST = join(HERE, "..", "manifest.json");
@@ -53,5 +55,19 @@ describe("doc menu entries", () => {
     // duplicates.
     expect(MENU_ENTRIES.length).toBeGreaterThanOrEqual(1);
     expect(MENU_ENTRIES.length).toBeLessThanOrEqual(declared.length);
+  });
+});
+
+describe("one verb for placing a Word document", () => {
+  it("the panel button and the command use the menu's label", () => {
+    const [path] = MENU_ENTRIES.find(([, s]) => s === "placeDoc")!;
+    expect(path.split("/").pop()).toBe(INSERT_LABEL);
+    const panel = makeOutlinePanel(createDocStore(), {
+      insert: () => {},
+      canInsert: () => true,
+      selectFrame: () => {},
+      readiness: () => ({ readStory: false }),
+    });
+    expect(panel.icon).toBe("panel-outline");
   });
 });

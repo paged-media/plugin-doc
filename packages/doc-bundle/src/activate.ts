@@ -29,7 +29,7 @@ import type {
 import { DocEngine } from "./engine.js";
 import { contributeMenu } from "./menu";
 import { createDocStore } from "./panels/outline-model.js";
-import { makeOutlinePanel } from "./panels/outline-panel.js";
+import { INSERT_LABEL, NO_PICKER_REASON, makeOutlinePanel } from "./panels/outline-panel.js";
 import { placeEmbedded } from "./place.js";
 import { openStandalone } from "./open.js";
 import { discoverDocs, readDocBytes, readLowered, type DocState } from "./doc-state.js";
@@ -249,25 +249,39 @@ export function activate(host: BundleHost): BundleHandle {
   }
 
   // Pick a .docx and place it (shared by the command + the panel button).
+  // A refusal or a failed read reaches the panel inline: `host.log` is never
+  // shown to the user.
   async function pickAndIngest(): Promise<void> {
     if (!host.supports("shell.pickFile@1")) {
       host.log.warn("paged.doc: this host cannot pick files");
+      docStore.setNotice({ severity: "warning", message: NO_PICKER_REASON });
+      host.shell.openPanel(PANEL_ID);
       return;
     }
     const picked = await host.shell.pickFile({ accept: [".docx", ".dotx"] });
     const file = picked[0];
-    if (file) await ingest(file.name, file.bytes, "place");
+    if (!file) return;
+    try {
+      await ingest(file.name, file.bytes, "place");
+    } catch (err) {
+      host.log.warn(`paged.doc: could not insert ${file.name}: ${String(err)}`);
+      docStore.setNotice({
+        severity: "error",
+        message: `${file.name} could not be read as a Word document.`,
+      });
+      host.shell.openPanel(PANEL_ID);
+    }
   }
 
   disposers.push(
     host.contribute.panel({
       id: PANEL_ID,
-      ...makeOutlinePanel(
-        docStore,
-        () => void pickAndIngest(),
-        (frameId) => void host.selection.set([frameId as ElementId]),
-        () => ({ readStory: host.supports("document.readStory@1") }),
-      ),
+      ...makeOutlinePanel(docStore, {
+        insert: () => void pickAndIngest(),
+        canInsert: () => host.supports("shell.pickFile@1"),
+        selectFrame: (frameId) => void host.selection.set([frameId as ElementId]),
+        readiness: () => ({ readStory: host.supports("document.readStory@1") }),
+      }),
     }).dispose,
   );
 
@@ -275,7 +289,7 @@ export function activate(host: BundleHost): BundleHandle {
   disposers.push(
     host.contribute.command({
       id: "media.paged.doc.command.placeDoc",
-      title: "Place Word document…",
+      title: INSERT_LABEL,
       handler: () => void pickAndIngest(),
     }).dispose,
   );

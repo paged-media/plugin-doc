@@ -135,7 +135,7 @@ describe("summarize", () => {
     // one body hyperlink + one inside the table cell.
     expect(s.hyperlinks).toBe(2);
     expect(s.headings).toBe(2);
-    expect(s.pageLine).toBe("595×842pt · 1 col");
+    expect(s.pageLine).toBe("595 × 842 pt · 1 column");
   });
 });
 
@@ -163,5 +163,19 @@ describe("createDocStore", () => {
     off();
     store.set(null);
     expect(calls).toBe(1);
+  });
+
+  it("carries an inline notice until a document arrives", () => {
+    const store = createDocStore();
+    let calls = 0;
+    store.subscribe(() => {
+      calls += 1;
+    });
+    store.setNotice({ severity: "warning", message: "No file picker." });
+    expect(store.notice()?.message).toBe("No file picker.");
+    expect(calls).toBe(1);
+    store.set({ fileName: "a.docx", ir: doc(), frameId: null, storyId: null });
+    expect(store.notice()).toBeNull();
+    expect(calls).toBe(2);
   });
 });

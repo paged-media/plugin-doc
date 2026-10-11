@@ -443,7 +443,7 @@
       "commands": [
         {
           "id": "media.paged.doc.command.placeDoc",
-          "title": "Place Word document",
+          "title": "Insert Word document",
           "args": {
             "kind": "struct",
             "fields": {

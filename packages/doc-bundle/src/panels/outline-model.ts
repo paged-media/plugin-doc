@@ -33,7 +33,7 @@ export interface DocSummary {
   images: number;
   hyperlinks: number;
   headings: number;
-  /** `210×297pt · 2 cols` style line from the section geometry. */
+  /** `210 × 297 pt · 2 columns` line from the section geometry. */
   pageLine: string;
 }
 
@@ -67,7 +67,8 @@ export function styleNameById(ir: LoweredDoc): Map<string, string> {
   return new Map(ir.styles.map((s) => [s.id, s.name]));
 }
 
-/** Headings (indented by level) + tables, in document order, capped. */
+/** Headings (indented by level) + tables, in document order, capped at
+ *  `OUTLINE_CAP` (the panel says so when `length === OUTLINE_CAP`). */
 export function outlineEntries(ir: LoweredDoc): OutlineEntry[] {
   const names = styleNameById(ir);
   const out: OutlineEntry[] = [];
@@ -115,9 +116,9 @@ export function summarize(ir: LoweredDoc): DocSummary {
     if (headingLevel(block.paraStyleId, names) != null) headings += 1;
   }
   const s = ir.section;
-  const pageLine = `${Math.round(s.pageWidthPt)}×${Math.round(s.pageHeightPt)}pt · ${
+  const pageLine = `${Math.round(s.pageWidthPt)} × ${Math.round(s.pageHeightPt)} pt · ${
     s.columns
-  } col${s.columns === 1 ? "" : "s"}`;
+  } column${s.columns === 1 ? "" : "s"}`;
   return { paragraphs, tables, images, hyperlinks, headings, pageLine };
 }
 
@@ -144,20 +145,40 @@ export interface DocPanelDoc {
   storyId: string | null;
 }
 
+/** A one-sentence message the panel shows inline (a refused pick, a file
+ *  the engine could not read) — the user never sees `host.log`. */
+export interface DocPanelNotice {
+  severity: "error" | "warning" | "info";
+  message: string;
+}
+
 export interface DocStore {
   get(): DocPanelDoc | null;
   set(doc: DocPanelDoc | null): void;
+  notice(): DocPanelNotice | null;
+  setNotice(notice: DocPanelNotice | null): void;
   subscribe(listener: () => void): () => void;
 }
 
 export function createDocStore(): DocStore {
   let current: DocPanelDoc | null = null;
+  let currentNotice: DocPanelNotice | null = null;
   const listeners = new Set<() => void>();
+  const emit = () => {
+    for (const l of [...listeners]) l();
+  };
   return {
     get: () => current,
     set: (doc) => {
       current = doc;
-      for (const l of [...listeners]) l();
+      // A document arriving answers whatever the last notice was about.
+      if (doc) currentNotice = null;
+      emit();
+    },
+    notice: () => currentNotice,
+    setNotice: (notice) => {
+      currentNotice = notice;
+      emit();
     },
     subscribe: (listener) => {
       listeners.add(listener);

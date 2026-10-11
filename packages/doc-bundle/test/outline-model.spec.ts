@@ -24,6 +24,8 @@ import {
   outlineEntries,
   sortedDiagnostics,
   summarize,
+  headingOccurrence,
+  paragraphRange,
 } from "../src/panels/outline-model.js";
 
 function doc(overrides: Partial<LoweredDoc> = {}): LoweredDoc {
@@ -177,5 +179,42 @@ describe("createDocStore", () => {
     store.set({ fileName: "a.docx", ir: doc(), frameId: null, storyId: null });
     expect(store.notice()).toBeNull();
     expect(calls).toBe(2);
+  });
+});
+
+describe("heading navigation", () => {
+  const para = (text: string) => ({ runs: [{ text }] });
+
+  it("finds a heading's range by text, counting one mark per paragraph", () => {
+    const paras = [para("Intro"), para("Body text here."), para("Methods"), para("More.")];
+    // "Intro\n" (6) + "Body text here.\n" (16) = 22 → "Methods" at 22..29
+    expect(paragraphRange(paras, "Methods")).toEqual({ start: 22, end: 29 });
+    expect(paragraphRange(paras, "Intro")).toEqual({ start: 0, end: 5 });
+  });
+
+  it("tells repeated headings apart by occurrence and trims spaces", () => {
+    const paras = [para("Notes"), para("a"), para("  Notes "), para("b")];
+    expect(paragraphRange(paras, "Notes", 0)).toEqual({ start: 0, end: 5 });
+    // "Notes\n"(6) + "a\n"(2) = 8, two leading spaces → 10..15
+    expect(paragraphRange(paras, "Notes", 1)).toEqual({ start: 10, end: 15 });
+    expect(paragraphRange(paras, "Notes", 2)).toBeNull();
+  });
+
+  it("joins runs and answers null for a heading that is gone", () => {
+    const paras = [{ runs: [{ text: "Hel" }, { text: "lo" }] }];
+    expect(paragraphRange(paras, "Hello")).toEqual({ start: 0, end: 5 });
+    expect(paragraphRange(paras, "Missing")).toBeNull();
+  });
+
+  it("counts earlier headings with the same text", () => {
+    const entries = [
+      { kind: "heading", level: 1, text: "Notes", blockIndex: 0 },
+      { kind: "table", rows: 1, cols: 1, blockIndex: 1 },
+      { kind: "heading", level: 2, text: "Other", blockIndex: 2 },
+      { kind: "heading", level: 1, text: "Notes", blockIndex: 3 },
+    ] as const;
+    expect(headingOccurrence(entries as never, 0)).toBe(0);
+    expect(headingOccurrence(entries as never, 3)).toBe(1);
+    expect(headingOccurrence(entries as never, 1)).toBe(0);
   });
 });

@@ -21,8 +21,9 @@
 // minted swatches, every ADR-007 diagnostic (footnotes, headers/footers,
 // frozen fields, styled-only anchors), and save-back readiness.
 //
-// Outline rows are display-only: the plugin contract has no door to put the
-// text caret on (or scroll to) a story range, so a heading cannot navigate. Display-only glue: all values come from the
+// Outline headings navigate: a click takes the user to the heading in the
+// placed story (`host.viewport.revealText`); on a host without that door
+// the rows are display-only. Display-only glue: all values come from the
 // engine's already-computed lowering; derivations live in outline-model.ts
 // (pure, unit-tested). No DOCX semantics here (CLAUDE.md hard rule).
 
@@ -31,6 +32,7 @@ import * as React from "react";
 
 import {
   OUTLINE_CAP,
+  headingOccurrence,
   outlineEntries,
   type DocPanelNotice,
   sortedDiagnostics,
@@ -57,6 +59,10 @@ export interface OutlinePanelActions {
   canInsert: () => boolean;
   selectFrame: (frameId: unknown) => void;
   readiness: () => SaveBackReadiness;
+  /** Take the user to a heading (its text and which repeat of that text it
+   *  is). Absent → the host cannot navigate, and headings are plain rows.
+   *  Resolves false when the heading is not on the page any more. */
+  revealHeading?: (text: string, occurrence: number) => Promise<boolean>;
 }
 
 /** The menu's verb, used everywhere a document is placed. */
@@ -278,7 +284,38 @@ export function makeOutlinePanel(store: DocStore, actions: OutlinePanelActions):
                   fontSize: 12,
                 }}
               >
-                {entry.kind === "heading" ? (
+                {entry.kind === "heading" && actions.revealHeading ? (
+                  <button
+                    type="button"
+                    data-doc-outline-reveal={i}
+                    title={`Go to “${entry.text}”`}
+                    onClick={() => {
+                      const occurrence = headingOccurrence(outline, i);
+                      void actions.revealHeading!(entry.text, occurrence).then((ok) => {
+                        if (!ok) {
+                          store.setNotice({
+                            severity: "info",
+                            message: `“${entry.text}” isn't on the page — the heading was edited, or it is in overset text.`,
+                          });
+                        }
+                      });
+                    }}
+                    style={{
+                      ...ellipsis,
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      background: "transparent",
+                      border: "none",
+                      padding: 0,
+                      color: "inherit",
+                      font: "inherit",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {entry.text}
+                  </button>
+                ) : entry.kind === "heading" ? (
                   <span style={ellipsis} title={entry.text}>
                     {entry.text}
                   </span>

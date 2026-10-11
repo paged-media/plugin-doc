@@ -186,3 +186,42 @@ export function createDocStore(): DocStore {
     },
   };
 }
+
+/** The story range of the `occurrence`-th paragraph (0-based) whose text
+ *  is `text`, in a story's paragraphs as the engine holds them. Offsets
+ *  count each paragraph's run text plus one paragraph mark. Null when the
+ *  paragraph is not there (the story was edited, the heading deleted). */
+export function paragraphRange(
+  paragraphs: ReadonlyArray<{ runs: ReadonlyArray<{ text: string }> }>,
+  text: string,
+  occurrence = 0,
+): { start: number; end: number } | null {
+  let offset = 0;
+  let seen = 0;
+  const want = text.trim();
+  for (const p of paragraphs) {
+    const t = p.runs.map((r) => r.text).join("");
+    if (t.trim() === want) {
+      if (seen === occurrence) {
+        const lead = t.length - t.trimStart().length;
+        return { start: offset + lead, end: offset + lead + want.length };
+      }
+      seen += 1;
+    }
+    offset += t.length + 1;
+  }
+  return null;
+}
+
+/** How many earlier outline headings carry the same text — the occurrence
+ *  index `paragraphRange` needs to tell repeated headings apart. */
+export function headingOccurrence(entries: readonly OutlineEntry[], index: number): number {
+  const target = entries[index];
+  if (!target || target.kind !== "heading") return 0;
+  let n = 0;
+  for (let i = 0; i < index; i++) {
+    const e = entries[i];
+    if (e.kind === "heading" && e.text.trim() === target.text.trim()) n += 1;
+  }
+  return n;
+}

@@ -28,7 +28,7 @@ import type {
 
 import { DocEngine } from "./engine.js";
 import { contributeMenu } from "./menu";
-import { createDocStore } from "./panels/outline-model.js";
+import { createDocStore, paragraphRange } from "./panels/outline-model.js";
 import { INSERT_LABEL, NO_PICKER_REASON, makeOutlinePanel } from "./panels/outline-panel.js";
 import { placeEmbedded } from "./place.js";
 import { openStandalone } from "./open.js";
@@ -281,6 +281,24 @@ export function activate(host: BundleHost): BundleHandle {
         canInsert: () => host.supports("shell.pickFile@1"),
         selectFrame: (frameId) => void host.selection.set([frameId as ElementId]),
         readiness: () => ({ readStory: host.supports("document.readStory@1") }),
+        // A heading click goes to the heading's text in the placed story.
+        // `revealText` is newer than the plugin-api this bundle builds
+        // against, so it is reached through the probe, not the type.
+        ...(host.supports("viewport.revealText@1") && host.supports("document.readStory@1")
+          ? {
+              revealHeading: async (text: string, occurrence: number) => {
+                const storyId = docStore.get()?.storyId;
+                if (!storyId) return false;
+                const content = await host.document.storyContent(storyId);
+                const range = content ? paragraphRange(content.paragraphs, text, occurrence) : null;
+                if (!range) return false;
+                const viewport = host.viewport as typeof host.viewport & {
+                  revealText(r: { storyId: string; start: number; end: number }): Promise<boolean>;
+                };
+                return viewport.revealText({ storyId, ...range });
+              },
+            }
+          : {}),
       }),
     }).dispose,
   );

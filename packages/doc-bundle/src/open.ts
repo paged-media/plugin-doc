@@ -104,7 +104,7 @@ export async function setGrowRules(host: BundleHost, storyIds: readonly string[]
           {
             severity: "warning" as const,
             message:
-              `This engine cannot grow pages (setFlowGrowRule, protocol 64): ` +
+              `This editor version cannot add pages as text grows: ` +
               `${refused.length} of ${storyIds.length} Word section(s) stay on one page, ` +
               `and text past it is overset. ${JSON.stringify(error)}`,
           },
@@ -166,7 +166,7 @@ export async function finishStandalone(
       {
         severity: "warning" as const,
         message:
-          "This engine cannot change columns mid-page (span/split columns, protocol 64): " +
+          "This editor version cannot change columns mid-page: " +
           "each Word section that does opens a new page instead.",
       },
     ]);

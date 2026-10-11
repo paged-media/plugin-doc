@@ -154,7 +154,7 @@ describe("openStandalone and span/split columns", () => {
     const d = diagnostics.get(COLUMNS_DIAGNOSTICS_KEY) ?? [];
     expect(d).toHaveLength(1);
     expect(d[0].severity).toBe("warning");
-    expect(d[0].message).toContain("protocol 64");
+    expect(d[0].message).toContain("cannot change columns mid-page");
   });
 
   it("a document without column changes is never reopened", async () => {

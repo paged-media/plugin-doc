@@ -634,6 +634,13 @@ pub const SPACING_PAIRS: &[SpacingPair] = &[
 /// `compat` is `settings.xml`'s `compatibilityMode` (`None` writes no
 /// settings part): Word's layout rules differ by mode.
 pub fn paragraph_spacing_docx(compat: Option<u32>) -> Vec<u8> {
+    paragraph_spacing_docx_with(compat, false)
+}
+
+/// [`paragraph_spacing_docx`], optionally with the compatibility flag
+/// `w:doNotUseHTMLParagraphAutoSpacing` (documents that went through Word
+/// 97-2003 carry it): Word then ADDS space after and space before.
+pub fn paragraph_spacing_docx_with(compat: Option<u32>, no_html_auto_spacing: bool) -> Vec<u8> {
     const RPR: &str = r#"<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr>"#;
     let para = |ppr: &str, before: u32, after: u32, ctx: bool, inner: &str| {
         let ctx = if ctx { "<w:contextualSpacing/>" } else { "" };
@@ -685,7 +692,7 @@ pub fn paragraph_spacing_docx(compat: Option<u32>) -> Vec<u8> {
   <w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body>
 </w:document>"#
     );
-    let Some(mode) = compat else {
+    let Some(mode) = compat.or(no_html_auto_spacing.then_some(11)) else {
         return zip_parts(&[
             ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
             ("_rels/.rels", ROOT_RELS.as_bytes()),
@@ -704,7 +711,12 @@ pub fn paragraph_spacing_docx(compat: Option<u32>) -> Vec<u8> {
     );
     let settings = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="{mode}"/></w:compat></w:settings>"#
+<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:compat>{flag}<w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="{mode}"/></w:compat></w:settings>"#,
+        flag = if no_html_auto_spacing {
+            "<w:doNotUseHTMLParagraphAutoSpacing/>"
+        } else {
+            ""
+        }
     );
     zip_parts(&[
         ("[Content_Types].xml", content_types.as_bytes()),

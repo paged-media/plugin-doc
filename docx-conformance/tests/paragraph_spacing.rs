@@ -22,16 +22,20 @@
 //! pair is `fixtures/paragraph-spacing.word.json`. Word leaves the larger
 //! of space after and space before; the engine adds them. So each pair's
 //! lowered space after + space before must equal Word's step less one line.
+//! A document carrying `w:doNotUseHTMLParagraphAutoSpacing` is laid the
+//! other way: Word adds the two there (found on a real document whose
+//! table of contents was 6 pt short per entry under the first rule).
 
 // `__feat__<id>` names link these tests to the Cockpit feature row.
 #![allow(non_snake_case)]
 
-use docx_conformance::{paragraph_spacing_docx, SPACING_PAIRS};
+use docx_conformance::{paragraph_spacing_docx_with, SPACING_PAIRS};
 use docx_lower::ir::{LoweredBlock, LoweredDoc, PropValue};
 
-/// `(pair, step_pt)` rows of `paragraph-spacing.word.json` (one object per
-/// line; no JSON dependency in this crate).
-fn word_steps() -> Vec<(String, f32)> {
+/// `(pair, step)` rows of `paragraph-spacing.word.json` (one object per
+/// line; no JSON dependency in this crate): `step_pt`, or `step_added_pt`
+/// for the document with `doNotUseHTMLParagraphAutoSpacing`.
+fn word_steps(added: bool) -> Vec<(String, f32)> {
     let json = include_str!("../fixtures/paragraph-spacing.word.json");
     let field = |row: &str, key: &str| -> String {
         let at = row.find(&format!("\"{key}\": ")).expect(key) + key.len() + 4;
@@ -44,7 +48,10 @@ fn word_steps() -> Vec<(String, f32)> {
     };
     json.lines()
         .filter(|l| l.trim_start().starts_with("{ \"pair\""))
-        .map(|row| (field(row, "pair"), field(row, "step_pt").parse().unwrap()))
+        .map(|row| {
+            let key = if added { "step_added_pt" } else { "step_pt" };
+            (field(row, "pair"), field(row, key).parse().unwrap())
+        })
         .collect()
 }
 
@@ -68,14 +75,15 @@ fn resolved(doc: &LoweredDoc, style_id: Option<&str>, path: &str) -> f32 {
     0.0
 }
 
-fn check(compat: Option<u32>) {
-    let doc = docx_import::import_docx(&paragraph_spacing_docx(compat)).expect("import");
+fn check(compat: Option<u32>, added: bool) {
+    let doc =
+        docx_import::import_docx(&paragraph_spacing_docx_with(compat, added)).expect("import");
     let lowered = docx_lower::lower(&doc);
     let style = |i: usize| match &lowered.story.blocks[i] {
         LoweredBlock::Paragraph(p) => p.para_style_id.clone(),
         LoweredBlock::Table(_) => panic!("no tables in the fixture"),
     };
-    let steps = word_steps();
+    let steps = word_steps(added);
     assert_eq!(steps.len(), SPACING_PAIRS.len());
     let pitch = steps[0].1;
     let mut wrong = Vec::new();
@@ -93,12 +101,21 @@ fn check(compat: Option<u32>) {
             ));
         }
     }
-    assert!(wrong.is_empty(), "compat {compat:?}\n{}", wrong.join("\n"));
+    assert!(
+        wrong.is_empty(),
+        "compat {compat:?}, added {added}\n{}",
+        wrong.join("\n")
+    );
 }
 
 #[test]
 fn the_room_between_paragraphs_is_words__feat__plugin_doc_word_pagination() {
-    check(Some(15));
-    check(Some(11));
-    check(None);
+    check(Some(15), false);
+    check(Some(11), false);
+    check(None, false);
+}
+
+#[test]
+fn with_the_word_97_flag_the_two_spacings_add__feat__plugin_doc_word_pagination() {
+    check(Some(11), true);
 }

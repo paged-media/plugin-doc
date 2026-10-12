@@ -439,6 +439,7 @@ pub fn lower_with(doc: &DocxDocument, options: LowerOptions) -> LoweredDoc {
             .collect(),
         word_defaults: doc.styles.doc_defaults.clone(),
         auto_hyphenation: doc.auto_hyphenation,
+        add_paragraph_spacing: doc.add_paragraph_spacing,
         min_text_width,
         default_para_style: styles
             .iter()
@@ -964,6 +965,9 @@ struct Lowering {
     default_base: Option<String>,
     /// `w:autoHyphenation` (off by default in Word, on in the engine).
     auto_hyphenation: bool,
+    /// Word ADDS space after and space before in this document
+    /// ([`DocxDocument::add_paragraph_spacing`]), as the engine does.
+    add_paragraph_spacing: bool,
     /// Word's default paragraph style (`w:default="1"`), the style of every
     /// paragraph that names none.
     default_para_style: Option<String>,
@@ -1869,7 +1873,9 @@ impl Lowering {
     /// needs on `p` (its space before, and whether its space after goes).
     ///
     /// Word leaves the LARGER of the first paragraph's space after and the
-    /// second's space before; the engine (as InDesign) adds the two. So a
+    /// second's space before, unless the document carries
+    /// `doNotUseHTMLParagraphAutoSpacing` (then it adds them, 6 + 6 gives
+    /// 12); the engine (as InDesign) adds the two. So a
     /// paragraph's space before is lowered by what the paragraph before it
     /// already leaves after itself. `w:contextualSpacing` between two
     /// paragraphs of the same style: on the first, there is no room at all
@@ -1893,6 +1899,7 @@ impl Lowering {
             self.style_of(a) == self.style_of(b)
         };
         let own_before = twips(p, |pp| pp.space_before);
+        let add = self.add_paragraph_spacing;
         let space_before = before.and_then(|a| {
             let same = same_style(a, p);
             let a_after = if contextual(a) && same {
@@ -1900,12 +1907,24 @@ impl Lowering {
             } else {
                 twips(a, |pp| pp.space_after)
             };
-            let p_before = if same && (contextual(a) || contextual(p)) {
-                0
+            // With `doNotUseHTMLParagraphAutoSpacing` Word adds the two, as
+            // the engine does, and contextual spacing drops each side's own
+            // share only (measured: on the first alone, the second's space
+            // before stays; without the flag it goes too).
+            let left = if add {
+                if same && contextual(p) {
+                    0
+                } else {
+                    own_before
+                }
             } else {
-                own_before
+                let p_before = if same && (contextual(a) || contextual(p)) {
+                    0
+                } else {
+                    own_before
+                };
+                (p_before - a_after).max(0)
             };
-            let left = (p_before - a_after).max(0);
             (left != own_before).then(|| twip_to_pt(left))
         });
         let no_space_after = after.is_some_and(|b| {
@@ -2283,7 +2302,10 @@ impl Lowering {
                 .map(|r| self.resolve_face(Some(r), style))
                 .collect();
             if v.is_empty() {
-                v.push(self.resolve_face(None, style));
+                // An empty paragraph's line is its MARK's: the mark's own
+                // font and size (`w:pPr/w:rPr`) over the style's.
+                let (font, size) = self.resolve_face(None, style);
+                v.push((p.mark_font.clone().or(font), p.mark_half_pts.or(size)));
             }
             v
         };
@@ -2705,6 +2727,8 @@ mod tests {
                 props: ParaProps::default(),
                 runs: vec![text()],
                 list,
+                mark_font: None,
+                mark_half_pts: None,
                 source_para_ord: 0,
                 source_cell: None,
             }));
@@ -2762,6 +2786,8 @@ mod tests {
                 props: ParaProps::default(),
                 runs: vec![picture(offset), run("Look:", RunProps::default())],
                 list: None,
+                mark_font: None,
+                mark_half_pts: None,
                 source_para_ord: 0,
                 source_cell: None,
             }));
@@ -2795,6 +2821,8 @@ mod tests {
                     props: ParaProps::default(),
                     runs: vec![run("x", RunProps::default())],
                     list: None,
+                    mark_font: None,
+                    mark_half_pts: None,
                     source_para_ord: 0,
                     source_cell: None,
                 }],
@@ -2821,6 +2849,57 @@ mod tests {
         assert!(
             table(vec![row(None), row(None)]).is_empty(),
             "no row declares a height"
+        );
+    }
+
+    /// Word sizes an empty paragraph's line by its MARK's font and size
+    /// (`w:pPr/w:rPr`): a blank line whose mark is 20 pt Times New Roman is
+    /// 23 pt tall whatever its style says.
+    #[test]
+    fn a_blank_line_is_as_tall_as_its_paragraph_mark__feat__plugin_doc_word_pagination() {
+        let mut doc = DocxDocument::default();
+        for size in [Some(40), None] {
+            doc.body.push(Block::Paragraph(Paragraph {
+                style_id: None,
+                props: ParaProps::default(),
+                runs: vec![],
+                list: None,
+                mark_font: Some("Times New Roman".into()),
+                mark_half_pts: size,
+                source_para_ord: 0,
+                source_cell: None,
+            }));
+        }
+        let lowered = lower(&doc);
+        let leading = |i: usize| {
+            let mut next = lowered.story.paragraphs()[i].para_style_id.clone();
+            for _ in 0..32 {
+                let style = lowered
+                    .styles
+                    .iter()
+                    .find(|s| Some(&s.id) == next.as_ref())?;
+                if let Some(PropValue::Length(pt)) = style
+                    .props
+                    .iter()
+                    .find(|p| p.path == "characterLeading")
+                    .map(|p| &p.value)
+                {
+                    return Some(*pt);
+                }
+                next = style.based_on.clone();
+            }
+            None
+        };
+        let tnr = 2355.0 / 2048.0;
+        assert!(
+            leading(0).is_some_and(|pt| (pt - 20.0 * tnr).abs() < 0.01),
+            "20 pt mark: {:?}",
+            leading(0)
+        );
+        assert!(
+            leading(1).is_some_and(|pt| (pt - 10.0 * tnr).abs() < 0.01),
+            "no size on the mark: Word's default 10 pt, {:?}",
+            leading(1)
         );
     }
 
@@ -2866,6 +2945,8 @@ mod tests {
                 ),
             ],
             list: None,
+            mark_font: None,
+            mark_half_pts: None,
             source_para_ord: 0,
             source_cell: None,
         }));

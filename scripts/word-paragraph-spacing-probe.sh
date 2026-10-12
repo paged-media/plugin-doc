@@ -14,7 +14,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$(mkdir -p "$1" && cd "$1" && pwd)"
 cd "$ROOT"
-for which in paragraph-spacing paragraph-spacing-11 paragraph-spacing-none; do
+for which in paragraph-spacing paragraph-spacing-11 paragraph-spacing-none paragraph-spacing-sum; do
   cargo run -q -p docx-conformance --bin dump-fixture -- "$OUT/$which.docx" "$which"
   bash scripts/word-pagination-probe.sh "$OUT/$which.docx" "$OUT/$which.pdf" >/dev/null
   pdftotext -bbox "$OUT/$which.pdf" "$OUT/$which.bbox.html"

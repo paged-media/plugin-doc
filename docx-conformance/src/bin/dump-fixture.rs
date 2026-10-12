@@ -43,6 +43,7 @@ fn main() {
         "paragraph-spacing" => docx_conformance::paragraph_spacing_docx(Some(15)),
         "paragraph-spacing-11" => docx_conformance::paragraph_spacing_docx(Some(11)),
         "paragraph-spacing-none" => docx_conformance::paragraph_spacing_docx(None),
+        "paragraph-spacing-sum" => docx_conformance::paragraph_spacing_docx_with(Some(11), true),
         "breaks" => docx_conformance::breaks_docx(),
         "continuous" => docx_conformance::continuous_docx(),
         "columns" => docx_conformance::columns_docx(),

@@ -245,6 +245,13 @@ pub fn import_docx_with_package(
         })
         .unwrap_or_default();
 
+    let add_paragraph_spacing = settings.as_ref().is_some_and(|s| {
+        s.compatibility.iter().any(|c| {
+            c.do_not_use_html_paragraph_auto_spacing
+                .as_ref()
+                .is_some_and(|f| on(&f.val))
+        })
+    });
     let auto_hyphenation = settings
         .as_ref()
         .and_then(|s| s.auto_hyphenation.as_ref())
@@ -291,6 +298,7 @@ pub fn import_docx_with_package(
         styles,
         sections,
         auto_hyphenation,
+        add_paragraph_spacing,
         unplaced_vml,
     };
     Ok((doc, pkg, main_part))
@@ -916,11 +924,30 @@ fn map_paragraph(
         }
     }
 
+    // The paragraph mark's own face (`w:pPr/w:rPr`).
+    let mark = p
+        .paragraph_properties
+        .as_deref()
+        .and_then(|pp| pp.paragraph_mark_run_properties.as_deref());
+    let (mut mark_font, mut mark_half_pts) = (None, None);
+    for choice in mark
+        .iter()
+        .flat_map(|m| &m.paragraph_mark_run_properties_choice2)
+    {
+        match choice {
+            wml::ParagraphMarkRunPropertiesChoice2::RunFonts(f) => mark_font = f.ascii.clone(),
+            wml::ParagraphMarkRunPropertiesChoice2::FontSize(s) => mark_half_pts = hps(&s.val),
+            _ => {}
+        }
+    }
+
     Paragraph {
         style_id,
         props,
         runs,
         list,
+        mark_font,
+        mark_half_pts,
         source_para_ord: para_ord,
         source_cell,
     }

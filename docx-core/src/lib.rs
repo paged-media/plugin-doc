@@ -76,6 +76,13 @@ pub struct DocxDocument {
     /// the document turns it on (off by default, unlike the native engine).
     #[serde(default)]
     pub auto_hyphenation: bool,
+    /// `settings.xml` `w:compat/w:doNotUseHTMLParagraphAutoSpacing` (a
+    /// document that went through Word 97-2003 carries it): Word then ADDS
+    /// a paragraph's space after and the next one's space before. Without
+    /// it Word leaves the larger of the two
+    /// (`fixtures/paragraph-spacing.word.json`).
+    #[serde(default)]
+    pub add_paragraph_spacing: bool,
     /// Legacy VML drawings (`w:pict`) the import could not place: floating
     /// shapes, text boxes, diagrams (only an inline VML picture becomes an
     /// [`Image`]). The lowering reports them.
@@ -84,6 +91,9 @@ pub struct DocxDocument {
 }
 
 /// A top-level body block.
+// Nearly every block is a paragraph: boxing it would cost an allocation per
+// paragraph to save a few hundred bytes on the rare table.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Block {
     /// A paragraph (`w:p`).
@@ -122,6 +132,12 @@ pub struct Paragraph {
     /// `w:pPr/w:numPr` resolved through `numbering.xml` — the list marker this
     /// paragraph belongs to, if any.
     pub list: Option<ListMarker>,
+    /// The paragraph MARK's own font and size (`w:pPr/w:rPr`), in
+    /// half-points. Word sizes an empty paragraph's line by them.
+    #[serde(default)]
+    pub mark_font: Option<String>,
+    #[serde(default)]
+    pub mark_half_pts: Option<u32>,
     /// Provenance for M2 save-back: this paragraph's ordinal among the direct
     /// `<w:p>` children of `<w:body>` (0-based). Meaningless for table-cell
     /// paragraphs — those carry [`Paragraph::source_cell`] instead.

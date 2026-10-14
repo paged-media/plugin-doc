@@ -203,11 +203,12 @@ code uses `readNative` or the declared part type `docLowered`.
 
 ## Build and test
 
-- `bash scripts/build-wasm.sh` builds `docx-js` for `wasm32-unknown-unknown` in release
-  mode, checks that the `wasm-bindgen` CLI equals the version in `Cargo.lock`, runs
-  `wasm-bindgen --target web` into `packages/doc-bundle/bin/` (gitignored) and, if present,
-  `wasm-opt -Oz`. It fails above 100 000 000 bytes, a higher limit than the manifest's
-  `maxBytes`. `.github/workflows/publish.yml` runs it, then `pnpm -r build`, then publishes
+- `bash scripts/build-wasm.sh` builds `docx-js` for `wasm32-unknown-unknown` with the
+  `wasm-release` profile (release, with ooxmlsdk compiled for size), checks that the
+  `wasm-bindgen` CLI equals the version in `Cargo.lock`, runs `wasm-bindgen --target web`
+  into `packages/doc-bundle/bin/` (gitignored) and, if present, `wasm-opt -Oz`. It fails
+  above 100 000 000 bytes and above the manifest's `maxBytes`.
+  `.github/workflows/publish.yml` runs it, then `pnpm -r build`, then publishes
   `@paged-media/doc` under the `canary` tag unless that version exists.
 - Rust lane: `.github/workflows/rust.yml` runs `cargo fmt --all --check`, clippy with
   warnings as errors, `cargo deny`, `cargo nextest run --workspace --profile ci` and the

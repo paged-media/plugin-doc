@@ -61,3 +61,15 @@ all = "warn"
 opt-level = "s"
 lto = true
 codegen-units = 1
+
+# The shipped wasm (scripts/build-wasm.sh). Size-first codegen for ooxmlsdk
+# alone, the typed OOXML DOM and its generated (de)serializers, takes the
+# artifact under the manifest's `maxBytes` (8 MiB): about 17 % smaller,
+# with the same load cost per document (measured on a 4 MB document.xml).
+# `opt-level = "z"` for the whole build is only 1 % smaller again and loads
+# about a fifth slower.
+[profile.wasm-release]
+inherits = "release"
+
+[profile.wasm-release.package.ooxmlsdk]
+opt-level = "z"

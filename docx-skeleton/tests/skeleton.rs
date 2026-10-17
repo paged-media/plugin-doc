@@ -99,8 +99,9 @@ fn open(bytes: &[u8]) -> Package {
         let mut f = zip.by_index(i).unwrap();
         let mut s = String::new();
         f.read_to_string(&mut s).unwrap();
-        names.push(f.name().to_string());
-        parts.insert(f.name().to_string(), s);
+        let name = f.name().unwrap().into_owned();
+        names.push(name.clone());
+        parts.insert(name, s);
     }
     Package {
         names,

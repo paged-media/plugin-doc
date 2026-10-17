@@ -8,7 +8,22 @@
 
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # zip 8.6.0 reaches this workspace only through `ooxmlsdk` 0.12.0 (its
+    # `parts` feature, which `mce` requires); no ooxmlsdk release has moved to
+    # zip >= 9 yet (0.13.2 still requires zip ^8.6). The workspace's own zip
+    # dependency is zip 9. All three advisories (2026-10-09/10) are about
+    # `ZipArchive::extract` / `ZipStreamReader::extract` writing an archive to
+    # the file system (SUID/SGID bits kept, symlinks escaping the destination,
+    # permissions applied through symlinks). Neither this workspace nor
+    # ooxmlsdk 0.12.0 calls either function: the workspace uses ooxmlsdk only
+    # for its typed part DOM, and ooxmlsdk's own package code reads entries
+    # one by one. Remove these three when ooxmlsdk depends on zip >= 9.
+    # Recorded 2026-10-17.
+    { id = "RUSTSEC-2026-0367", reason = "zip 8 via ooxmlsdk only; extract() is never called" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 8 via ooxmlsdk only; extract() is never called" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 8 via ooxmlsdk only; extract() is never called" },
+]
 
 [licenses]
 version = 2

@@ -391,10 +391,10 @@ pub fn write_idml(pages: &[SkeletonPage], name: &str) -> Result<Vec<u8>, String>
 
     let mut out = Cursor::new(Vec::new());
     let mut zip = zip::ZipWriter::new(&mut out);
-    let stored =
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    let deflated = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+    // Fixed entry metadata (1980-01-01, Unix), not the clock or the build host.
+    let fixed = zip::write::SimpleFileOptions::DEFAULT.system(zip::System::Unix);
+    let stored = fixed.compression_method(zip::CompressionMethod::Stored);
+    let deflated = fixed.compression_method(zip::CompressionMethod::Deflated);
     let err = |e: &dyn std::fmt::Display| e.to_string();
     zip.start_file("mimetype", stored).map_err(|e| err(&e))?;
     zip.write_all(IDML_MIMETYPE.as_bytes())

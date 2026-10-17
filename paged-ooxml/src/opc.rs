@@ -102,7 +102,7 @@ impl OpcPackage {
         let mut parts = Vec::with_capacity(archive.len());
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
-            let name = file.name().to_string();
+            let name = file.name()?.into_owned();
             if file.is_dir() {
                 parts.push(PartEntry::Dir { name });
             } else {
@@ -183,7 +183,12 @@ impl OpcPackage {
         let mut out = Cursor::new(Vec::new());
         {
             let mut zip = zip::ZipWriter::new(&mut out);
-            let opts = zip::write::SimpleFileOptions::default()
+            // Fixed entry metadata, so the container bytes depend on the parts
+            // alone: the 1980-01-01 DOS time (`default()` reads the clock when
+            // zip's `time` feature is on) and a Unix `version made by` (zip
+            // otherwise takes the build host's system).
+            let opts = zip::write::SimpleFileOptions::DEFAULT
+                .system(zip::System::Unix)
                 .compression_method(zip::CompressionMethod::Deflated);
             for entry in &self.parts {
                 match entry {

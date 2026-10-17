@@ -30,7 +30,7 @@ publish = false
 # OOXML typed part DOM (DOC-02: committed as the semantic-parse foundation).
 ooxmlsdk = { version = "0.12", features = ["mce"] }
 # OPC container + preservation carry-through (proven wasm in sheet-xlsx).
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 quick-xml = "0.41"
 # Shared data plumbing.
 serde = { version = "1", features = ["derive"] }
